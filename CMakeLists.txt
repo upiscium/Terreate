@@ -38,21 +38,20 @@ target_compile_options(project_compiler_context INTERFACE
 # the pinned project devShell rather than an inherited SDK or host search path.
 # Keep the compiler's dynamically discovered implicit directories above for
 # clang-tidy/compiler context only; they are not Vulkan dependency discovery.
-if(NOT DEFINED ENV{TERREATE_VULKAN_HEADERS} OR
-   "$ENV{TERREATE_VULKAN_HEADERS}" STREQUAL "")
+if(NOT DEFINED ENV{VULKAN_HEADERS_INCLUDE} OR
+   "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "")
   message(FATAL_ERROR
     "Terreate requires the project devShell contract: "
-    "TERREATE_VULKAN_HEADERS must be set before configuring. "
+    "VULKAN_HEADERS_INCLUDE must be set before configuring. "
     "Run `nix develop` and configure again.")
 endif()
 
-set(PROJECT_VULKAN_HPP_INCLUDE_DIR
-  "$ENV{TERREATE_VULKAN_HEADERS}/include")
-if(NOT EXISTS "${PROJECT_VULKAN_HPP_INCLUDE_DIR}/vulkan/vulkan.hpp")
+set(PROJECT_VULKAN_HPP_INCLUDE_DIR "$ENV{VULKAN_HEADERS_INCLUDE}")
+if(NOT EXISTS "${PROJECT_VULKAN_HPP_INCLUDE_DIR}/vulkan/vulkan_raii.hpp")
   message(FATAL_ERROR
     "Terreate requires Vulkan-Hpp at "
-    "${PROJECT_VULKAN_HPP_INCLUDE_DIR}/vulkan/vulkan.hpp from "
-    "TERREATE_VULKAN_HEADERS; refusing inherited or default search paths.")
+    "${PROJECT_VULKAN_HPP_INCLUDE_DIR}/vulkan/vulkan_raii.hpp from "
+    "VULKAN_HEADERS_INCLUDE; refusing inherited or default search paths.")
 endif()
 message(STATUS "Vulkan-Hpp include directory: ${PROJECT_VULKAN_HPP_INCLUDE_DIR}")
 

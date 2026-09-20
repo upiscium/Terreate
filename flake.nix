@@ -22,6 +22,7 @@
           # intentionally not duplicated by this project shell.
           CC = "gcc";
           CXX = "g++";
+          VULKAN_HEADERS_INCLUDE = "${vulkanHeaders}/include";
 
           packages = with pkgs; [
             # Build and repository tooling.
@@ -75,10 +76,9 @@
           ];
 
           shellHook = ''
-            # Keep validation-layer discovery explicit and deterministic.  Do
-            # not inherit arbitrary parent-shell manifests into this shell.
-            export VK_LAYER_PATH="${vulkanValidationLayers}/share/vulkan/explicit_layer.d"
-            export TERREATE_VULKAN_HEADERS="${vulkanHeaders}"
+            # Prepend the pinned validation layers while retaining any
+            # validation layers supplied by the invoking environment.
+            export VK_LAYER_PATH="${vulkanValidationLayers}/share/vulkan/explicit_layer.d''${VK_LAYER_PATH:+:$VK_LAYER_PATH}"
             export TERREATE_VULKAN_LOADER="${vulkanLoader}"
             export TERREATE_VULKAN_VALIDATION_LAYERS="${vulkanValidationLayers}"
             export TERREATE_VULKAN_TOOLS="${vulkanTools}"

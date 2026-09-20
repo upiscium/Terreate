@@ -17,10 +17,12 @@ The shell selects GCC/g++ through `CC`/`CXX` and provides CMake/Ninja/Just,
 a Mesa software runtime.  It also provides GLFW, VMA, GLM, spdlog, Slang,
 shaderc, glslang, SPIR-V Tools, SPIR-V Cross, and the Wayland/X11 development
 surface used by GLFW and Vulkan.  The validation layer search path is exported
-as `VK_LAYER_PATH`; `TERREATE_VULKAN_*` variables expose the pinned Vulkan
-inputs for diagnostics.  CMake requires `TERREATE_VULKAN_HEADERS` from this
-shell for Vulkan-Hpp and never falls back to an inherited SDK or host search
-path.
+as `VK_LAYER_PATH`, with the pinned layer directory prepended to any existing
+path.  `VULKAN_HEADERS_INCLUDE` is the canonical header interface; `nix
+develop` supplies its pinned Vulkan Headers `include` directory value.  The
+other `TERREATE_VULKAN_*` variables expose pinned Vulkan inputs for
+diagnostics.  CMake requires this explicit variable for Vulkan-Hpp and does
+not silently search inherited SDK or host defaults.
 
 Generic GCC/g++, `clangd`, `clang-tidy`, and `clang-format` are editor/build
 tooling rather than project-owned dependencies and are expected from the
@@ -47,9 +49,11 @@ sets `gcc`/`g++`, C++23, Ninja, and `CMAKE_CXX_SCAN_FOR_MODULES=OFF`.
 
 `just project::check` is the canonical verification entrypoint.  Every
 invocation enters the pinned `nix develop` shell itself and dispatches the
-private check there, so an ambient `TERREATE_VULKAN_HEADERS` value cannot
-bypass the pinned environment.  Direct `just project::configure` remains
-fail-closed and requires `TERREATE_VULKAN_HEADERS` from the project shell.
+private check there, so it receives the pinned `VULKAN_HEADERS_INCLUDE` value.
+Direct `just project::configure` remains fail-closed when
+`VULKAN_HEADERS_INCLUDE` is absent; when a caller supplies it explicitly,
+CMake trusts that value rather than silently searching inherited SDK or host
+defaults.
 
 The devShell dependencies are not consumer linkage.  The project only adds
 header/include context for Vulkan-Hpp to the sample targets and deliberately
