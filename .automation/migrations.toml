@@ -1,0 +1,26 @@
+schema_version = 1
+
+[[migrations]]
+from_version = 2
+to_version = 3
+remove_paths = [
+  ".automation/model-fallback.toml",
+  ".automation/bin/model_fallback.py",
+  ".opencode/commands/task-recover.md",
+  ".opencode/commands/task-recover-clear.md",
+  ".opencode/skills/task-recovery/SKILL.md",
+  ".opencode/agents/architect-fallback.md",
+  ".opencode/agents/build-fallback.md",
+  ".opencode/agents/explore-fallback.md",
+  ".opencode/agents/general-fallback.md",
+  ".opencode/agents/investigator-fallback.md",
+  ".opencode/agents/plan-fallback.md",
+  ".opencode/agents/reviewer-fallback.md",
+  ".opencode/agents/scout-fallback.md",
+  ".opencode/agents/security-reviewer-fallback.md",
+  ".opencode/agents/task-orchestrator-fallback.md",
+  ".opencode/agents/verifier-fallback.md",
+]
+require_absent_paths = [
+  ".task-state/recovery.json",
+]
