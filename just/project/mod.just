@@ -15,7 +15,9 @@ doctor:
     @test -f CMakeLists.txt
     @command -v cmake >/dev/null
     @command -v ninja >/dev/null
-    @compiler="${CXX:-c++}"; command -v "$compiler" >/dev/null
+    @command -v gcc >/dev/null
+    @command -v g++ >/dev/null
+    @compiler="${CXX:-g++}"; command -v "$compiler" >/dev/null
     @command -v clang-format >/dev/null
     @command -v clang-tidy >/dev/null
     @command -v ctest >/dev/null
@@ -32,5 +34,17 @@ build: configure cmake::build
 
 test: build tests::all
 
-check: doctor format-check lint test
+[private]
+check-in-dev-shell: doctor format-check lint test
     @echo "C++/CMake Project Adapter check: PASS"
+
+[working-directory: root]
+check:
+    #!/usr/bin/env sh
+    set -eu
+    if ! command -v nix >/dev/null 2>&1; then
+      printf '%s\n' \
+        "Terreate project::check requires Nix to enter the pinned devShell." >&2
+      exit 1
+    fi
+    exec nix develop --command just project::check-in-dev-shell
