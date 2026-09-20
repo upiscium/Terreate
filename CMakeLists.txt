@@ -1,10 +1,10 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.28)
 project(terreate LANGUAGES CXX)
 
 # The repository build is intentionally GCC-only.  clangd/clang-tidy may still
 # consume the generated compilation database, but they are not the build
 # compiler.
-if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   message(FATAL_ERROR
     "Terreate must be built with GCC/g++; got ${CMAKE_CXX_COMPILER_ID} "
     "(${CMAKE_CXX_COMPILER})")
@@ -13,8 +13,7 @@ endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_CXX_SCAN_FOR_MODULES OFF CACHE BOOL
-  "Disable C++ module scanning for the repository baseline" FORCE)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL
   "Export the compilation database for clangd and clang-tidy" FORCE)
 
@@ -91,9 +90,6 @@ endif()
 
 add_library(project_lib src/lib.cpp)
 target_include_directories(project_lib PUBLIC include)
-target_link_libraries(project_lib PUBLIC
-  project_compiler_context
-  project_vulkan_headers)
 
 add_executable(project_app src/main.cpp)
 target_link_libraries(project_app PRIVATE project_lib)
@@ -104,11 +100,12 @@ target_link_libraries(project_tests PRIVATE project_lib)
 add_test(NAME smoke COMMAND project_tests)
 
 foreach(project_target IN ITEMS project_lib project_app project_tests)
+  target_link_libraries(${project_target} PRIVATE
+    project_compiler_context
+    project_vulkan_headers)
   set_target_properties(${project_target} PROPERTIES
     CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF)
-  if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.28)
-    set_property(TARGET ${project_target} PROPERTY CXX_SCAN_FOR_MODULES OFF)
-  endif()
+  set_property(TARGET ${project_target} PROPERTY CXX_SCAN_FOR_MODULES OFF)
 endforeach()
