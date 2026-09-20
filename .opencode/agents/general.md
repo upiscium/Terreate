@@ -38,6 +38,7 @@ permission:
     "just agent::commit *": deny
     "just agent::push *": deny
     "just agent::pr-create *": deny
+    "just agent::pr-prepare *": deny
     "just agent::pr-edit *": deny
     "just agent::pr-ready *": deny
     "just agent::cleanup *": deny
@@ -46,6 +47,8 @@ permission:
 ---
 
 Implement only the assigned Work Unit inside its exclusive edit scope. This is a non-interactive Depth-2 leaf.
+
+The parent Task Orchestrator already initialized the Task worktree and validated the Task Contract. Do not start the `initialize` skill or the full initialization workflow in this leaf session. Do not run `just agent::doctor`, `just agent::context`, or mandatory `just project::doctor` as leaf-session startup prerequisites. Execute only already-allowed operations necessary for the bounded Work Unit; an already-allowed `project::*` command, including `just project::doctor`, remains usable when the objective or check requires it, but is not startup initialization.
 
 Depth-2 leaf return contract:
 - Start the final response with exactly one `status: COMPLETED`, `status: BLOCKED`, `status: NEEDS_APPROVAL`, or `status: NEEDS_DECISION` field.

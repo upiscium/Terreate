@@ -13,23 +13,14 @@ permission:
   task:
     "*": deny
     explore: allow
-    explore-fallback: allow
     architect: allow
-    architect-fallback: allow
     reviewer: allow
-    reviewer-fallback: allow
     security-reviewer: allow
-    security-reviewer-fallback: allow
     general: deny
-    general-fallback: deny
     verifier: deny
-    verifier-fallback: deny
     investigator: deny
-    investigator-fallback: deny
     task-orchestrator: deny
-    task-orchestrator-fallback: deny
     scout: deny
-    scout-fallback: deny
   bash: deny
 ---
 

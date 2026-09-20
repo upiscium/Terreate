@@ -1,6 +1,6 @@
 # Agent Initialization Contract
 
-This file defines the mandatory read-only initialization sequence for every primary agent session and every Task Orchestrator before planning, editing, delegation, or project commands.
+This file defines the mandatory read-only initialization sequence for every primary agent session and every Task Orchestrator before planning, editing, delegation, or project commands. It does not require a Depth-2 leaf to start a new initialization sequence: the parent Task Orchestrator supplies the completed worktree initialization and Task Contract validation handoff.
 
 ## Read-only boundary
 
@@ -15,6 +15,12 @@ Initialization validates and reports state. It must not:
 - start implementation or delegation.
 
 Repository bootstrap and Automation Core upgrade are separate state-changing workflows.
+
+## Runtime preflight
+
+`just agent::preflight` is a narrower read-only readiness check for bootstrap, adoption, and upgrade verification from the root of an installed Agent Core. It validates required runtime tools, required Agent Core files, the supported Agent Core version, and a non-empty Adapter marker without requiring a Git repository, resolving the default branch, or validating branch/worktree/Task identity.
+
+A successful preflight does not establish a valid Agent session and does not replace `/init`, `agent::doctor`, or `agent::context`. A non-default bootstrap branch without Task State may pass preflight while strict doctor/context initialization remains blocked; this separation is intentional and is not an identity-check bypass.
 
 ## Mandatory sequence
 
@@ -36,6 +42,10 @@ A planning-only session reports `PLANNING_INITIALIZATION_HANDOFF` with explicit 
 
 This exception applies only to the repository-local `plan` agent. Execution-capable primary agents and Task Orchestrators must complete the mandatory sequence above before editing, implementation delegation, or project commands.
 
+## Depth-2 leaf sessions
+
+Depth-2 leaves do not start `initialize` or the full initialization workflow. They must not run `just agent::doctor`, `just agent::context`, or mandatory `just project::doctor` as leaf-session startup prerequisites. They execute only already-allowed operations necessary for the bounded Work Unit. Already-allowed `project::*` commands, including `just project::doctor`, remain usable when the objective or check requires them, but are not startup initialization. The parent Task Orchestrator remains responsible for durable initialization evidence and Task Contract validation.
+
 ## Stop conditions
 
 Stop initialization and report `BLOCKED` when any of the following is true:
@@ -50,7 +60,7 @@ Stop initialization and report `BLOCKED` when any of the following is true:
 - `just project::doctor` fails;
 - a required Task Contract field is absent or still unresolved.
 
-Do not weaken a permission, select another Task, substitute an unconfigured model, or repair the repository in order to pass initialization.
+The initialization guard is strict and fail-closed. For a Task worktree, `agent::doctor` and `agent::context` validate the already-materialized Task Contract without mutation; unresolved placeholders remain a blocking error. Do not weaken a permission, select another Task, substitute an unconfigured model, or repair the repository in order to pass initialization.
 
 ## Project Adapter fragment
 
