@@ -6,8 +6,15 @@
       "displayName": "Default Ninja debug",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/.build/default",
+      "environment": {
+        "CC": "gcc",
+        "CXX": "g++"
+      },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_CXX_SCAN_FOR_MODULES": "OFF",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
     }
