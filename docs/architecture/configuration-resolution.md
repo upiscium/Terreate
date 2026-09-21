@@ -13,43 +13,46 @@ and #227.
 
 ## The resolution pipeline
 
-Terreate resolves explicit user intent into backend configuration through
-immutable snapshots and a separate effective value:
+Terreate resolves explicit user intent into backend configuration through three
+distinct boundaries, immutable snapshots, and a separate effective value:
 
 ```text
+context
+   |
+   v  queryCapabilities(context)
+  / \
+ v   v
+Supported                 Capability Query Failure
+(immutable,               (structured query diagnostic;
+ successful snapshot)      no Supported snapshot)
+   +
 Requested (immutable, snapshot-capable)
-        +
-Supported (immutable capability snapshot)
-        |
-        v  resolve(requested, supported)
-Resolution
-       / \
-      v   v
+   |
+   v  resolve(Requested, Supported)
+  / \
+ v   v
 Effective                 Resolution Failure
-(successful plan)         (structured error;
-                          native application not reached)
-       |
-       v
-Backend/native application
-       |
-       v
-Native Application Outcome
-      /                    \
-     v                      v
-Native Application       Native Application
-Success                   Rejection
-(final applied state)     (Effective + native details)
+(deterministic             (structured resolution
+ pre-native plan)           diagnostic; apply not reached)
+   |
+   v  apply(Effective)
+  / \
+ v   v
+success                    native/backend application failure
+                          (distinct post-resolution boundary)
 ```
 
 The capability query is an observation of a particular backend, device,
-surface, or environment. It produces a `Supported` snapshot; it is not
-permission to enable everything observed. `Resolution` is the deterministic
-decision between `Requested` and that snapshot. `Effective` is constructed as
-a separate value, and neither input is mutated. Native application is a later
-boundary: it consumes `Effective` and reports a separate
-`Native Application Success` or `Native Application Rejection`.
-A `Native Application Rejection` does not change the earlier resolution outcome
-or silently rewrite the effective plan.
+surface, or environment. A successful `queryCapabilities(context)` produces a
+`Supported` snapshot; it is not permission to enable everything observed. A
+failed query produces a structured `Capability Query Failure` instead of an
+empty support set and does not enter resolution. `Resolution` is the
+deterministic decision between `Requested` and a successful `Supported`
+snapshot. `Effective` is constructed as a separate, deterministic pre-native
+plan, and neither input is mutated. Native/backend application is a later
+boundary: it consumes `Effective` and reports either success or a distinct
+application failure. A native/backend application failure does not change the
+earlier resolution result or silently rewrite the effective plan.
 
 ## Terminology
 
@@ -58,22 +61,21 @@ or silently rewrite the effective plan.
 | **Requirement** | A named item of user intent, such as a capability, value, constraint, or queue role, together with its requested value and a `RequirementStrength`. | A capability that merely appears in `Supported`. |
 | **RequirementStrength** | The strength of a `Requirement`: `required` must be satisfied or resolution fails; `optional` may be declined, with the decision and reason recorded. | An implementation priority or an inferred preference. |
 | **Requested** | An immutable, snapshot-capable input containing the explicit requirements, context, and policy revision being evaluated. | Mutable caller state or a request reconstructed from backend support. |
-| **Supported** | An immutable, snapshot-capable input containing the capability evidence and backend/context identity observed for this evaluation. | A promise that every observed capability will be enabled. |
-| **Resolution** | The deterministic evaluation of `Requested` against `Supported`, producing an `Effective` value or a `Resolution Failure`. It ends before native application. | Native object creation, a `Native Application Rejection`, or a generic `Result`/`Error` wrapper. |
-| **Effective** | A separate output value containing the exact selected values, queue/resource mappings, and decisions that may be handed to native application after successful resolution. It remains the successful resolution output even if later native application rejects it. | An in-place normalization of `Requested`, the support snapshot, a partial plan after a required failure, or the final native/applied state. |
-| **Resolution Failure** | A structured error from validation, capability querying, or resolution that preserves the failed requirement, evidence, policy decision, and resolution-stage detail. It records that native application was not reached. | A `Native Application Rejection`, a missing `Effective` value with only an explanatory log, or an exception/termination policy. |
+| **Supported** | An immutable, snapshot-capable input containing the capability evidence and backend/context identity from a successful capability query for this evaluation. | A `Capability Query Failure` or a promise that every observed capability will be enabled. |
+| **Resolution** | The deterministic evaluation of `Requested` against a successful `Supported` snapshot, producing an `Effective` value or a `Resolution Failure`. It ends before native application. | Capability querying, native object creation, or a generic `Result`/`Error` wrapper. |
+| **Effective** | A separate output value containing the exact selected values, queue/resource mappings, and decisions that may be handed to native application after successful resolution. It is a deterministic pre-native plan and remains the successful resolution output if later application fails. | An in-place normalization of `Requested`, the support snapshot, a partial plan after a required failure, or the final native/applied state. |
+| **Resolution Failure** | A structured error from request validation or resolution that preserves the failed requirement, evidence, policy decision, and resolution-stage detail. It records that native application was not reached. | A `Capability Query Failure`, a native/backend application failure, a missing `Effective` value with only an explanatory log, or an exception/termination policy. |
 | **Requested configuration** | The intent explicitly supplied by the user or calling domain. It includes the distinction between required, optional, and unspecified requirements. | A list of everything the backend happens to support. |
-| **Supported capabilities** | A capability snapshot returned by a query for a particular backend context. It can include features, extensions, queue families, formats, limits, versions, and other domain facts. | A promise that every capability will be enabled, or a default request. |
-| **Effective configuration** | The exact, resolved plan that satisfies the request under the supplied capabilities and documented policy. It contains selected values and decisions, not merely a description of what was possible. It remains the successful resolution output even if a later native call rejects it. | The raw request, the full support set, or the final native/applied state. |
+| **Supported capabilities** | An immutable capability snapshot successfully returned by a query for a particular backend context. It can include features, extensions, queue families, formats, limits, versions, and other domain facts. | A `Capability Query Failure`, a promise that every capability will be enabled, or a default request. |
+| **Effective configuration** | The exact, resolved plan that satisfies the request under the supplied capabilities and documented policy. It contains selected values and decisions, not merely a description of what was possible. It remains the successful resolution output even if a later native call fails to apply it. | The raw request, the full support set, or the final native/applied state. |
 | **Effective description** | A human-readable and machine-observable explanation of the effective choices, omitted optional requirements, and defaults used. | An unstructured log message that cannot be correlated with the result. |
 | **Required requirement** | A requirement whose absence makes resolution fail. It cannot be silently weakened or replaced. | An optional preference. |
 | **Optional requirement** | A requested capability that may be accepted or declined without making resolution fail. Its outcome and reason are still recorded. | An unspecified field. |
 | **Unspecified** | No user requirement was declared for that field. A documented default may choose a value only where the domain policy explicitly permits one. | Consent to infer a feature, extension, dependency, or preference. |
 | **Default** | A policy value used for an omitted field. A default is provenance-bearing policy, not a hidden capability or implicit dependency. | A reason to override an explicit value. |
-| **Native Application Outcome** | The separate result of applying a successful `Effective` plan: `Native Application Success` or `Native Application Rejection`. | The `Resolution` outcome or a reinterpretation of native behavior as resolution. |
-| **Native Application Success** | The backend accepted the `Effective` plan and reports the final enabled/applied state and native identity. | The `Effective` plan itself or a promise made by the resolver before application. |
-| **Native Application Rejection** | A separately named application outcome/error emitted after successful resolution when the backend rejects `Effective`. It retains `Requested`, `Supported`, the successful `Effective` plan, and backend/native details. | A `Resolution Failure`, evidence that a requirement was unsupported, or a retroactive change to `Effective`. |
-| **Native/applied state** | The final state reported by the backend after it receives the effective plan, including the state or diagnostic available for an application rejection. | The resolver's promise that object creation will succeed. |
+| **Capability Query Failure** | A structured failure from `queryCapabilities(context)`. It preserves the query context and available backend/query diagnostics without manufacturing a `Supported` snapshot. It is a distinct pre-resolution boundary. | A `Resolution Failure`, an empty `Supported` set, or a transport-specific `Result`/`Error` type. |
+| **Native/backend application failure** | A failure after successful resolution when `apply(Effective)` cannot accept or complete the plan. It is a distinct post-resolution boundary; this contract does not prescribe a shared native failure taxonomy, code set, schema, or hierarchy. | A `Capability Query Failure`, a `Resolution Failure`, or a retroactive change to `Effective`. |
+| **Native/applied state** | The final state reported by the backend after it receives the effective plan, including any state or diagnostic available after an application failure. | The resolver's promise that object creation will succeed. |
 
 `Requested` and `Supported` are values, not aliases to mutable caller or
 backend state. Snapshot-capable means that the exact inputs used for the
@@ -85,8 +87,8 @@ it never rewrites the inputs from which it was derived.
 
 Every `Resolution` keeps requested, supported, and effective information
 distinct. A description may summarize them, but must not collapse them into a
-single “configuration” value. A `Native Application Outcome` is recorded
-alongside, not inside, the `Resolution`.
+single “configuration” value. Any later native/backend application result is
+recorded alongside, not inside, the `Resolution`.
 
 ## Invariants
 
@@ -112,7 +114,8 @@ The following invariants apply to every domain resolver.
 5. **The support snapshot is evidence, not policy.** The resolver uses the
    supplied capability snapshot and does not query mutable global state while
    making a decision. Unknown or failed capability information is not treated
-   as support.
+   as support. A failed query produces a `Capability Query Failure`, not an
+   empty `Supported` snapshot.
 6. **Resolution is deterministic.** Given the same request, capability
    snapshot, context, and policy revision, resolution produces the same
    outcome, selected values, failure details, and canonical ordering. It does
@@ -125,13 +128,13 @@ The following invariants apply to every domain resolver.
 8. **Resolution does not apply native state.** Querying and resolving do not
    create or mutate backend objects. Native application is a separate stage
    whose actual result is observable.
- 9. **Native Application Rejection is not a Resolution Failure.** If a backend
-    rejects an `Effective` plan, the separate
-    `Native Application Rejection` retains the original request, support
-    evidence, successful effective plan, and native
-   failure details. The resolution remains `Effective`; it must not
-   retroactively become a `Resolution Failure` or claim that a rejected value
-   was never requested.
+ 9. **Native/backend application failure is not a Resolution Failure.** If a
+    backend cannot apply an `Effective` plan, that failure is reported at the
+    separate post-resolution application boundary. The original request,
+    support evidence, and successful effective plan remain the resolution
+    context; the resolution must not retroactively become a `Resolution
+    Failure` or claim that a rejected value was never requested. The contract
+    does not prescribe a shared native failure taxonomy.
 10. **No partial success for hard requirements.** A diagnostic partial plan
     may be useful for explanation, but it is not an effective configuration
     that consumers may apply when a required requirement failed.
@@ -142,10 +145,12 @@ The following invariants apply to every domain resolver.
     retains the unchanged input snapshots; it does not encode a normalized
     request or an altered support set.
 
-## Conceptual resolve contract
+## Conceptual resolution contract
 
-The implementation may use different types, but the observable contract has
-the following conceptual values:
+The implementation may use different internal representations, but the
+observable contract has the following conceptual values and operations. These
+labels describe semantic boundaries; they are not proposed public class names,
+transport types, or C++ ownership models.
 
 ```text
 Requested {
@@ -155,68 +160,71 @@ Requested {
 }
 
 Supported {
-    immutable capability snapshot;
+    immutable capability snapshot from a successful query;
     backend/context identity;
-    query evidence and status;
+    query evidence;
+}
+
+Capability Query Failure {
+    query context and stage;
+    backend identity, when known;
+    structured reason and available query diagnostics;
+    no usable Supported snapshot;
 }
 
 Effective {
-    selected values and allocations;
+    exact selected values and allocations;
     requirement decisions;
     defaults and their provenance;
+    deterministic pre-native plan;
 }
 
 Resolution Failure {
-    stable category and failed stage;
-    requirement and requested constraint;
-    supported evidence or evidence-unavailable reason;
-    resolution-stage/backend detail, including an explicit native-application
+    stable category and failed stage within validation or resolution;
+    requirement and requested constraint, when applicable;
+    supported evidence, including any fact explicitly unknown in that snapshot;
+    resolution-stage detail, including an explicit native-application
     not-reached status;
 }
-
-Native Application Success {
-    retained Effective plan;
-    backend/native identity;
-    final enabled/applied state;
-}
-
-Native Application Rejection {
-    retained Requested and Supported snapshots;
-    retained successful Effective plan;
-    backend/native identity, operation, code, and diagnostic;
-    final applied state, or an explicit state-unavailable detail;
-}
-
-Native Application Outcome = Native Application Success OR Native Application Rejection
 
 Resolution = Effective OR Resolution Failure
 ```
 
-The conceptual operation is:
+The conceptual operations are:
 
 ```text
-resolve(requested, supported) -> Effective OR Resolution Failure
-apply(effective) -> Native Application Success OR Native Application Rejection
+queryCapabilities(context) -> Supported OR Capability Query Failure
+resolve(Requested, Supported) -> Effective OR Resolution Failure
+apply(Effective) -> success OR native/backend application failure
 ```
 
-The structured resolution error is the `Resolution Failure` described above;
-it describes a failure before an applicable `Effective` value exists and
-records that native application was not reached. The separate
-`Native Application Rejection` is produced only after successful resolution and
-retains that `Effective` value plus backend/native details; it must not be
-reduced to a `Resolution Failure`. These are
-documentation shapes, not proposed public class names or C++ ownership models.
-In particular, this document does not choose a `Result` or `Error` type,
+`Capability Query Failure` is a structured semantic record, not an empty
+`Supported` value and not a transport-specific `Result`/`Error` type. A failed
+query means that `resolve` has no valid support snapshot to consume, so
+resolution and native application are not entered. `Resolution Failure`
+describes a failure after a valid `Supported` snapshot is supplied and before
+an applicable `Effective` value exists. A native/backend application failure
+is produced only after successful resolution, retains the successful
+pre-native `Effective` plan for correlation, and must not be reduced to a
+`Resolution Failure` or rewrite that plan.
+
+The contract deliberately does not define a shared native success/failure
+taxonomy, native failure codes, application schema, or outcome hierarchy. The
+backend/domain may report the application details appropriate to its native
+operation. Likewise, this document does not choose a `Result` or `Error` type,
 `unwrap` behavior, error propagation mechanism, or termination policy; those
-are intentionally left to #349.
+transport decisions are intentionally left to #349.
 
-A conforming resolution proceeds conceptually as follows:
+A conforming flow proceeds conceptually as follows:
 
-1. Validate the request and context without adding requirements. Malformed,
-   contradictory, or unknown request data is reported as a structured
-   `Resolution Failure`.
-2. Obtain or accept one immutable `Supported` snapshot. The snapshot records
-   enough backend/context identity and evidence to explain what was evaluated.
+1. Call `queryCapabilities(context)`. On success, retain one immutable
+   `Supported` snapshot with enough backend/context identity and evidence to
+   explain what was evaluated. On failure, retain the structured `Capability
+   Query Failure`, do not substitute an empty support set, and do not call
+   `resolve`.
+2. Validate the request and its declared context without adding requirements.
+   Malformed, contradictory, or unknown request data is reported as a
+   structured `Resolution Failure`.
 3. Apply only documented defaults to unspecified fields. Record every default
    value and its policy source or revision.
 4. Evaluate required requirements and required combinations. Do not convert a
@@ -228,17 +236,36 @@ A conforming resolution proceeds conceptually as follows:
 7. Construct a separate `Effective` value with exact selected values and a
    description of the decisions. Canonicalize collections for observation;
    canonicalization must not change their domain meaning or mutate either
-   input snapshot.
+   input snapshot. This is the complete deterministic pre-native plan.
 8. Hand `Effective` to the backend/native layer only after successful
-   resolution. This starts a separate application stage. Report either
-   `Native Application Success` or `Native Application Rejection`, including
-   the final enabled/applied level and backend/native detail observed at that
-   boundary. A `Native Application Rejection` retains the successful
-   `Effective` value and does not change the `Resolution` outcome.
+   resolution. This starts a separate application stage. `apply(effective)`
+   reports success or a native/backend application failure. Any such failure
+   remains post-resolution, retains the `Effective` plan for correlation, and
+   does not change the `Resolution` outcome.
 
-The capability query itself has a distinct failure outcome. A query failure
-must not be represented as an empty support set, because that would turn
-“unknown” into “unsupported” and could hide the real cause.
+The query boundary must never turn “unknown” into “unsupported”: a query
+failure is not an empty support set and is not a `Resolution Failure`.
+
+## Capability Query Failure information
+
+`Capability Query Failure` information is part of the architecture contract,
+not a string assembled at the outermost call site. A structured query failure
+should expose, as applicable:
+
+- the failed `queryCapabilities(context)` operation and the context it was
+  observing;
+- backend/device/surface identity, when known;
+- a stable machine-readable reason or backend/query diagnostic;
+- any partial observation, explicitly marked incomplete and unusable as a
+  `Supported` snapshot;
+- an indication that no valid `Supported` snapshot was produced and that
+  resolution/native application were not attempted; and
+- a human-readable explanation and, when useful, remediation guidance.
+
+These are semantic observability requirements, not a prescribed transport
+type, error wrapper, serialization schema, or exhaustive reason enumeration.
+The failure remains distinct from `Resolution Failure` even when the query
+failure is caused by a backend or context problem.
 
 ## Resolution Failure information
 
@@ -247,10 +274,9 @@ assembled at the outermost call site. A structured resolution error should
 expose, as applicable:
 
 - a stable machine-readable category/code, such as invalid request, missing
-  required capability, unsatisfiable combination, ambiguous choice, or
-  capability-query failure;
-- the stage that failed: validation, capability query, or resolution. Native
-  application is not a resolution stage;
+  required capability, unsatisfiable combination, or ambiguous choice;
+- the stage that failed: validation or resolution. Capability querying and
+  native application are not resolution stages;
 - the requirement identifier and whether it was required or optional;
 - the requested value or constraint;
 - the relevant supported evidence, or an explicit indication that evidence
@@ -258,41 +284,34 @@ expose, as applicable:
 - the stable reason, conflict set, dependency path, or alternatives
   considered;
 - the policy/default revision that affected the decision; and
-- backend, context, and capability-query detail, including a backend identity
-  or query diagnostic, plus an explicit indication that native application
-  was not reached; and
+- the relevant backend/context identity from `Supported`, plus an explicit
+  indication that native application was not reached; and
 - a human-readable explanation and, when useful, remediation guidance.
 
 Required failures make the `Resolution` unsuccessful and produce no applicable
 `Effective` value. An optional requirement decline is a recorded decision in
 an otherwise successful resolution, unless it causes a separate required
-combination to become impossible. A backend rejection is reported after
-successful resolution as a `Native Application Rejection`; it retains the
-`Effective` plan plus its backend/native detail; it is never a
+combination to become impossible. A native/backend application failure occurs
+only after successful resolution; it retains the `Effective` plan plus any
+backend/native detail available at that later boundary and is never a
 `Resolution Failure`.
 
-## Native Application Outcome information
+## Native/backend application boundary
 
-`Native Application Outcome` information is separate from `Resolution Failure`
-information. It is part of the contract whenever an `Effective` plan is handed
-to the backend/native layer, not a string assembled by converting a successful
-resolution into an error. A native application record should expose, as
-applicable:
+`apply(Effective)` is separate from `Resolution`. It is entered only after a
+successful resolution and reports either success or a native/backend
+application failure. An application failure does not remove or invalidate
+`Effective`, add a native failure category to `Resolution Failure`, or claim
+that resolution failed.
 
-- a stable machine-readable outcome/code identifying `Native Application Success`
-  or `Native Application Rejection`;
-- the backend/context identity, native operation, native code, and native
-  diagnostic;
-- the original `Requested` snapshot and `Supported` snapshot used by the
-  successful resolution;
-- the successful `Effective` plan that was handed to native application;
-- the final enabled/applied state, or an explicit indication that the state is
-  unavailable after rejection; and
-- a human-readable explanation and, when useful, remediation guidance.
-
-`Native Application Rejection` retains all of that resolution context and
-native detail. It does not remove or invalidate `Effective`, add a native
-failure category to `Resolution Failure`, or claim that resolution failed.
+The application record or diagnostic should let consumers correlate the
+attempt with the original `Requested` and successful `Supported` snapshots,
+the exact `Effective` plan handed to the backend, and any native operation,
+diagnostic, or applied state that the backend can observe. On success, the
+backend owns the meaning of the applied state; on failure, the backend owns
+the meaning and detail of the failure. This is an observability requirement,
+not a shared native result schema: this contract deliberately defines no
+native success/failure taxonomy, fixed code set, field schema, or hierarchy.
 
 ## Defaults and observability
 
@@ -313,21 +332,25 @@ At minimum, a diagnostic or resolution record must make these items
 observable together:
 
 1. the original requested configuration;
-2. the supported capability snapshot or a stable reference to its evidence;
+2. the successful supported capability snapshot or a stable reference to its
+   evidence, or the structured `Capability Query Failure` when querying did
+   not produce a snapshot;
 3. the effective configuration and description when resolution succeeds;
 4. the structured `Resolution Failure` when resolution does not produce an
    `Effective` value, including its failed stage and native-not-reached status;
 5. every rejected required requirement and its reason;
 6. every optional requirement and whether it was accepted or declined;
 7. each defaulted field and its provenance; and
-8. whether native application was attempted and, if so, a separate `Native Application Outcome`:
-   the final enabled or applied level for success, or a
-   `Native Application Rejection` retaining the successful `Effective` plan
-   and backend/native error details.
+8. whether native application was attempted and, if so, whether it succeeded
+   or produced a native/backend application failure. If it failed, the record
+   should retain enough correlation to the successful `Effective` plan and
+   available backend/native detail; the contract does not prescribe a native
+   outcome taxonomy or transport schema.
 
-Machine-readable decisions and stable codes are required for tests and
-diagnostics. Human-readable descriptions complement them; logs alone are not
-the contract. The record should use stable ordering so that two equivalent
+Machine-readable resolution decisions and stable resolution reasons are
+required for tests and diagnostics. Human-readable descriptions complement
+them; logs alone are not the contract. Backend-native diagnostics remain
+backend-specific. The record should use stable ordering so that two equivalent
 resolutions can be compared without depending on container or driver order.
 
 ## Ownership boundaries
@@ -358,11 +381,14 @@ recorded in the decision trace.
 
 The backend adapter owns querying actual capabilities, translating an
 effective plan into native parameters, performing native creation, and
-reporting a `Native Application Outcome` with the final native/applied state
-and native errors. It does not own user-facing defaults or silently repair a
-missing requirement. A native adapter may reject a plan, producing a
-`Native Application Rejection`; it must not quietly replace the plan or
-report that rejection as a `Resolution Failure`.
+reporting the success or failure of the native/backend application with the
+final native/applied state and native details it can observe. A failed query
+produces a structured `Capability Query Failure`; it must not be represented
+as an empty support set. The adapter does not own user-facing defaults or
+silently repair a missing requirement. If it cannot apply a plan, it must not
+quietly replace the plan or report the application failure as a `Resolution
+Failure`. The shared contract does not prescribe the native failure's codes,
+schema, or hierarchy.
 
 This boundary lets future Audio, Network, and Physics adapters share the
 contract without making Core know their native concepts, and prevents each
@@ -385,9 +411,11 @@ keep the same observable boundaries:
   than from unstructured logs.
 - **#270** must be able to surface either a `Resolution Failure` with its
   failed requirement, retained `Supported` evidence, and explicit native-not-
-  reached status, or a `Native Application Rejection` with the successful
-  `Effective` plan and backend/native detail. The two outcomes must let a user
-  distinguish an unsupported requirement from a `Native Application Rejection`.
+  reached status; a `Capability Query Failure` when no support snapshot could
+  be produced; or a native/backend application failure with the successful
+  `Effective` plan and backend/native detail. These boundaries must let a user
+  distinguish an unsupported requirement from a query failure and from a
+  post-resolution application failure.
 
 These links are usability obligations: the three consumers may choose their
 own presentation and API shapes, but they must not mutate the inputs, hide an
@@ -408,6 +436,11 @@ context-specific surface integration facts. It must not infer a window-system
 requirement from an unrelated host property or enable every reported
 diagnostic extension.
 
+If `queryCapabilities(context)` cannot obtain a trustworthy loader or
+context-specific snapshot, it returns a structured `Capability Query Failure`.
+That failure is not an empty `Supported` value or a `Resolution Failure`, and
+`resolve` is not called for that attempt.
+
 #### Vulkan Instance success
 
 For a concrete success case, let the immutable `Requested` snapshot contain:
@@ -423,10 +456,9 @@ supported)` returns a separate `Effective` value containing exactly API 1.3,
 the two required extensions, and the selected validation layer. The
 `Resolution` records that all required requirements were satisfied and that
 the optional layer was accepted. Native creation receives only that
-`Effective` value; if the backend accepts it, the application outcome is
-`Native Application Success`. Neither input snapshot is modified. If native
-creation rejects it, the application outcome is a separate
-`Native Application Rejection`.
+`Effective` value; if the backend accepts it, `apply` reports success. Neither
+input snapshot is modified. If native creation cannot apply it, `apply`
+reports a distinct native/backend application failure.
 
 #### Vulkan Instance unsupported-required failure
 
@@ -435,18 +467,18 @@ With the same request, suppose `Supported` reports the loader API and
 returns no applicable `Effective` value and instead returns a
 `Resolution Failure` identifying `VK_KHR_xcb_surface` as a missing `required`
 `Requirement`, retaining the supported extension evidence and the backend
-identity. Its backend/query detail says that the required extension was not
-reported by the loader for the supplied context and that native instance
-creation was not attempted. The failure must not silently drop the extension,
-weaken it to optional, or mutate `Requested`.
+identity. The supported evidence says that the required extension was not
+reported by the loader for the supplied context, and native instance creation
+was not attempted. The failure must not silently drop the extension, weaken it
+to optional, or mutate `Requested`.
 
 If native instance creation rejects a successfully resolved plan, that native
 failure is distinct from “the extension was not requested” or “the loader did
 not report it.” The successful `Resolution` remains `Effective`, and the
-application stage emits a `Native Application Rejection` retaining the
-`Requested` and `Supported` snapshots, the `Effective` plan, the final
-native-enabled state, and the native diagnostic. It is not a diagnostic
-`Resolution Failure`.
+application stage reports a distinct native/backend application failure,
+retaining the `Requested` and `Supported` snapshots, the `Effective` plan, the
+final native-enabled state when available, and the native diagnostic. It is not
+a diagnostic `Resolution Failure`.
 
 ### Vulkan Device
 
@@ -467,9 +499,9 @@ Resolution rejects a missing required feature, extension, queue role, or
 compatible surface choice with structured evidence. It may drop an optional
 feature or preference and explain why. The effective device plan records the
 exact feature/extension selections, format and present-mode choice, and a
-queue plan. The native boundary then reports a `Native Application Success` or
-`Native Application Rejection` with the final enabled feature set, created
-queues, and any native diagnostic.
+queue plan. The native boundary then reports success or a distinct
+native/backend application failure with the final enabled feature set, created
+queues, and any native diagnostic available from that boundary.
 
 #### Device required feature A with optional feature B declined observably
 
@@ -479,9 +511,9 @@ For a concrete feature case, let `Requested` require feature A
 successful `Resolution` returns an `Effective` device plan that enables A and
 does not enable B. It also contains an observable optional decision for B:
 `declined`, reason `unsupported`, with the supporting feature evidence. This
-is a resolution-level decline, not a `Native Application Rejection`. It is not
-a missing field or a silent fallback; callers and diagnostics can inspect that
-B was requested, declined during resolution, and why. Feature A remains
+is a resolution-level decline, not a native/backend application failure. It is
+not a missing field or a silent fallback; callers and diagnostics can inspect
+that B was requested, declined during resolution, and why. Feature A remains
 required, and the input snapshots remain unchanged.
 
 #### Queue-role aliasing
@@ -522,7 +554,9 @@ both graphics and compute with one available queue. The `Effective` queue plan
 must explicitly map **graphics -> family 0, queue 0** and **optional compute ->
 family 0, queue 0**, with one alias group containing both roles. Thus graphics
 plus optional compute explicitly aliases family 0 queue 0; it is not an
-accidental reuse of a family index. The mandated case is: graphics plus optional compute explicitly aliasing family 0 queue 0 under the declared policy. The observable optional decision is
+accidental reuse of a family index. The mandated case is: graphics plus
+optional compute explicitly aliasing family 0 queue 0 under the declared
+policy. The observable optional decision is
 `accepted by aliasing`, and the native plan contains one unique queue
 allocation plus both role mappings. If the request instead requires distinct
 queues, this same support snapshot produces a required insufficient-queue
@@ -551,12 +585,14 @@ of these exact cases:
 5. **Vulkan Instance unsupported-required failure:** when
    `VK_KHR_xcb_surface` is absent, `resolve` returns no `Effective` value and a
    structured `Resolution Failure` naming that required requirement, retaining
-   support evidence and backend/query detail, with native application not
+   support evidence and backend/context identity, with native application not
    reached and without mutating `Requested`.
 6. **Required failures and query failures:** invalid input, missing required
-   capability, unsatisfiable required combinations, ambiguity, and failed
-   capability queries each produce structured failures with stable categories,
-   useful evidence, and no empty-support substitution for an unknown query.
+   capability, unsatisfiable required combinations, and ambiguity each produce
+   a structured `Resolution Failure`; a failed capability query produces a
+   structured `Capability Query Failure` instead. Both preserve useful
+   diagnostics at their own boundary, and a failed query never substitutes an
+   empty support set for unknown evidence.
 7. **Optional decisions:** an optional requirement is tested once when
    accepted and once when declined, with the outcome and reason observable in
    the successful `Resolution` unless a required combination is thereby made
@@ -564,17 +600,18 @@ of these exact cases:
 8. **Vulkan Device feature A/B:** with required feature A
    (`samplerAnisotropy`) supported and optional feature B (`shaderInt64`)
    unsupported, `Effective` enables A, omits B, and observably records B as
-   declined during resolution for the unsupported reason; this is not native
-   application rejection.
+   declined during resolution for the unsupported reason; this is not a
+   native/backend application failure.
 9. **Defaults and alternatives:** explicit values beat defaults; omitted values
    use only documented defaults with provenance; declared priorities and stable
    tie-breakers decide alternatives, while an equal-priority case with no
    tie-breaker reports ambiguity rather than choosing arbitrarily.
-10. **Backend/native divergence:** a backend rejection is reported as a
-     `Native Application Rejection`, not a `Resolution Failure`. It retains the
-     original `Requested` and `Supported` snapshots, the successful `Effective`
-     plan, and the backend/native error detail. The resolution remains
-     `Effective` and is not rewritten as an unrequested value.
+10. **Backend/native divergence:** a backend rejection after successful
+     resolution is reported as a distinct native/backend application failure,
+     not a `Resolution Failure`. It retains the original `Requested` and
+     `Supported` snapshots, the successful `Effective` plan, and the
+     backend/native error detail available at that boundary. The resolution
+     remains `Effective` and is not rewritten as an unrequested value.
 11. **Vulkan Device selection:** required and optional device extensions,
     feature support, surface format and present-mode choices, queue-family
     constraints, required versus optional dedicated queues, and insufficient
@@ -584,26 +621,28 @@ of these exact cases:
     optional compute explicitly maps both roles to **family 0, queue 0** and
     records one alias group; a request for distinct queues fails instead.
 13. **Usability consumers:** #268, #269, and #270 can separately expose
-     `Requested`, `Supported`, `Effective`, optional decisions, `Resolution Failure`
-     resolution detail, and `Native Application Rejection` native detail
-     without copying graphics-only policy into another domain.
+     `Requested`, `Supported`, `Effective`, optional decisions, structured
+     `Capability Query Failure` query detail, `Resolution Failure` resolution
+     detail, and native/backend application failure detail without copying
+     graphics-only policy into another domain.
 14. **Cross-domain reuse:** a second domain reuses the shared
      `Requirement`/`RequirementStrength`/`Resolution`/`Resolution Failure`
-     semantics and the separate native application outcome boundary without
-     copying a graphics-specific default or capability rule.
+     semantics, the separate capability-query boundary, and the separate
+     native application boundary without copying a graphics-specific default
+     or capability rule.
 
 ## Boundary with #349
 
 Issue #228 stops at this architecture contract. **#349 is reserved for the
-future `Error`/`Result`/`unwrap`/termination model** around this contract: how
-callers transport `Effective` versus `Resolution Failure` from `resolve`, how
-they transport `Native Application Rejection` with its retained `Effective`
-plan and backend/native detail from application, propagate either failure,
-unwrap a success, and choose termination behavior. #349 must preserve the
-distinction that a `Native Application Rejection` follows a successful
-`Resolution` and is
-not a `Resolution Failure`. This document deliberately does not choose those
-types or behaviors.
+future `Error`/`Result`/`unwrap`/termination model** around these boundaries:
+how callers transport `Capability Query Failure` from
+`queryCapabilities(context)`, `Effective` versus `Resolution Failure` from
+`resolve`, and success versus native/backend application failure from `apply`;
+how they propagate either failure, unwrap a success, and choose termination
+behavior. #349 must preserve that query failure is not a resolution failure and
+that a native/backend application failure follows a successful `Resolution`
+rather than becoming a `Resolution Failure`. This document deliberately does
+not choose those transport types or behaviors.
 
 #349 is not the implementation issue for Vulkan resolvers. Vulkan resolver
 algorithms, backend adapters, native calls, and their production handlers are
@@ -634,5 +673,6 @@ termination model remains a future #349 decision and is not defined here.
 
 The purpose of Issue #228 is to make later implementations agree on what is
 requested, what is supported, what became effective, why a requirement was
-rejected during resolution, and what application outcome the backend finally
-reported—without prematurely committing the repository to a production API.
+rejected during resolution, and whether the backend application succeeded or
+failed after resolution—without prematurely committing the repository to a
+production API.
