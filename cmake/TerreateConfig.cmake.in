@@ -1,0 +1,42 @@
+@PACKAGE_INIT@
+
+set(Terreate_FOUND TRUE)
+unset(Terreate_NOT_FOUND_MESSAGE)
+set(Terreate_VERSION "@PROJECT_VERSION@")
+set(_Terreate_supported_components Core Platform Graphics)
+
+set(_Terreate_targets_file "${CMAKE_CURRENT_LIST_DIR}/TerreateTargets.cmake")
+if(NOT EXISTS "${_Terreate_targets_file}")
+  set(Terreate_FOUND FALSE)
+  set(Terreate_NOT_FOUND_MESSAGE
+    "Terreate package targets are missing from ${CMAKE_CURRENT_LIST_DIR}")
+  return()
+endif()
+include("${_Terreate_targets_file}")
+
+foreach(_Terreate_component IN LISTS _Terreate_supported_components)
+  set(Terreate_${_Terreate_component}_FOUND FALSE)
+  if(TARGET Terreate::${_Terreate_component})
+    set(Terreate_${_Terreate_component}_FOUND TRUE)
+  endif()
+endforeach()
+
+foreach(_Terreate_component IN LISTS Terreate_FIND_COMPONENTS)
+  string(TOUPPER "${_Terreate_component}" _Terreate_component_upper)
+  list(FIND _Terreate_supported_components "${_Terreate_component}"
+    _Terreate_component_index)
+  if(_Terreate_component_index EQUAL -1)
+    set(Terreate_${_Terreate_component}_FOUND FALSE)
+    set(Terreate_NOT_FOUND_MESSAGE
+      "Terreate does not provide requested component '${_Terreate_component}'; "
+      "supported components are Core, Platform, and Graphics")
+  elseif(NOT TARGET Terreate::${_Terreate_component})
+    set(Terreate_${_Terreate_component}_FOUND FALSE)
+    set(Terreate_NOT_FOUND_MESSAGE
+      "Terreate component '${_Terreate_component}' is disabled in this "
+      "installation; reconfigure Terreate with "
+      "TERREATE_BUILD_${_Terreate_component_upper}=ON")
+  endif()
+endforeach()
+
+check_required_components(Terreate)

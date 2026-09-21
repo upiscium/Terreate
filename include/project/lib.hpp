@@ -1,3 +1,3 @@
 #pragma once
 
-int answer() noexcept;
+#include <terreate/core.hpp>

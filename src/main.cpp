@@ -1,6 +1,6 @@
 #include <iostream>
 
-#include "project/lib.hpp"
+#include <terreate/core.hpp>
 
 int main() {
   std::cout << answer() << '\n';
