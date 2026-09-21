@@ -211,9 +211,9 @@ pre-native `Effective` plan for correlation, and must not be reduced to a
 The contract deliberately does not define a shared native success/failure
 taxonomy, native failure codes, application schema, or outcome hierarchy. The
 backend/domain may report the application details appropriate to its native
-operation. Likewise, this document does not choose a `Result` or `Error` type,
-`unwrap` behavior, error propagation mechanism, or termination policy; those
-transport decisions are intentionally left to #349.
+operation. The shared Core `Error`/`Result` transport and explicit `unwrap`
+behavior are provided by #349; this document does not replace those primitives
+with a configuration-specific transport or termination policy.
 
 A conforming flow proceeds conceptually as follows:
 
@@ -360,9 +360,9 @@ resolutions can be compared without depending on container or driver order.
 Terreate Core owns the shared semantics of the contract: the distinction
 between requested/supported/effective, required and optional outcomes,
 structured failure and decision vocabulary, provenance conventions, and the
-determinism/observability invariants. A future generic Core mechanism may
-validate or carry these concepts, but this document does not prescribe its
-API.
+determinism/observability invariants. The shared `Error`/`Result` primitives
+from #349 may carry failures at an implementation boundary, but this document
+does not prescribe a configuration-specific transport API.
 
 Core does **not** own Vulkan feature names, queue-family policy, audio codec
 preferences, network transport policy, or any other domain-specific default.
@@ -633,21 +633,20 @@ of these exact cases:
 
 ## Boundary with #349
 
-Issue #228 stops at this architecture contract. **#349 is reserved for the
-future `Error`/`Result`/`unwrap`/termination model** around these boundaries:
-how callers transport `Capability Query Failure` from
-`queryCapabilities(context)`, `Effective` versus `Resolution Failure` from
-`resolve`, and success versus native/backend application failure from `apply`;
-how they propagate either failure, unwrap a success, and choose termination
-behavior. #349 must preserve that query failure is not a resolution failure and
-that a native/backend application failure follows a successful `Resolution`
-rather than becoming a `Resolution Failure`. This document deliberately does
-not choose those transport types or behaviors.
+Issue #228 defines the resolution-stage architecture. #349 provides the shared,
+dependency-free Core `Error`/`Result`/`unwrap` primitives that callers may use
+to transport and handle failures from `queryCapabilities(context)`, `resolve`,
+and `apply`. Those transport primitives do not collapse a `Capability Query
+Failure` into a `Resolution Failure`, and a native/backend application failure
+still follows a successful `Resolution` rather than becoming a `Resolution
+Failure`. The configuration contract remains responsible for those semantic
+stage distinctions; the Core error-result contract defines the transport and
+explicit fail-fast behavior.
 
 #349 is not the implementation issue for Vulkan resolvers. Vulkan resolver
 algorithms, backend adapters, native calls, and their production handlers are
 outside this document and outside Issue #228; they must not be smuggled into
-the future error-model work by treating a missing `Effective` value as an API
+#349 transport primitives by treating a missing `Effective` value as an API
 design.
 
 ## Strict exclusions
@@ -664,12 +663,13 @@ This contract deliberately does **not**:
   dependency discovery;
 - change `flake.nix`/`flake.lock`, Automation Core, or repository workflow
   configuration; or
-- replace the ownership and scope of #224, #227, #349, or any future domain
-  implementation issue.
+- replace the ownership and scope of #224, #227, #349's Core primitives, or any
+  future domain implementation issue.
 
 This is documentation-only scope: it does not modify production files,
 Automation files, or native Vulkan behavior. The `Result`/`Error`/`unwrap`/
-termination model remains a future #349 decision and is not defined here.
+termination model is defined by #349; this document only describes how those
+transport primitives relate to resolution boundaries.
 
 The purpose of Issue #228 is to make later implementations agree on what is
 requested, what is supported, what became effective, why a requirement was

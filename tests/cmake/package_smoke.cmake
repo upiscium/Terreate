@@ -14,6 +14,15 @@ get_filename_component(_terreate_package_root
 file(MAKE_DIRECTORY "${_terreate_package_root}")
 
 function(terreate_assert_install_boundary prefix name)
+  foreach(_public_header IN ITEMS
+      "include/terreate/core/error.hpp"
+      "include/terreate/core/result.hpp")
+    if(NOT EXISTS "${prefix}/${_public_header}")
+      message(FATAL_ERROR
+        "${name} install is missing public Core header: ${_public_header}")
+    endif()
+  endforeach()
+
   file(GLOB_RECURSE _installed_paths LIST_DIRECTORIES true
     "${prefix}/*")
   foreach(_installed_path IN LISTS _installed_paths)
@@ -23,7 +32,9 @@ function(terreate_assert_install_boundary prefix name)
         "${name} install leaked a private/detail path: ${_installed_relative}")
     endif()
     if("${_installed_relative}" MATCHES
-       "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$")
+         "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
+       NOT "${_installed_relative}" MATCHES
+         "^include/terreate/core/(error|result)\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -31,6 +42,11 @@ function(terreate_assert_install_boundary prefix name)
   endforeach()
 
   foreach(_forbidden_path IN ITEMS
+      "include/error.hpp"
+      "include/result.hpp"
+      "include/terreate.hpp"
+      "include/terreate/error.hpp"
+      "include/terreate/result.hpp"
       "include/project/lib.hpp"
       "include/terreate/core.hpp"
       "include/terreate/platform.hpp"
@@ -46,6 +62,7 @@ endfunction()
 function(terreate_package_configure_and_install name platform graphics)
   set(_fixture_build "${_terreate_package_root}/${name}/fixture-build")
   set(_prefix "${_terreate_package_root}/${name}/prefix")
+  file(REMOVE_RECURSE "${_fixture_build}" "${_prefix}")
   file(MAKE_DIRECTORY "${_terreate_package_root}/${name}")
 
   set(_configure_command
@@ -159,7 +176,14 @@ set_target_properties(core_package_consumer package_consumer PROPERTIES
   CXX_EXTENSIONS OFF)
 ]=])
 file(WRITE "${_all_consumer}/core_main.cpp" [=[
-int main() { return 0; }
+#include <terreate/core/result.hpp>
+
+#include <system_error>
+
+int main() {
+  terreate::Result<int> result = 7;
+  return terreate::unwrap(result) == 7 ? 0 : 1;
+}
 ]=])
 file(WRITE "${_all_consumer}/main.cpp" [=[
 int main() { return 0; }
@@ -203,6 +227,70 @@ endif()
 
 terreate_package_configure_and_install(core_only OFF OFF)
 set(_core_prefix "${core_only_PREFIX}")
+
+set(_core_consumer "${_terreate_package_root}/core_only/core-consumer")
+file(MAKE_DIRECTORY "${_core_consumer}")
+file(WRITE "${_core_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateCoreOnlyConsumer LANGUAGES CXX)
+find_package(Terreate REQUIRED COMPONENTS Core)
+if(TARGET Terreate::Platform OR TARGET Terreate::Graphics)
+  message(FATAL_ERROR "Core-only package exported an optional component")
+endif()
+add_executable(core_only_consumer main.cpp)
+target_link_libraries(core_only_consumer PRIVATE Terreate::Core)
+set_target_properties(core_only_consumer PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+file(WRITE "${_core_consumer}/main.cpp" [=[
+#include <terreate/core/result.hpp>
+
+int main() {
+  terreate::Result<int> result = 23;
+  return terreate::unwrap(result) == 23 ? 0 : 1;
+}
+]=])
+
+set(_core_consumer_build
+  "${_terreate_package_root}/core_only/core-consumer-build")
+set(_core_consumer_configure
+  "${CMAKE_COMMAND}"
+  -S "${_core_consumer}"
+  -B "${_core_consumer_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _core_consumer_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _core_consumer_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _core_consumer_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_core_prefix}")
+execute_process(
+  COMMAND ${_core_consumer_configure}
+  RESULT_VARIABLE _core_consumer_configure_result
+  OUTPUT_VARIABLE _core_consumer_configure_output
+  ERROR_VARIABLE _core_consumer_configure_error)
+if(NOT _core_consumer_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "Core-only package consumer configuration failed\n"
+    "${_core_consumer_configure_output}\n${_core_consumer_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_core_consumer_build}"
+  RESULT_VARIABLE _core_consumer_build_result
+  OUTPUT_VARIABLE _core_consumer_build_output
+  ERROR_VARIABLE _core_consumer_build_error)
+if(NOT _core_consumer_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "Core-only package consumer build failed\n"
+    "${_core_consumer_build_output}\n${_core_consumer_build_error}")
+endif()
+
 set(_quiet_consumer "${_terreate_package_root}/core_only/quiet-consumer")
 file(MAKE_DIRECTORY "${_quiet_consumer}")
 file(WRITE "${_quiet_consumer}/CMakeLists.txt" [=[

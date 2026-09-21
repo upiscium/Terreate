@@ -7,6 +7,7 @@ development baseline; it does not implement Vulkan production APIs.
 ## Architecture documentation
 
 - [Configuration and capability resolution contract](docs/architecture/configuration-resolution.md)
+- [Core error and result contract](docs/architecture/error-result.md)
 
 ## Development shell
 
