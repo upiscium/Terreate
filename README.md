@@ -4,6 +4,10 @@ Agent-ready C++23/CMake project using GCC/g++, Ninja, CTest, Nix, Just, and
 the shared Agent Core.  The repository configuration is a Vulkan 1.3+
 development baseline; it does not implement Vulkan production APIs.
 
+## Architecture documentation
+
+- [Configuration and capability resolution contract](docs/architecture/configuration-resolution.md)
+
 ## Development shell
 
 Enter the pinned project environment before configuring:
