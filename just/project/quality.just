@@ -4,14 +4,20 @@ root := justfile_directory()
 format-check:
     #!/usr/bin/env sh
     set -eu
-    files=$(git ls-files '*.h' '*.hh' '*.hpp' '*.c' '*.cc' '*.cpp' '*.cxx')
-    [ -z "$files" ] || clang-format --dry-run --Werror $files
+    git ls-files --cached --others --exclude-standard -z -- \
+      '*.h' '*.hh' '*.hpp' '*.c' '*.cc' '*.cpp' '*.cxx' |
+      xargs -0 sh -c '
+        set -eu
+        for file do
+          [ -f "$file" ] || continue
+          clang-format --dry-run --Werror "./$file"
+        done
+      ' _
 
 [working-directory: root]
 lint:
     #!/usr/bin/env sh
     set -eu
-    files=$(git ls-files '*.cc' '*.cpp' '*.cxx')
     canonical_database=".build/default/compile_commands.json"
     if [ -e compile_commands.json ] || [ -L compile_commands.json ]; then
       if [ ! -L compile_commands.json ] || [ "$(readlink compile_commands.json)" != "$canonical_database" ]; then
@@ -22,4 +28,13 @@ lint:
     else
       compile_database="${CMAKE_BUILD_DIR:-.build/default}"
     fi
-    [ -z "$files" ] || clang-tidy -p "$compile_database" $files
+    export compile_database
+    git ls-files --cached --others --exclude-standard -z -- \
+      '*.cc' '*.cpp' '*.cxx' |
+      xargs -0 sh -c '
+        set -eu
+        for file do
+          [ -f "$file" ] || continue
+          clang-tidy -p "$compile_database" "./$file"
+        done
+      ' _

@@ -59,3 +59,27 @@ The devShell dependencies are not consumer linkage.  The project only adds
 header/include context for Vulkan-Hpp to the sample targets and deliberately
 does not link the Vulkan loader, GLFW, or optional shader backends.  A future
 component owns its runtime linkage explicitly.
+
+## Components and package exports
+
+The initial component graph exposes only the three architecture targets
+`Terreate::Core`, `Terreate::Platform`, and `Terreate::Graphics`.  The
+`TERREATE_BUILD_CORE`, `TERREATE_BUILD_PLATFORM`, and
+`TERREATE_BUILD_GRAPHICS` options select them independently; Platform and
+Graphics require Core but never enable it implicitly.  These `TERREATE_BUILD_*`
+options are the sole component configuration API, including when reconfiguring
+an existing build tree.
+
+Install the selected targets and use the same namespace from a consumer:
+
+```cmake
+find_package(Terreate REQUIRED COMPONENTS Core Graphics)
+target_link_libraries(app PRIVATE Terreate::Graphics)
+```
+
+The package reports disabled or unknown requested components through the
+standard `<Package>_<Component>_FOUND` and `<Package>_NOT_FOUND_MESSAGE`
+variables.  Optional component requests can therefore be inspected without
+failing a quiet package lookup, while required requests fail through
+`find_package`.  Component targets do not discover or link Vulkan, GLFW, or
+VMA dependencies in this skeleton.
