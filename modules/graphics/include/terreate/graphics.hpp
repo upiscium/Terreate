@@ -4,4 +4,4 @@ namespace terreate::graphics {
 
 void component_anchor() noexcept;
 
-}  // namespace terreate::graphics
+} // namespace terreate::graphics
