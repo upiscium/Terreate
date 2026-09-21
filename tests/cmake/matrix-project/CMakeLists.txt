@@ -31,14 +31,17 @@ endforeach()
 foreach(_target_name IN ITEMS Core Platform Graphics)
   string(TOLOWER "${_target_name}" _target_lower)
   if(TARGET terreate_${_target_lower})
-    get_target_property(_interface_includes terreate_${_target_lower}
-      INTERFACE_INCLUDE_DIRECTORIES)
-    if("${_interface_includes}" MATCHES "(^|;)${_target_name}/src(;|$)" OR
-       "${_interface_includes}" MATCHES "/src")
-      message(FATAL_ERROR
-        "private ${_target_name} include directory leaked into its public "
-        "interface: ${_interface_includes}")
-    endif()
+    foreach(_interface_property IN ITEMS
+        INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
+      get_target_property(_interface_includes terreate_${_target_lower}
+        ${_interface_property})
+      if("${_interface_includes}" MATCHES "(^|;)[^;]*/src(;|$)" OR
+         "${_interface_includes}" MATCHES "/src/")
+        message(FATAL_ERROR
+          "private ${_target_name} include directory leaked into its public "
+          "${_interface_property}: ${_interface_includes}")
+      endif()
+    endforeach()
     get_target_property(_module_scanning terreate_${_target_lower}
       CXX_SCAN_FOR_MODULES)
     if(NOT "${_module_scanning}" STREQUAL "OFF")
@@ -48,38 +51,50 @@ foreach(_target_name IN ITEMS Core Platform Graphics)
   endif()
 endforeach()
 
-if(TARGET terreate_core)
-  get_target_property(_core_links terreate_core LINK_LIBRARIES)
-  if("${_core_links}" MATCHES "Platform|Graphics|platform|graphics")
-    message(FATAL_ERROR "Core has an upward component dependency: ${_core_links}")
+foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+  if(TARGET terreate_core)
+    get_target_property(_core_links terreate_core ${_link_property})
+    if("${_core_links}" MATCHES "[Pp]latform|[Gg]raphics")
+      message(FATAL_ERROR
+        "Core has an upward component dependency in ${_link_property}: "
+        "${_core_links}")
+    endif()
   endif()
-endif()
-if(TARGET terreate_graphics)
-  get_target_property(_graphics_links terreate_graphics LINK_LIBRARIES)
-  if("${_graphics_links}" MATCHES "platform|Platform")
-    message(FATAL_ERROR
-      "Graphics must not depend on Platform: ${_graphics_links}")
+  if(TARGET terreate_platform)
+    get_target_property(_platform_links terreate_platform ${_link_property})
+    if(NOT "${_platform_links}" MATCHES "[Cc]ore")
+      message(FATAL_ERROR
+        "Platform must retain its public Core dependency in "
+        "${_link_property}: ${_platform_links}")
+    endif()
+    if("${_platform_links}" MATCHES "[Gg]raphics")
+      message(FATAL_ERROR
+        "Platform has an invalid Graphics dependency in ${_link_property}: "
+        "${_platform_links}")
+    endif()
   endif()
-endif()
+  if(TARGET terreate_graphics)
+    get_target_property(_graphics_links terreate_graphics ${_link_property})
+    if(NOT "${_graphics_links}" MATCHES "[Cc]ore")
+      message(FATAL_ERROR
+        "Graphics must retain its public Core dependency in "
+        "${_link_property}: ${_graphics_links}")
+    endif()
+    if("${_graphics_links}" MATCHES "[Pp]latform")
+      message(FATAL_ERROR
+        "Graphics must not depend on Platform in ${_link_property}: "
+        "${_graphics_links}")
+    endif()
+  endif()
+endforeach()
 
-if(_component STREQUAL "Core")
-  set(_consumer_source [=[
-#include <project/lib.hpp>
-int main() { return answer() == 42 ? 0 : 1; }
-]=])
-elseif(_component STREQUAL "Platform")
-  set(_consumer_source [=[
-#include <terreate/platform.hpp>
-int main() { terreate::platform::component_anchor(); return 0; }
-]=])
-elseif(_component STREQUAL "Graphics")
-  set(_consumer_source [=[
-#include <terreate/graphics.hpp>
-int main() { terreate::graphics::component_anchor(); return 0; }
-]=])
-else()
+if(NOT _component MATCHES "^(Core|Platform|Graphics)$")
   message(FATAL_ERROR "unknown matrix component ${_component}")
 endif()
+
+set(_consumer_source [=[
+int main() { return 0; }
+]=])
 
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/matrix_consumer.cpp"
   "${_consumer_source}")

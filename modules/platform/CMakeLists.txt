@@ -4,28 +4,8 @@ if(NOT TARGET terreate_core)
     "upward or implicit component dependency")
 endif()
 
-# Platform has no external backend in this skeleton.  Generate its anchor so
-# the component remains a real independently linkable target without adding a
-# placeholder production API or a GLFW/VMA dependency.
-set(_terreate_platform_anchor
-  "${CMAKE_CURRENT_BINARY_DIR}/platform_anchor.cpp")
-set(_terreate_platform_anchor_content [=[
-#include <terreate/platform.hpp>
-#include "detail/platform_detail.hpp"
-namespace terreate::platform {
-void component_anchor() noexcept {
-  (void)detail::component_id;
-}
-}
-]=])
-file(WRITE "${_terreate_platform_anchor}"
-  "${_terreate_platform_anchor_content}")
-
-add_library(terreate_platform STATIC "${_terreate_platform_anchor}")
+add_library(terreate_platform STATIC src/platform.cpp)
 target_include_directories(terreate_platform
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(terreate_platform PUBLIC Terreate::Core)
@@ -39,7 +19,4 @@ install(TARGETS terreate_platform
   EXPORT TerreateTargets
   ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-  INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-install(DIRECTORY include/
-  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")

@@ -13,6 +13,36 @@ get_filename_component(_terreate_package_root
   "${TERREATE_PACKAGE_BINARY_ROOT}" ABSOLUTE)
 file(MAKE_DIRECTORY "${_terreate_package_root}")
 
+function(terreate_assert_install_boundary prefix name)
+  file(GLOB_RECURSE _installed_paths LIST_DIRECTORIES true
+    "${prefix}/*")
+  foreach(_installed_path IN LISTS _installed_paths)
+    file(RELATIVE_PATH _installed_relative "${prefix}" "${_installed_path}")
+    if("${_installed_relative}" MATCHES "(^|/)(private|detail)(/|$)")
+      message(FATAL_ERROR
+        "${name} install leaked a private/detail path: ${_installed_relative}")
+    endif()
+    if("${_installed_relative}" MATCHES
+       "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$")
+      message(FATAL_ERROR
+        "${name} install unexpectedly contains a source/header file: "
+        "${_installed_relative}")
+    endif()
+  endforeach()
+
+  foreach(_forbidden_path IN ITEMS
+      "include/project/lib.hpp"
+      "include/terreate/core.hpp"
+      "include/terreate/platform.hpp"
+      "include/terreate/graphics.hpp")
+    if(EXISTS "${prefix}/${_forbidden_path}")
+      message(FATAL_ERROR
+        "${name} install contains forbidden compatibility/API header: "
+        "${_forbidden_path}")
+    endif()
+  endforeach()
+endfunction()
+
 function(terreate_package_configure_and_install name platform graphics)
   set(_fixture_build "${_terreate_package_root}/${name}/fixture-build")
   set(_prefix "${_terreate_package_root}/${name}/prefix")
@@ -71,6 +101,8 @@ function(terreate_package_configure_and_install name platform graphics)
       "${_install_output}\n${_install_error}")
   endif()
 
+  terreate_assert_install_boundary("${_prefix}" "${name}")
+
   set(${name}_PREFIX "${_prefix}" PARENT_SCOPE)
 endfunction()
 
@@ -86,27 +118,51 @@ if(NOT DEFINED Terreate_Future_FOUND OR Terreate_Future_FOUND)
   message(FATAL_ERROR
     "optional unknown component did not set Terreate_Future_FOUND=FALSE")
 endif()
+foreach(_component IN ITEMS Core Platform Graphics)
+  if(NOT TARGET Terreate::${_component})
+    message(FATAL_ERROR
+      "installed package did not export Terreate::${_component}")
+  endif()
+endforeach()
+get_target_property(_installed_platform_links Terreate::Platform
+  INTERFACE_LINK_LIBRARIES)
+if(NOT "${_installed_platform_links}" MATCHES "Core")
+  message(FATAL_ERROR
+    "installed Platform target lost its public Core dependency: "
+    "${_installed_platform_links}")
+endif()
+get_target_property(_installed_graphics_links Terreate::Graphics
+  INTERFACE_LINK_LIBRARIES)
+if(NOT "${_installed_graphics_links}" MATCHES "Core")
+  message(FATAL_ERROR
+    "installed Graphics target lost its public Core dependency: "
+    "${_installed_graphics_links}")
+endif()
+if("${_installed_graphics_links}" MATCHES "Platform")
+  message(FATAL_ERROR
+    "installed Graphics target acquired an invalid Platform dependency: "
+    "${_installed_graphics_links}")
+endif()
 if(NOT DEFINED Terreate_NOT_FOUND_MESSAGE OR
    NOT "${Terreate_NOT_FOUND_MESSAGE}" MATCHES
       "does not provide requested component")
   message(FATAL_ERROR
     "optional unknown component did not set Terreate_NOT_FOUND_MESSAGE")
 endif()
+add_executable(core_package_consumer core_main.cpp)
+target_link_libraries(core_package_consumer PRIVATE Terreate::Core)
 add_executable(package_consumer main.cpp)
 target_link_libraries(package_consumer PRIVATE Terreate::Graphics)
-set_target_properties(package_consumer PROPERTIES
+set_target_properties(core_package_consumer package_consumer PROPERTIES
   CXX_STANDARD 23
   CXX_STANDARD_REQUIRED ON
   CXX_EXTENSIONS OFF)
 ]=])
+file(WRITE "${_all_consumer}/core_main.cpp" [=[
+int main() { return 0; }
+]=])
 file(WRITE "${_all_consumer}/main.cpp" [=[
-#include <terreate/graphics.hpp>
-#include <project/lib.hpp>
-
-int main() {
-  terreate::graphics::component_anchor();
-  return 0;
-}
+int main() { return 0; }
 ]=])
 
 set(_all_consumer_build "${_terreate_package_root}/all_components/consumer-build")
