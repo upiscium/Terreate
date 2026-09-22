@@ -54,6 +54,29 @@ The sink callback must be non-throwing. Event construction and native
 translation may allocate, but the sink view itself never allocates while being
 bound, copied, or emitted.
 
+## Relationship to fallible operations and diagnostics UI
+
+`DiagnosticEvent` is an observational diagnostics value, not the failure
+transport for a fallible operation. The `Error`/`Result` values defined by #349
+remain the authoritative way to represent, inspect, return, and propagate
+operation failure. An operation may produce a `DiagnosticEvent` for an
+observation while also returning an `Error`, but the event does not replace,
+encode, or implicitly accompany that `Error`/`Result` value.
+
+The explicit `terreate::unwrap` semantics from #349 are unchanged. Successful
+results are unwrapped as documented there; unwrapping a failure remains the
+opt-in fail-fast operation that writes the Error to `stderr`, flushes `stderr`,
+and terminates. Core does not automatically emit a `DiagnosticEvent` when an
+`Error`/`Result` is constructed, returned, inspected, or unwrapped. Producers
+must explicitly construct and emit any observational event they want to
+deliver.
+
+Issue #336's diagnostics UI may reuse `DiagnosticEvent` values that the
+application retained from its sink. Core does not own event history, UI
+presentation, or persistent storage: retention, replay, presentation, and
+lifetime remain application responsibilities. The synchronous sink and its
+ownership/lifetime contract above are unchanged.
+
 ## Graphics translation boundary
 
 Graphics keeps its translation input private in `modules/graphics/src/`. The

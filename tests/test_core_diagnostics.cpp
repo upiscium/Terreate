@@ -44,6 +44,14 @@ struct Recorder {
   }
 };
 
+struct AddressOverloadedRecorder {
+  int calls = 0;
+
+  void operator()(const terreate::DiagnosticEvent &) noexcept { ++calls; }
+
+  AddressOverloadedRecorder *operator&() noexcept { return nullptr; }
+};
+
 struct ReentrantRecorder {
   terreate::DiagnosticSinkView sink{};
   int calls = 0;
@@ -159,6 +167,7 @@ struct ReentrantRecorder {
   using FunctionTarget = decltype(free_function_recorder);
   static_assert(std::is_nothrow_invocable_r_v<void, FunctionTarget &, EventReference>);
   static_assert(!SinkBindable<FunctionTarget>);
+  static_assert(SinkBindable<AddressOverloadedRecorder>);
 
   const terreate::DiagnosticEvent event = make_event();
   terreate::DiagnosticSinkView empty;
@@ -180,6 +189,13 @@ struct ReentrantRecorder {
 
   first(event);
   passed &= check(recorder.calls == 2, "diagnostic sink call operator did not emit");
+
+  AddressOverloadedRecorder address_overloaded_recorder;
+  const auto address_overloaded_sink =
+      terreate::DiagnosticSinkView::bind(address_overloaded_recorder);
+  address_overloaded_sink.emit(event);
+  passed &= check(address_overloaded_recorder.calls == 1,
+                  "diagnostic sink did not bypass an overloaded address operator");
   return passed;
 }
 

@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -90,7 +91,7 @@ public:
     requires std::is_object_v<Target> &&
              std::is_nothrow_invocable_r_v<void, Target &, const DiagnosticEvent &>
   [[nodiscard]] static constexpr DiagnosticSinkView bind(Target &target) noexcept {
-    auto *untyped_target = const_cast<std::remove_cv_t<Target> *>(&target);
+    auto *untyped_target = const_cast<std::remove_cv_t<Target> *>(std::addressof(target));
     return DiagnosticSinkView{&invoke<Target>, static_cast<void *>(untyped_target)};
   }
 
