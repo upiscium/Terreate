@@ -16,7 +16,8 @@ file(MAKE_DIRECTORY "${_terreate_package_root}")
 function(terreate_assert_install_boundary prefix name)
   foreach(_public_header IN ITEMS
       "include/terreate/core/error.hpp"
-      "include/terreate/core/result.hpp")
+      "include/terreate/core/result.hpp"
+      "include/terreate/core/diagnostics.hpp")
     if(NOT EXISTS "${prefix}/${_public_header}")
       message(FATAL_ERROR
         "${name} install is missing public Core header: ${_public_header}")
@@ -34,7 +35,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
          "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-         "^include/terreate/core/(error|result)\\.hpp$")
+         "^include/terreate/core/(diagnostics|error|result)\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -176,13 +177,22 @@ set_target_properties(core_package_consumer package_consumer PROPERTIES
   CXX_EXTENSIONS OFF)
 ]=])
 file(WRITE "${_all_consumer}/core_main.cpp" [=[
+#include <terreate/core/diagnostics.hpp>
 #include <terreate/core/result.hpp>
 
 #include <system_error>
 
 int main() {
   terreate::Result<int> result = 7;
-  return terreate::unwrap(result) == 7 ? 0 : 1;
+  terreate::DiagnosticEvent event{
+      .categories = {"package-specific"},
+      .message = "package smoke"};
+  terreate::DiagnosticSinkView sink;
+  sink.emit(event);
+  return terreate::unwrap(result) == 7 && event.message == "package smoke" &&
+                 event.categories.size() == 1 && event.categories.front() == "package-specific"
+             ? 0
+             : 1;
 }
 ]=])
 file(WRITE "${_all_consumer}/main.cpp" [=[
@@ -245,11 +255,20 @@ set_target_properties(core_only_consumer PROPERTIES
   CXX_EXTENSIONS OFF)
 ]=])
 file(WRITE "${_core_consumer}/main.cpp" [=[
+#include <terreate/core/diagnostics.hpp>
 #include <terreate/core/result.hpp>
 
 int main() {
   terreate::Result<int> result = 23;
-  return terreate::unwrap(result) == 23 ? 0 : 1;
+  terreate::DiagnosticEvent event{
+      .severity = terreate::DiagnosticSeverity::info,
+      .categories = {"package-specific"}};
+  terreate::DiagnosticSinkView sink;
+  sink(event);
+  return terreate::unwrap(result) == 23 && event.severity == terreate::DiagnosticSeverity::info &&
+                 event.categories.size() == 1 && event.categories.front() == "package-specific"
+             ? 0
+             : 1;
 }
 ]=])
 

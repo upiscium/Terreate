@@ -123,8 +123,7 @@ fallible operation at an implementation boundary, but this issue does not
 replace #228's structured records, turn an unknown capability into
 "unsupported", or define configuration defaults and resolution policy.
 
-Issue #350 is a later integration boundary. This baseline supplies the
-dependency-free primitive and explicit fail-fast behavior; it does not add
-the higher-level translation, policy, or domain-specific APIs reserved for
-#350. Future code at that boundary must preserve the native code and the
-context/detail distinction rather than introduce a Core-wide error enum.
+Issue #350 defines a separate structured-diagnostics event and sink contract;
+it does not change Error or Result. The diagnostics boundary preserves native
+codes and context/detail distinctions without introducing a Core-wide error
+enum, logging policy, or backend dependency.
