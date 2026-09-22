@@ -152,6 +152,11 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
   target_link_libraries(terreate_tests PRIVATE project_vulkan_headers)
   add_test(NAME smoke COMMAND terreate_tests)
 
+  add_executable(terreate_core_result_tests tests/test_core_result.cpp)
+  target_link_libraries(terreate_core_result_tests PRIVATE Terreate::Core)
+  terreate_configure_target(terreate_core_result_tests)
+  add_test(NAME core.error_result COMMAND terreate_core_result_tests)
+
   add_test(
     NAME cmake.component_matrix
     COMMAND ${CMAKE_COMMAND}

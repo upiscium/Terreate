@@ -1,3 +1,3 @@
 Checks: 'bugprone-*,performance-*,portability-*'
 WarningsAsErrors: '*'
-HeaderFilterRegex: '^(include|src|tests)/'
+HeaderFilterRegex: '.*/(core/include|core/src|modules|src|tests)/'
