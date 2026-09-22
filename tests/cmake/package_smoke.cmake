@@ -33,9 +33,9 @@ function(terreate_assert_install_boundary prefix name)
         "${name} install leaked a private/detail path: ${_installed_relative}")
     endif()
     if("${_installed_relative}" MATCHES
-         "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
+          "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-         "^include/terreate/core/(diagnostics|error|result)\\.hpp$")
+          "^include/terreate/(core/(diagnostics|error|result)|graphics/instance)\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -126,6 +126,9 @@ endfunction()
 
 terreate_package_configure_and_install(all_components ON ON)
 set(_all_prefix "${all_components_PREFIX}")
+if(NOT EXISTS "${_all_prefix}/include/terreate/graphics/instance.hpp")
+  message(FATAL_ERROR "Graphics install is missing its public instance header")
+endif()
 set(_all_consumer "${_terreate_package_root}/all_components/consumer")
 file(MAKE_DIRECTORY "${_all_consumer}")
 file(WRITE "${_all_consumer}/CMakeLists.txt" [=[
@@ -196,7 +199,13 @@ int main() {
 }
 ]=])
 file(WRITE "${_all_consumer}/main.cpp" [=[
-int main() { return 0; }
+#include <terreate/graphics/instance.hpp>
+
+int main() {
+  terreate::graphics::InstanceDescription description;
+  description.debug_utils = terreate::graphics::DebugUtilsMode::disabled;
+  return description.debug_utils == terreate::graphics::DebugUtilsMode::disabled ? 0 : 1;
+}
 ]=])
 
 set(_all_consumer_build "${_terreate_package_root}/all_components/consumer-build")
@@ -233,6 +242,134 @@ if(NOT _consumer_build_result EQUAL 0)
   message(FATAL_ERROR
     "installed package consumer build failed\n"
     "${_consumer_build_output}\n${_consumer_build_error}")
+endif()
+
+set(_optional_graphics_consumer
+  "${_terreate_package_root}/all_components/optional-graphics-consumer")
+file(MAKE_DIRECTORY "${_optional_graphics_consumer}")
+file(WRITE "${_optional_graphics_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateOptionalGraphicsWithoutVulkan LANGUAGES CXX)
+set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
+find_package(Terreate REQUIRED COMPONENTS Core OPTIONAL_COMPONENTS Graphics)
+if(NOT Terreate_FOUND OR NOT Terreate_Core_FOUND OR
+   NOT TARGET Terreate::Core)
+  message(FATAL_ERROR
+    "required Core was rejected while optional Graphics lacked Vulkan")
+endif()
+if(Terreate_Graphics_FOUND OR TARGET Terreate::Graphics)
+  message(FATAL_ERROR
+    "optional Graphics was imported despite unavailable Vulkan")
+endif()
+if(NOT DEFINED Terreate_NOT_FOUND_MESSAGE OR
+   NOT "${Terreate_NOT_FOUND_MESSAGE}" MATCHES "Vulkan")
+  message(FATAL_ERROR
+    "optional Graphics status did not retain the Vulkan diagnostic")
+endif()
+add_executable(optional_graphics_consumer main.cpp)
+target_link_libraries(optional_graphics_consumer PRIVATE Terreate::Core)
+set_target_properties(optional_graphics_consumer PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+file(WRITE "${_optional_graphics_consumer}/main.cpp" [=[
+#include <terreate/core/result.hpp>
+
+int main() {
+  terreate::Result<int> result = 31;
+  return terreate::unwrap(result) == 31 ? 0 : 1;
+}
+]=])
+
+set(_optional_graphics_consumer_build
+  "${_terreate_package_root}/all_components/optional-graphics-consumer-build")
+set(_optional_graphics_configure
+  "${CMAKE_COMMAND}"
+  -S "${_optional_graphics_consumer}"
+  -B "${_optional_graphics_consumer_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _optional_graphics_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _optional_graphics_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _optional_graphics_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE)
+execute_process(
+  COMMAND ${_optional_graphics_configure}
+  RESULT_VARIABLE _optional_graphics_configure_result
+  OUTPUT_VARIABLE _optional_graphics_configure_output
+  ERROR_VARIABLE _optional_graphics_configure_error)
+if(NOT _optional_graphics_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "installed optional Graphics consumer configuration failed\n"
+    "${_optional_graphics_configure_output}\n"
+    "${_optional_graphics_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_optional_graphics_consumer_build}"
+  RESULT_VARIABLE _optional_graphics_build_result
+  OUTPUT_VARIABLE _optional_graphics_build_output
+  ERROR_VARIABLE _optional_graphics_build_error)
+if(NOT _optional_graphics_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "installed optional Graphics consumer build failed\n"
+    "${_optional_graphics_build_output}\n"
+    "${_optional_graphics_build_error}")
+endif()
+
+set(_required_graphics_consumer
+  "${_terreate_package_root}/all_components/required-graphics-without-vulkan")
+file(MAKE_DIRECTORY "${_required_graphics_consumer}")
+file(WRITE "${_required_graphics_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateRequiredGraphicsWithoutVulkan LANGUAGES CXX)
+set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
+find_package(Terreate REQUIRED COMPONENTS Graphics)
+]=])
+
+set(_required_graphics_consumer_build
+  "${_terreate_package_root}/all_components/required-graphics-without-vulkan-build")
+set(_required_graphics_configure
+  "${CMAKE_COMMAND}"
+  -S "${_required_graphics_consumer}"
+  -B "${_required_graphics_consumer_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _required_graphics_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _required_graphics_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _required_graphics_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE)
+execute_process(
+  COMMAND ${_required_graphics_configure}
+  RESULT_VARIABLE _required_graphics_configure_result
+  OUTPUT_VARIABLE _required_graphics_configure_output
+  ERROR_VARIABLE _required_graphics_configure_error)
+if(_required_graphics_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "installed required Graphics consumer unexpectedly configured without Vulkan\n"
+    "${_required_graphics_configure_output}\n"
+    "${_required_graphics_configure_error}")
+endif()
+string(TOLOWER
+  "${_required_graphics_configure_output}\n${_required_graphics_configure_error}"
+  _required_graphics_diagnostics)
+if(NOT _required_graphics_diagnostics MATCHES "vulkan")
+  message(FATAL_ERROR
+    "required Graphics failure did not identify Vulkan discovery as the cause\n"
+    "${_required_graphics_configure_output}\n"
+    "${_required_graphics_configure_error}")
 endif()
 
 terreate_package_configure_and_install(core_only OFF OFF)

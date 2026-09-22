@@ -132,3 +132,15 @@ is installed with `Terreate::Core`, and the Core-only package smoke test uses
 `DiagnosticEvent` and `DiagnosticSinkView` without Graphics or Vulkan.
 Graphics' translation header is a private source implementation detail and is
 not installed or exported as a public Graphics diagnostics API.
+
+## Vulkan instance callback lifetime
+
+The Graphics instance adapter accepts a `DiagnosticSinkView` at the explicit
+native-apply boundary, `createInstance(plan, sink)`. The plan and its requested
+configuration contain configuration only; they do not retain the borrowed
+view. The sink is copied into callback state during apply, so the
+application-owned sink target must outlive the resulting `Instance` and every
+Debug Utils callback delivered by it. The adapter copies Vulkan callback
+strings and object data into an owning `DiagnosticEvent` before synchronous
+sink delivery, and its callback always returns `VK_FALSE`; no Vulkan callback
+data or `pUserData` storage escapes the callback.
