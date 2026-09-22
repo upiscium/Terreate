@@ -19,10 +19,37 @@ const int value = terreate::unwrap(result);
 
 `terreate::Error` is a small diagnostic value. It stores the native
 `std::error_code` unchanged, including its category and numeric value, and
-stores the `std::source_location` supplied by the producer. Its context and
-detail are independent, owned `std::string` values. An Error can therefore be
-copied, moved, or returned from an API without borrowing a caller's strings or
-losing the native error-code identity.
+stores the `std::source_location` supplied by the producer as a value. Its
+context and detail are independent, owned `std::string` values. An Error can
+therefore be copied, moved, or returned from an API without borrowing a
+caller's context/detail strings; the error category remains subject to its
+separate lifetime contract below.
+
+The canonical construction requires an explicit native code. Context and
+detail are optional and default to empty owned strings, while source location
+defaults to the construction site:
+
+```cpp
+terreate::Error code_only{native_code};
+terreate::Error detailed{native_code, "opening configuration", "file was not found"};
+```
+
+`Error{}` and `Error{"detail"}` are intentionally invalid: Core provides no
+default or string-only Error constructor.
+
+`std::error_code` does not own its `std::error_category`. The category must
+outlive every Error that stores a code referring to it. A function-local static
+category provides stable storage without a registry or ownership mechanism:
+
+```cpp
+const std::error_category &configuration_category() noexcept {
+  static const ConfigurationCategory category;
+  return category;
+}
+
+terreate::Error error{
+    std::error_code{7, configuration_category()}, "configuration", "missing value"};
+```
 
 Error is a diagnostic value, not a logging policy. A domain or backend may
 carry its native code in the error's `std::error_code`; Core does not maintain
@@ -60,12 +87,16 @@ the following safe return forms:
 | mutable `Result<T>` lvalue | `T&` |
 | const `Result<T>` lvalue | `const T&` |
 | mutable `Result<T>` rvalue | `T` (moved by value) |
-| const `Result<T>` rvalue | `T` (copied by value when supported) |
+| const `Result<T>` rvalue, for non-void `T` | deleted (prevents dangling) |
 | any `Result<void>` value category | `void` |
 
-The rvalue value return is intentional: it does not return a reference into a
-temporary `Result`, and it permits a move-only success value to leave the
-result. The lvalue reference forms require the caller to keep the Result alive.
+The non-const rvalue value return is intentional: it does not return a
+reference into a temporary `Result`, and it permits a move-only success value
+to leave the result. The lvalue reference forms require the caller to keep the
+Result alive. A const non-void rvalue overload is explicitly deleted rather
+than binding to the const-lvalue overload, which prevents a temporary from
+producing a dangling reference; name the Result or make an explicit copy when
+that is required.
 
 Unwrapping a failure writes the diagnostic, including its context, detail,
 category/value, and source locations, to `stderr`, flushes `stderr`, and then

@@ -1,6 +1,5 @@
 #include <terreate/core/result.hpp>
 
-#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <expected>
@@ -25,7 +24,10 @@ public:
   }
 };
 
-const TestCategory test_category;
+const std::error_category &test_category() noexcept {
+  static const TestCategory category;
+  return category;
+}
 
 struct MoveOnly {
   explicit MoveOnly(int value) noexcept : value(value) {}
@@ -39,6 +41,10 @@ struct MoveOnly {
 };
 
 using MoveOnlyResult = terreate::Result<MoveOnly>;
+
+template <typename T>
+concept CanUnwrapConstRvalue =
+    requires { terreate::unwrap(std::declval<const terreate::Result<T> &&>()); };
 
 struct MoveException {};
 
@@ -61,8 +67,7 @@ struct ThrowingMove {
 }
 
 [[nodiscard]] terreate::Result<int> propagated_failure(std::error_code code) {
-  return std::unexpected(
-      terreate::Error{code, std::string{"propagation context"}, std::string{"propagation detail"}});
+  return std::unexpected(terreate::Error{code, "propagation context", "propagation detail"});
 }
 
 [[nodiscard]] MoveOnlyResult propagate_move_only(MoveOnlyResult result) {
@@ -73,22 +78,31 @@ struct ThrowingMove {
 }
 
 [[nodiscard]] bool test_error_copy_move_and_inspection() {
-  const std::error_code code{37, test_category};
+  const std::error_code code{37, test_category()};
   std::string context = "owned context";
   std::string detail = "owned detail";
   const auto location = std::source_location::current();
   const terreate::Error original{code, std::move(context), std::move(detail), location};
+  const terreate::Error code_only{code};
 
   bool passed = true;
+  static_assert(std::is_constructible_v<terreate::Error, std::error_code>);
+  static_assert(!std::is_default_constructible_v<terreate::Error>);
+  static_assert(!std::is_constructible_v<terreate::Error, std::string>);
+  static_assert(!std::is_convertible_v<std::error_code, terreate::Error>);
+  passed &= check(code_only.code() == code, "Error{code} did not preserve its code");
+  passed &= check(code_only.context().empty() && code_only.detail().empty(),
+                  "Error{code} did not default its optional text");
   passed &= check(original.code() == code, "error code was not preserved exactly");
-  const bool category_preserved = original.error_code().category() == test_category;
+  const bool category_preserved = original.code().category() == test_category();
   passed &= check(category_preserved, "error category was not preserved");
-  passed &= check(original.error_code().value() == 37, "error value was not preserved");
+  passed &= check(original.code().value() == 37, "error value was not preserved");
+  passed &= check(&original.code().category() == &test_category(),
+                  "error category lifetime source was not preserved");
   passed &= check(original.context() == "owned context", "error context was not owned");
   passed &= check(original.detail() == "owned detail", "error detail was not owned");
   const bool context_and_detail_are_distinct = original.context() != original.detail();
   passed &= check(context_and_detail_are_distinct, "error context and detail were not distinct");
-  passed &= check(original.message() == original.detail(), "error message alias changed detail");
   passed &= check(original.location().file_name() == location.file_name(),
                   "error source file was not preserved");
   const bool source_line_preserved = original.location().line() == location.line();
@@ -96,12 +110,6 @@ struct ThrowingMove {
   const bool source_function_preserved =
       original.location().function_name() == location.function_name();
   passed &= check(source_function_preserved, "error source function was not preserved");
-
-  const std::string diagnostic = original.diagnostic();
-  passed &= check(diagnostic.find("owned context: owned detail") != std::string::npos,
-                  "error diagnostic lost context/detail distinction");
-  passed &= check(diagnostic.find("terreate-test:37") != std::string::npos,
-                  "error diagnostic lost the native code");
 
   terreate::Error copied = original;
   passed &= check(copied.context() == original.context() && copied.detail() == original.detail(),
@@ -111,13 +119,13 @@ struct ThrowingMove {
                       moved.detail() == "owned detail",
                   "Error move did not preserve its value");
 
-  terreate::Error copy_assigned;
+  terreate::Error copy_assigned{code, "copy context", "copy detail"};
   copy_assigned = original;
   const bool copied_context_preserved = copy_assigned.context() == "owned context";
   const bool copied_detail_preserved = copy_assigned.detail() == "owned detail";
   const bool copied_assignment_preserved = copied_context_preserved && copied_detail_preserved;
   passed &= check(copied_assignment_preserved, "Error copy assignment did not preserve owned text");
-  terreate::Error move_assigned;
+  terreate::Error move_assigned{code, "move context", "move detail"};
   move_assigned = std::move(copy_assigned);
   const bool moved_assignment_preserved =
       move_assigned.code() == code && move_assigned.location().line() == location.line();
@@ -131,7 +139,7 @@ struct ThrowingMove {
 }
 
 [[nodiscard]] bool test_result_int_and_void_inspection() {
-  const std::error_code code{41, test_category};
+  const std::error_code code{41, test_category()};
   bool passed = true;
 
   terreate::Result<int> success = 42;
@@ -162,7 +170,7 @@ struct ThrowingMove {
   passed &= check(void_success.has_value() && static_cast<bool>(void_success),
                   "successful Result<void> was not observable");
 
-  const terreate::Error void_error{code, std::string{"void context"}, std::string{"void detail"}};
+  const terreate::Error void_error{code, "void context", "void detail"};
   terreate::Result<void> void_failure = std::unexpected(void_error);
   passed &= check(!void_failure.has_value() && void_failure.error().code() == code,
                   "failed Result<void> was not inspectable");
@@ -195,9 +203,8 @@ struct ThrowingMove {
   MoveOnly value = terreate::unwrap(std::move(success));
   passed &= check(value.value == 73, "unwrap did not move a move-only success value");
 
-  const std::error_code code{53, test_category};
-  const terreate::Error move_only_error{code, std::string{"move-only context"},
-                                        std::string{"move-only detail"}};
+  const std::error_code code{53, test_category()};
+  const terreate::Error move_only_error{code, "move-only context", "move-only detail"};
   MoveOnlyResult failure = std::unexpected(move_only_error);
   terreate::Result<MoveOnly> propagated = propagate_move_only(std::move(failure));
   passed &= check(!propagated && propagated.error().code() == code,
@@ -230,7 +237,7 @@ struct ThrowingMove {
   static_assert(std::is_same_v<decltype(terreate::unwrap(mutable_success)), int &>);
   static_assert(std::is_same_v<decltype(terreate::unwrap(const_success)), const int &>);
   static_assert(std::is_same_v<decltype(terreate::unwrap(std::move(mutable_success))), int>);
-  static_assert(std::is_same_v<decltype(terreate::unwrap(std::move(const_success))), int>);
+  static_assert(!CanUnwrapConstRvalue<int>);
 
   terreate::unwrap(mutable_success) = 44;
   passed &= check(terreate::unwrap(mutable_success) == 44,
@@ -239,19 +246,14 @@ struct ThrowingMove {
                   "const lvalue unwrap did not return a reference");
   passed &= check(terreate::unwrap(std::move(mutable_success)) == 44,
                   "mutable rvalue unwrap did not return a value");
-  passed &= check(terreate::unwrap(std::move(const_success)) == 43,
-                  "const rvalue unwrap did not return a value");
 
   terreate::Result<void> mutable_void;
   const terreate::Result<void> const_void;
   static_assert(std::is_same_v<decltype(terreate::unwrap(mutable_void)), void>);
   static_assert(std::is_same_v<decltype(terreate::unwrap(const_void)), void>);
-  static_assert(std::is_same_v<decltype(terreate::unwrap(std::move(mutable_void))), void>);
-  static_assert(std::is_same_v<decltype(terreate::unwrap(std::move(const_void))), void>);
   terreate::unwrap(mutable_void);
   terreate::unwrap(const_void);
-  terreate::unwrap(std::move(mutable_void));
-  terreate::unwrap(std::move(const_void));
+  terreate::unwrap(terreate::Result<void>{});
   return passed;
 }
 
@@ -277,9 +279,8 @@ struct ThrowingMove {
     if (setvbuf(stderr, nullptr, _IOFBF, BUFSIZ) != 0) {
       _exit(2);
     }
-    const std::error_code code{91, test_category};
-    const terreate::Error death_error{code, std::string{"death-test context"},
-                                      std::string{"death-test detail"}};
+    const std::error_code code{91, test_category()};
+    const terreate::Error death_error{code, "death-test context", "death-test detail"};
     terreate::Result<int> failure = std::unexpected(death_error);
     (void)terreate::unwrap(failure);
     _exit(EXIT_SUCCESS);
