@@ -16,9 +16,8 @@ The public Core surface is `<terreate/core/diagnostics.hpp>`.
 * owned source, operation, message, and context strings;
 * an optional owned `DiagnosticCode` containing a string name and `int64_t`
   value;
-* owned `DiagnosticObject` values containing a backend-neutral type string, a
-  `uint64_t` handle, and a name; and
-* owned queue and command-buffer label values.
+* owned `DiagnosticObject` values containing a backend-neutral string `id`, a
+  backend-neutral type string, and a name.
 
 No event field is a span, `string_view`, callback user-data pointer, or other
 borrowed producer state. Events may therefore be copied, moved, and retained
@@ -29,7 +28,7 @@ after delivery:
 
 struct ApplicationDiagnostics {
   void operator()(const terreate::DiagnosticEvent &event) noexcept {
-    retained = event; // The copy owns all text, objects, categories, and labels.
+    retained = event; // The copy owns all text, objects, and categories.
   }
 
   terreate::DiagnosticEvent retained;
@@ -44,11 +43,12 @@ sink.emit(terreate::DiagnosticEvent{.message = "diagnostic"});
 an opaque `void*` state and a non-throwing callback. Binding stores only the
 address of the lvalue target; it performs no allocation and does not transfer
 ownership. The target must outlive the view and every emission made through any
-copy of it. A default-constructed view is a no-op and converts to `false`; a
-bound view converts to `true`. Delivery runs immediately on the calling thread.
-Core does not catch exceptions, create a thread, or serialize/reorder events.
-Reentrant emissions are immediate recursive calls; the application target owns
-any depth or reentrancy limit it needs.
+copy of it. Only a mutable, non-const object lvalue with a non-throwing event
+call can be bound. A default-constructed view is a no-op and converts to
+`false`; a bound view converts to `true`. Delivery runs immediately on the
+calling thread through `emit`. Core does not catch exceptions, create a thread,
+or serialize/reorder events. Reentrant emissions are immediate recursive calls;
+the application target owns any depth or reentrancy limit it needs.
 
 The sink callback must be non-throwing. Event construction and native
 translation may allocate, but the sink view itself never allocates while being
@@ -80,33 +80,50 @@ ownership/lifetime contract above are unchanged.
 ## Graphics translation boundary
 
 Graphics keeps its translation input private in `modules/graphics/src/`. The
-input is a Vulkan-neutral representation of the Debug Utils callback data:
-severity bits, message category bits, message ID name/number, message text,
-operation/context, queue and command-buffer labels, and object
-handle/type/name values. These input fields may borrow the native callback's
-transient storage. The translator copies every field into an owning Core event
-before synchronous sink delivery; no callback data view escapes the translation
-call.
+input is a Vulkan-neutral representation of the Debug Utils callback data after
+the native adapter has translated ABI values into private semantic values:
+severity, a borrowed collection of semantic category values, message ID
+name/number, message text, operation/context, and object
+`object_handle`/type/name values. These input fields may borrow the native
+callback's transient storage. The translator copies every field into an owning
+Core event before synchronous sink delivery; no callback data view escapes the
+translation call.
 
-The private translator maps exactly the four Vulkan Debug Utils severities and
-maps General, Validation, and Performance category bits to `GENERAL`,
-`VALIDATION`, and `PERFORMANCE` in its fixed native order. Multiple category
-bits remain present in the event vector. Native object types are supplied as
-stable backend-neutral strings, and object handles, names, codes, messages,
-operation/context, and labels are copied without inventing missing context.
+The private translator maps exactly the four semantic severity values to the
+four Core severities. General, Validation, and Performance category values are
+translated to `GENERAL`, `VALIDATION`, and `PERFORMANCE` in that canonical
+order; input order is ignored and duplicates are removed. Native object types
+are supplied as stable backend-neutral strings. Each native `uint64_t`
+`object_handle` becomes the owning Core `id` spelling `0x` followed by exactly
+16 lowercase hexadecimal digits, including `0x0000000000000000` for zero.
+Names, codes, messages, operation/context, and object identifiers are copied
+without inventing missing context.
 The native message-ID name/number tuple is always represented by `code`, even
 when the name is empty and the number is zero.
-Empty operation and context remain empty. These Vulkan bit values, spellings,
-and ordering are Graphics implementation details, not Core API vocabulary.
+Empty operation and context remain empty. Vulkan ABI values are converted by
+the eventual #268 callback adapter; the semantic values, spellings, and
+ordering here are Graphics implementation details, not Core API vocabulary.
 
-Unknown or combined severity bits return the explicit
-`DiagnosticTranslationError::unknown_severity` result. Unknown category bits
-return `unknown_category`. Neither case is downgraded to an error event or
-silently discarded.
+Unknown semantic severity values return the explicit
+`DiagnosticTranslationError::unknown_severity` result. Unknown category values
+return `DiagnosticTranslationError::unknown_category`. Neither case is
+downgraded to an error event or
+silently discarded. The private severity and category representations reserve
+semantic unknown sentinels for this rejection path; they are not Vulkan values.
 
-No messenger or Instance is created or owned here. The later Instance work
-owns callback registration and lifetime; #268 can connect its callback wiring
-to this private bridge without adding Vulkan headers to Core.
+No messenger or Instance is created or owned here. Actual Vulkan callback
+wiring, `VkDebugUtils` types and constants, and `DebugMessenger`
+creation/registration/lifetime belong to #268. Its callback adapter converts
+Vulkan ABI values to private semantic values before connecting to this bridge;
+Core remains free of Vulkan headers.
+
+Issue #340 remains a separate integration boundary and is intentionally not
+implemented here. Vulkan object naming and queue/command-buffer debug-label
+creation and lifecycle belong to #340. #350 only transports validation/debug
+messages through its owning events and application sink contract; it does not
+create or manage Vulkan object names or queue/command-buffer debug labels. The
+#349 `Error`/`Result` failure transport remains independent and unchanged:
+diagnostics are observational events, not implicit operation failures.
 
 ## Dependency and package boundary
 

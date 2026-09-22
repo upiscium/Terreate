@@ -1,6 +1,5 @@
 #include <terreate/core/diagnostics.hpp>
 
-#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -23,12 +22,41 @@ struct ThrowingRecorder {
   void operator()(const terreate::DiagnosticEvent &) noexcept(false) {}
 };
 
+struct ConstCallableRecorder {
+  void operator()(const terreate::DiagnosticEvent &) const noexcept {}
+};
+
 void free_function_recorder(const terreate::DiagnosticEvent &) noexcept {}
+
+template <typename Target>
+concept SinkBindExpression =
+    requires(Target &target) { terreate::DiagnosticSinkView::bind(target); };
 
 template <typename Target>
 concept SinkBindable =
     std::is_nothrow_invocable_r_v<void, Target &, const terreate::DiagnosticEvent &> &&
     requires(Target &target) { terreate::DiagnosticSinkView::bind(target); };
+
+template <typename Target>
+concept SinkBindableFromRvalue = requires(Target &&target) {
+  terreate::DiagnosticSinkView::bind(static_cast<Target &&>(target));
+};
+
+template <typename Sink>
+concept HasSinkCallOperator =
+    requires(Sink sink, const terreate::DiagnosticEvent &event) { sink(event); };
+
+template <typename Sink>
+concept HasNoopFactory = requires { Sink::noop(); };
+
+template <typename Sink>
+concept HasConnectedQuery = requires(const Sink sink) { sink.connected(); };
+
+using RawCallback = void (*)(const terreate::DiagnosticEvent &, void *) noexcept;
+
+template <typename Sink>
+concept HasPublicRawConstructor =
+    requires(RawCallback callback, void *state) { Sink{callback, state}; };
 
 struct Recorder {
   int calls = 0;
@@ -82,15 +110,10 @@ struct ReentrantRecorder {
       .message = "validation message",
       .context = "recording",
       .objects = {terreate::DiagnosticObject{
-          .type = "VkDevice",
-          .handle = 0x42,
-          .name = "device",
+          .id = "object-42",
+          .type = "resource",
+          .name = "primary",
       }},
-      .queue_labels = {terreate::DiagnosticLabel{
-          .name = "frame",
-          .color = {1.0F, 0.5F, 0.25F, 1.0F},
-      }},
-      .command_buffer_labels = {},
   };
 }
 
@@ -112,14 +135,9 @@ struct ReentrantRecorder {
   passed &= check(event.message == "validation message", "diagnostic message was not retained");
   passed &= check(event.context == "recording", "diagnostic context was not retained");
   const bool object_preserved =
-      event.objects.size() == 1 && event.objects.front().type == "VkDevice" &&
-      event.objects.front().handle == 0x42 && event.objects.front().name == "device";
+      event.objects.size() == 1 && event.objects.front().id == "object-42" &&
+      event.objects.front().type == "resource" && event.objects.front().name == "primary";
   passed &= check(object_preserved, "diagnostic object was not retained as an owned value");
-  const bool label_preserved = event.queue_labels.size() == 1 &&
-                               event.queue_labels.front().name == "frame" &&
-                               event.queue_labels.front().color[1] == 0.5F;
-  passed &= check(label_preserved, "diagnostic label was not retained as an owned value");
-  passed &= check(event.command_buffer_labels.empty(), "empty diagnostic labels were not retained");
   return passed;
 }
 
@@ -130,7 +148,6 @@ struct ReentrantRecorder {
   static_assert(std::is_move_assignable_v<terreate::DiagnosticEvent>);
   static_assert(std::is_copy_constructible_v<terreate::DiagnosticCode>);
   static_assert(std::is_copy_constructible_v<terreate::DiagnosticObject>);
-  static_assert(std::is_copy_constructible_v<terreate::DiagnosticLabel>);
 
   std::string source = "test-backend";
   std::string message = "validation message";
@@ -159,15 +176,24 @@ struct ReentrantRecorder {
   static_assert(std::is_nothrow_default_constructible_v<terreate::DiagnosticSinkView>);
   static_assert(std::is_copy_constructible_v<terreate::DiagnosticSinkView>);
   static_assert(std::is_move_constructible_v<terreate::DiagnosticSinkView>);
-  using EventReference = const terreate::DiagnosticEvent &;
-  static_assert(std::is_nothrow_invocable_v<terreate::DiagnosticSinkView, EventReference>);
-  static_assert(sizeof(terreate::DiagnosticSinkView) == 2 * sizeof(void *));
+  static_assert(!std::is_convertible_v<terreate::DiagnosticSinkView, bool>);
+  static_assert(requires(terreate::DiagnosticSinkView sink,
+                         const terreate::DiagnosticEvent &event) { sink.emit(event); });
   static_assert(SinkBindable<Recorder>);
   static_assert(!SinkBindable<ThrowingRecorder>);
+  static_assert(!SinkBindable<const Recorder>);
+  static_assert(SinkBindExpression<Recorder>);
+  static_assert(SinkBindExpression<ConstCallableRecorder>);
+  static_assert(!SinkBindExpression<const ConstCallableRecorder>);
+  static_assert(!SinkBindExpression<ThrowingRecorder>);
+  static_assert(!SinkBindableFromRvalue<Recorder>);
   using FunctionTarget = decltype(free_function_recorder);
-  static_assert(std::is_nothrow_invocable_r_v<void, FunctionTarget &, EventReference>);
   static_assert(!SinkBindable<FunctionTarget>);
   static_assert(SinkBindable<AddressOverloadedRecorder>);
+  static_assert(!HasSinkCallOperator<terreate::DiagnosticSinkView>);
+  static_assert(!HasNoopFactory<terreate::DiagnosticSinkView>);
+  static_assert(!HasConnectedQuery<terreate::DiagnosticSinkView>);
+  static_assert(!HasPublicRawConstructor<terreate::DiagnosticSinkView>);
 
   const terreate::DiagnosticEvent event = make_event();
   terreate::DiagnosticSinkView empty;
@@ -187,8 +213,8 @@ struct ReentrantRecorder {
   passed &= check(recorder.retained.size() == 1 && same_event(recorder.retained.front()),
                   "sink did not retain an owning event copy");
 
-  first(event);
-  passed &= check(recorder.calls == 2, "diagnostic sink call operator did not emit");
+  first.emit(event);
+  passed &= check(recorder.calls == 2, "diagnostic sink emit did not deliver");
 
   AddressOverloadedRecorder address_overloaded_recorder;
   const auto address_overloaded_sink =

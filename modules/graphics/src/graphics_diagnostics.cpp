@@ -1,5 +1,7 @@
 #include "graphics_diagnostics.hpp"
 
+#include <algorithm>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <utility>
@@ -17,25 +19,19 @@ namespace {
 }
 
 [[nodiscard]] std::optional<terreate::DiagnosticSeverity>
-translate_severity(std::uint32_t severity) {
+translate_severity(NativeDiagnosticSeverity severity) {
   switch (severity) {
-  case native_verbose_severity:
+  case NativeDiagnosticSeverity::verbose:
     return terreate::DiagnosticSeverity::verbose;
-  case native_info_severity:
+  case NativeDiagnosticSeverity::info:
     return terreate::DiagnosticSeverity::info;
-  case native_warning_severity:
+  case NativeDiagnosticSeverity::warning:
     return terreate::DiagnosticSeverity::warning;
-  case native_error_severity:
+  case NativeDiagnosticSeverity::error:
     return terreate::DiagnosticSeverity::error;
   default:
     return std::nullopt;
   }
-}
-
-[[nodiscard]] constexpr bool known_categories(std::uint32_t categories) noexcept {
-  constexpr auto known =
-      native_general_category | native_validation_category | native_performance_category;
-  return (categories & ~known) == 0;
 }
 
 [[nodiscard]] constexpr std::string_view
@@ -47,20 +43,45 @@ native_category_name(NativeDiagnosticCategory category) noexcept {
     return "VALIDATION";
   case NativeDiagnosticCategory::performance:
     return "PERFORMANCE";
+  case NativeDiagnosticCategory::unknown:
+    return {};
   }
   return {};
 }
 
-[[nodiscard]] std::vector<std::string> translate_categories(std::uint32_t categories) {
+[[nodiscard]] std::expected<std::vector<std::string>, DiagnosticTranslationError>
+translate_categories(std::span<const NativeDiagnosticCategory> categories) {
+  for (const auto category : categories) {
+    switch (category) {
+    case NativeDiagnosticCategory::general:
+    case NativeDiagnosticCategory::validation:
+    case NativeDiagnosticCategory::performance:
+      break;
+    case NativeDiagnosticCategory::unknown:
+    default:
+      return std::unexpected(DiagnosticTranslationError::unknown_category);
+    }
+  }
+
   std::vector<std::string> translated;
   translated.reserve(native_category_order.size());
 
   for (const auto category : native_category_order) {
-    if ((categories & static_cast<std::uint32_t>(category)) != 0) {
+    if (std::find(categories.begin(), categories.end(), category) != categories.end()) {
       translated.emplace_back(native_category_name(category));
     }
   }
   return translated;
+}
+
+[[nodiscard]] std::string object_id(std::uint64_t object_handle) {
+  constexpr std::string_view hexadecimal = "0123456789abcdef";
+  std::string id{"0x0000000000000000"};
+  for (std::size_t digit = 0; digit < 16; ++digit) {
+    const auto shift = static_cast<unsigned>((15 - digit) * 4);
+    id[2 + digit] = hexadecimal[(object_handle >> shift) & 0x0fu];
+  }
+  return id;
 }
 
 [[nodiscard]] std::vector<terreate::DiagnosticObject>
@@ -69,22 +90,9 @@ copy_objects(std::span<const NativeDiagnosticObject> objects) {
   copied.reserve(objects.size());
   for (const auto &object : objects) {
     copied.push_back(terreate::DiagnosticObject{
+        .id = object_id(object.object_handle),
         .type = copy_text(object.type),
-        .handle = object.handle,
         .name = copy_text(object.name),
-    });
-  }
-  return copied;
-}
-
-[[nodiscard]] std::vector<terreate::DiagnosticLabel>
-copy_labels(std::span<const NativeDiagnosticLabel> labels) {
-  std::vector<terreate::DiagnosticLabel> copied;
-  copied.reserve(labels.size());
-  for (const auto &label : labels) {
-    copied.push_back(terreate::DiagnosticLabel{
-        .name = copy_text(label.name),
-        .color = label.color,
     });
   }
   return copied;
@@ -106,21 +114,20 @@ TranslationResult translate_diagnostic(const NativeDiagnosticCallbackData &nativ
   if (!severity) {
     return std::unexpected(DiagnosticTranslationError::unknown_severity);
   }
-  if (!known_categories(native.category_bits)) {
-    return std::unexpected(DiagnosticTranslationError::unknown_category);
+  const auto categories = translate_categories(native.categories);
+  if (!categories) {
+    return std::unexpected(categories.error());
   }
 
   terreate::DiagnosticEvent event{
       .severity = *severity,
-      .categories = translate_categories(native.category_bits),
+      .categories = *categories,
       .source = copy_text(native.source),
       .operation = copy_text(native.operation),
       .code = copy_code(native),
       .message = copy_text(native.message),
       .context = copy_text(native.context),
       .objects = copy_objects(native.objects),
-      .queue_labels = copy_labels(native.queue_labels),
-      .command_buffer_labels = copy_labels(native.command_buffer_labels),
   };
   return event;
 }

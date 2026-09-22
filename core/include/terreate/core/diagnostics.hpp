@@ -1,14 +1,12 @@
 #ifndef TERREATE_CORE_DIAGNOSTICS_HPP
 #define TERREATE_CORE_DIAGNOSTICS_HPP
 
-#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <type_traits>
-#include <utility>
 #include <vector>
 
 namespace terreate {
@@ -29,19 +27,14 @@ struct DiagnosticCode {
 
 /// An object referenced by a diagnostic.
 ///
+/// `id` is an owning backend-neutral identifier (for example, `object-42`).
 /// `type` is a stable backend-neutral spelling supplied by the translating
-/// backend (for example, `VkInstance`).  Core deliberately does not depend on
-/// a backend object enum.
+/// backend (for example, `resource`). Core deliberately does not depend on a
+/// backend object enum or handle representation.
 struct DiagnosticObject {
+  std::string id{};
   std::string type{};
-  std::uint64_t handle = 0;
   std::string name{};
-};
-
-/// A labelled execution context associated with a diagnostic.
-struct DiagnosticLabel {
-  std::string name{};
-  std::array<float, 4> color{};
 };
 
 /// A structured, backend-neutral diagnostic event.
@@ -60,8 +53,6 @@ struct DiagnosticEvent {
   std::string message{};
   std::string context{};
   std::vector<DiagnosticObject> objects{};
-  std::vector<DiagnosticLabel> queue_labels{};
-  std::vector<DiagnosticLabel> command_buffer_labels{};
 };
 
 /// A small, non-owning synchronous diagnostic destination.
@@ -73,41 +64,12 @@ struct DiagnosticEvent {
 /// occurs immediately on the calling thread, and reentrant emissions are
 /// ordinary recursive calls.
 class DiagnosticSinkView {
-public:
+private:
   using Callback = void (*)(const DiagnosticEvent &, void *) noexcept;
 
-  constexpr DiagnosticSinkView() noexcept = default;
-
-  constexpr explicit DiagnosticSinkView(Callback callback, void *state = nullptr) noexcept
+  constexpr DiagnosticSinkView(Callback callback, void *state) noexcept
       : callback_(callback), state_(state) {}
 
-  constexpr DiagnosticSinkView(void *state, Callback callback) noexcept
-      : callback_(callback), state_(state) {}
-
-  [[nodiscard]] static constexpr DiagnosticSinkView noop() noexcept { return {}; }
-
-  /// Bind a borrowed callable without allocating or taking ownership of it.
-  template <typename Target>
-    requires std::is_object_v<Target> &&
-             std::is_nothrow_invocable_r_v<void, Target &, const DiagnosticEvent &>
-  [[nodiscard]] static constexpr DiagnosticSinkView bind(Target &target) noexcept {
-    auto *untyped_target = const_cast<std::remove_cv_t<Target> *>(std::addressof(target));
-    return DiagnosticSinkView{&invoke<Target>, static_cast<void *>(untyped_target)};
-  }
-
-  [[nodiscard]] constexpr explicit operator bool() const noexcept { return callback_ != nullptr; }
-
-  [[nodiscard]] constexpr bool connected() const noexcept { return static_cast<bool>(*this); }
-
-  void emit(const DiagnosticEvent &event) const noexcept {
-    if (callback_ != nullptr) {
-      callback_(event, state_);
-    }
-  }
-
-  void operator()(const DiagnosticEvent &event) const noexcept { emit(event); }
-
-private:
   template <typename Target>
   static void invoke(const DiagnosticEvent &event, void *state) noexcept {
     std::invoke(*static_cast<Target *>(state), event);
@@ -115,6 +77,25 @@ private:
 
   Callback callback_ = nullptr;
   void *state_ = nullptr;
+
+public:
+  constexpr DiagnosticSinkView() noexcept = default;
+
+  /// Bind a borrowed callable without allocating or taking ownership of it.
+  template <typename Target>
+    requires std::is_object_v<Target> && std::is_same_v<Target, std::remove_cv_t<Target>> &&
+             std::is_nothrow_invocable_r_v<void, Target &, const DiagnosticEvent &>
+  [[nodiscard]] static constexpr DiagnosticSinkView bind(Target &target) noexcept {
+    return DiagnosticSinkView{&invoke<Target>, static_cast<void *>(std::addressof(target))};
+  }
+
+  [[nodiscard]] constexpr explicit operator bool() const noexcept { return callback_ != nullptr; }
+
+  void emit(const DiagnosticEvent &event) const noexcept {
+    if (callback_ != nullptr) {
+      callback_(event, state_);
+    }
+  }
 };
 
 } // namespace terreate

@@ -264,7 +264,7 @@ int main() {
       .severity = terreate::DiagnosticSeverity::info,
       .categories = {"package-specific"}};
   terreate::DiagnosticSinkView sink;
-  sink(event);
+  sink.emit(event);
   return terreate::unwrap(result) == 23 && event.severity == terreate::DiagnosticSeverity::info &&
                  event.categories.size() == 1 && event.categories.front() == "package-specific"
              ? 0
