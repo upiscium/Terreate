@@ -1,5 +1,6 @@
 #include <terreate/core/result.hpp>
 
+#include <cinttypes>
 #include <cstdio>
 #include <exception>
 
@@ -16,10 +17,10 @@ namespace terreate::detail {
   }
   std::fputs(error.detail().c_str(), stderr);
   std::fprintf(stderr, " [%s:%d]", error.code().category().name(), error.code().value());
-  std::fprintf(stderr, " at %s:%u in %s", error.location().file_name(), error.location().line(),
-               error.location().function_name());
-  std::fprintf(stderr, " (unwrap called from %s:%u in %s)\n", call_location.file_name(),
-               call_location.line(), call_location.function_name());
+  std::fprintf(stderr, " at %s:%" PRIuLEAST32 " in %s", error.location().file_name(),
+               error.location().line(), error.location().function_name());
+  std::fprintf(stderr, " (unwrap called from %s:%" PRIuLEAST32 " in %s)\n",
+               call_location.file_name(), call_location.line(), call_location.function_name());
   std::fflush(stderr);
   std::terminate();
 }
