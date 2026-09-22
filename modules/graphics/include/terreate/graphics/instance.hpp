@@ -133,11 +133,12 @@ private:
 
 /// Stable semantic errors produced before a native Vulkan error is available.
 enum class InstanceError : std::uint8_t {
-  invalid_description,
-  contradictory_requirements,
-  unsupported_api_version,
-  missing_required_extension,
-  missing_required_layer,
+  invalid_description = 1,
+  contradictory_requirements = 2,
+  unsupported_api_version = 3,
+  missing_required_extension = 4,
+  missing_required_layer = 5,
+  loader_unavailable = 6,
 };
 
 [[nodiscard]] const std::error_category &instance_error_category() noexcept;
@@ -181,6 +182,7 @@ private:
 
 /// Query the loader's instance API version, instance extensions, and layers.
 /// A Vulkan-Hpp vk::SystemError is returned with its original std::error_code;
+/// expected loader construction unavailability uses InstanceError::loader_unavailable;
 /// no failed query is converted into an empty capability snapshot.
 [[nodiscard]] terreate::Result<InstanceCapabilities> queryInstanceCapabilities();
 

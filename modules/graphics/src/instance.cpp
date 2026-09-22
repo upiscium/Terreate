@@ -1,6 +1,7 @@
 #include <terreate/graphics/instance.hpp>
 
 #include "graphics_diagnostics.hpp"
+#include "instance_query.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -35,6 +37,8 @@ public:
       return "required Vulkan instance extension is unavailable";
     case InstanceError::missing_required_layer:
       return "required Vulkan instance layer is unavailable";
+    case InstanceError::loader_unavailable:
+      return "the Vulkan loader could not be opened or initialized";
     }
     return "unknown Terreate Graphics instance error";
   }
@@ -484,32 +488,96 @@ std::error_code make_error_code(InstanceError error) noexcept {
   return {static_cast<int>(error), instance_error_category()};
 }
 
-Result<InstanceCapabilities> queryInstanceCapabilities() {
+namespace {
+
+[[nodiscard]] std::unique_ptr<vk::raii::Context> make_instance_context() {
+  return std::make_unique<vk::raii::Context>();
+}
+
+} // namespace
+
+std::uint32_t
+detail::query_instance_api_version(detail::InstanceVersionFunction enumerate_instance_version) {
+  if (enumerate_instance_version == nullptr) {
+    return VK_API_VERSION_1_0;
+  }
+
+  std::uint32_t api_version = VK_API_VERSION_1_0;
+  const auto result = enumerate_instance_version(&api_version);
+  if (result != VK_SUCCESS) {
+    throw vk::SystemError{static_cast<vk::Result>(result)};
+  }
+  return api_version;
+}
+
+namespace {
+
+[[nodiscard]] Result<InstanceCapabilities>
+query_instance_capabilities_from_context(const vk::raii::Context *context) {
+  InstanceCapabilities capabilities;
+
+  // Vulkan 1.0 has no vkEnumerateInstanceVersion entry point.  Read the
+  // function from the actual Hpp dispatcher and let the private adapter apply
+  // the specification-defined fallback without entering Hpp's asserting
+  // Context::enumerateInstanceVersion wrapper.
+  capabilities.loader_api_version =
+      detail::query_instance_api_version(context->getDispatcher()->vkEnumerateInstanceVersion);
+
+  const auto native_extensions = context->enumerateInstanceExtensionProperties();
+  const auto native_layers = context->enumerateInstanceLayerProperties();
+
+  capabilities.available_extensions.reserve(native_extensions.size());
+  for (const auto &extension : native_extensions) {
+    capabilities.available_extensions.push_back(copy_native_name(extension.extensionName));
+  }
+  capabilities.available_layers.reserve(native_layers.size());
+  for (const auto &layer : native_layers) {
+    capabilities.available_layers.push_back(copy_native_name(layer.layerName));
+  }
+
+  capabilities.available_extensions = canonical_names(std::move(capabilities.available_extensions));
+  capabilities.available_layers = canonical_names(std::move(capabilities.available_layers));
+  return capabilities;
+}
+
+} // namespace
+
+Result<InstanceCapabilities> detail::query_instance_capabilities_from_adapter(
+    detail::InstanceCapabilityAdapter capability_adapter, const vk::raii::Context *context) {
   try {
-    vk::raii::Context context;
-    InstanceCapabilities capabilities;
-    capabilities.loader_api_version = context.enumerateInstanceVersion();
-
-    const auto native_extensions = context.enumerateInstanceExtensionProperties();
-    const auto native_layers = context.enumerateInstanceLayerProperties();
-
-    capabilities.available_extensions.reserve(native_extensions.size());
-    for (const auto &extension : native_extensions) {
-      capabilities.available_extensions.push_back(copy_native_name(extension.extensionName));
-    }
-    capabilities.available_layers.reserve(native_layers.size());
-    for (const auto &layer : native_layers) {
-      capabilities.available_layers.push_back(copy_native_name(layer.layerName));
-    }
-
-    capabilities.available_extensions =
-        canonical_names(std::move(capabilities.available_extensions));
-    capabilities.available_layers = canonical_names(std::move(capabilities.available_layers));
-    return capabilities;
+    return capability_adapter(context);
   } catch (const vk::SystemError &error) {
     return std::unexpected(
         terreate::Error{error.code(), "query Vulkan instance capabilities", error.what()});
   }
+}
+
+Result<InstanceCapabilities>
+detail::query_instance_capabilities(detail::InstanceContextFactory context_factory,
+                                    detail::InstanceCapabilityAdapter capability_adapter) {
+  std::unique_ptr<vk::raii::Context> context;
+  try {
+    context = context_factory();
+  } catch (const vk::SystemError &error) {
+    return std::unexpected(
+        terreate::Error{error.code(), "query Vulkan instance capabilities", error.what()});
+  } catch (const std::runtime_error &error) {
+    return std::unexpected(semantic_error(InstanceError::loader_unavailable,
+                                          "query Vulkan instance capabilities", error.what()));
+  }
+
+  if (context == nullptr) {
+    return std::unexpected(semantic_error(InstanceError::loader_unavailable,
+                                          "query Vulkan instance capabilities",
+                                          "Vulkan loader context was not constructed"));
+  }
+
+  return detail::query_instance_capabilities_from_adapter(capability_adapter, context.get());
+}
+
+Result<InstanceCapabilities> queryInstanceCapabilities() {
+  return detail::query_instance_capabilities(&make_instance_context,
+                                             &query_instance_capabilities_from_context);
 }
 
 Result<InstancePlan> resolveInstance(const InstanceDescription &description,

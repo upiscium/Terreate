@@ -1,8 +1,13 @@
 #include <terreate/graphics/instance.hpp>
 
+#include "instance_query.hpp"
+
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -10,6 +15,30 @@
 namespace {
 
 using namespace terreate::graphics;
+namespace graphics_detail = terreate::graphics::detail;
+
+[[nodiscard]] std::unique_ptr<vk::raii::Context> throwing_context_factory() {
+  throw std::runtime_error{"synthetic loader open failure"};
+}
+
+[[nodiscard]] std::unique_ptr<vk::raii::Context> throwing_system_error_context_factory() {
+  throw vk::SystemError{vk::Result::eErrorInitializationFailed};
+}
+
+[[nodiscard]] terreate::Result<InstanceCapabilities>
+system_error_capability_adapter(const vk::raii::Context *) {
+  throw vk::SystemError{vk::Result::eErrorInitializationFailed};
+}
+
+[[nodiscard]] terreate::Result<InstanceCapabilities>
+logic_error_capability_adapter(const vk::raii::Context *) {
+  throw std::logic_error{"synthetic query logic failure"};
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL fake_enumerate_instance_version(std::uint32_t *version) noexcept {
+  *version = VK_API_VERSION_1_2;
+  return VK_SUCCESS;
+}
 
 [[nodiscard]] InstanceCapabilities capabilities_for(std::uint32_t loader_version,
                                                     std::vector<std::string> extensions,
@@ -80,6 +109,92 @@ void emit_runtime_marker(const char *marker) {
   std::fputs(marker, stdout);
   std::fputc('\n', stdout);
   std::fflush(stdout);
+}
+
+[[nodiscard]] bool test_instance_error_codes_are_stable_and_truthy() {
+  constexpr std::array expected_codes{
+      std::pair{InstanceError::invalid_description, 1},
+      std::pair{InstanceError::contradictory_requirements, 2},
+      std::pair{InstanceError::unsupported_api_version, 3},
+      std::pair{InstanceError::missing_required_extension, 4},
+      std::pair{InstanceError::missing_required_layer, 5},
+      std::pair{InstanceError::loader_unavailable, 6},
+  };
+
+  bool passed = true;
+  for (const auto &[error, expected_value] : expected_codes) {
+    const auto code = make_error_code(error);
+    passed &= check(static_cast<bool>(code), "InstanceError produced a false error_code");
+    passed &= check(code.value() == expected_value,
+                    "InstanceError numeric value was not stable and explicit");
+    passed &= check(code.category() == instance_error_category(),
+                    "InstanceError used the wrong error category");
+  }
+  return passed;
+}
+
+[[nodiscard]] bool test_vulkan_10_version_fallback() {
+  const auto fallback = graphics_detail::query_instance_api_version(nullptr);
+  const auto queried =
+      graphics_detail::query_instance_api_version(&fake_enumerate_instance_version);
+
+  bool passed = true;
+  passed &= check(fallback == VK_API_VERSION_1_0,
+                  "missing vkEnumerateInstanceVersion did not use Vulkan 1.0 fallback");
+  const bool queried_version_preserved = queried == VK_API_VERSION_1_2;
+  passed &= check(queried_version_preserved, "available version query was not called");
+  return passed;
+}
+
+[[nodiscard]] bool test_query_boundary_failures_are_results() {
+  const auto loader_failure = graphics_detail::query_instance_capabilities(
+      &throwing_context_factory, &system_error_capability_adapter);
+  bool passed = true;
+  const bool loader_failure_is_result = !loader_failure;
+  passed &= check(loader_failure_is_result,
+                  "loader construction failure unexpectedly produced capabilities");
+  if (!loader_failure) {
+    const bool loader_code_preserved =
+        loader_failure.error().code() == make_error_code(InstanceError::loader_unavailable);
+    passed &= check(loader_code_preserved, "loader failure code did not identify the loader");
+    passed &= check(loader_failure.error().context() == "query Vulkan instance capabilities",
+                    "loader construction failure lost query context");
+    passed &= check(loader_failure.error().detail() == "synthetic loader open failure",
+                    "loader construction failure lost its detail");
+  }
+
+  const auto context_native_error = graphics_detail::query_instance_capabilities(
+      &throwing_system_error_context_factory, &system_error_capability_adapter);
+  const vk::SystemError expected_context_error{vk::Result::eErrorInitializationFailed};
+  const bool context_failure_is_result = !context_native_error;
+  passed &= check(context_failure_is_result, "native context failure was not a Result");
+  if (!context_native_error) {
+    passed &= check(context_native_error.error().code() == expected_context_error.code(),
+                    "native context failure did not preserve its vk::SystemError code");
+  }
+
+  const auto native_error = graphics_detail::query_instance_capabilities_from_adapter(
+      &system_error_capability_adapter, nullptr);
+  const vk::SystemError expected_native_error{vk::Result::eErrorInitializationFailed};
+  passed &= check(!native_error, "native query failure unexpectedly produced capabilities");
+  if (!native_error) {
+    passed &= check(native_error.error().code() == expected_native_error.code(),
+                    "native query failure did not preserve its vk::SystemError code");
+  }
+
+  bool logic_error_propagated = false;
+  const auto logic_error_adapter = &logic_error_capability_adapter;
+  try {
+    const auto logic_result =
+        graphics_detail::query_instance_capabilities_from_adapter(logic_error_adapter, nullptr);
+    logic_error_propagated = !logic_result;
+  } catch (const std::logic_error &error) {
+    logic_error_propagated = std::string{error.what()} == "synthetic query logic failure";
+  } catch (...) {
+    logic_error_propagated = false;
+  }
+  passed &= check(logic_error_propagated, "query adapter masked a non-native logic error");
+  return passed;
 }
 
 [[nodiscard]] bool test_synthetic_resolution() {
@@ -574,6 +689,9 @@ struct Recorder {
 
 int main() {
   bool passed = true;
+  passed &= test_instance_error_codes_are_stable_and_truthy();
+  passed &= test_vulkan_10_version_fallback();
+  passed &= test_query_boundary_failures_are_results();
   passed &= test_synthetic_resolution();
   passed &= test_contradictions_and_required_failures();
   passed &= test_rejects_embedded_nul_names();

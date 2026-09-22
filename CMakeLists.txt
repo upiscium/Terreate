@@ -176,6 +176,8 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       tests/test_graphics_instance.cpp)
     target_link_libraries(terreate_graphics_instance_tests
       PRIVATE Terreate::Graphics)
+    target_include_directories(terreate_graphics_instance_tests PRIVATE
+      "${PROJECT_SOURCE_DIR}/modules/graphics/src")
     terreate_configure_target(terreate_graphics_instance_tests)
     add_test(NAME graphics.instance COMMAND terreate_graphics_instance_tests)
   endif()
