@@ -6,7 +6,9 @@ endif()
 
 # Graphics is intentionally independent of Platform.  No Vulkan, GLFW, or VMA
 # API is introduced until a later component task owns that dependency.
-add_library(terreate_graphics STATIC src/graphics.cpp)
+add_library(terreate_graphics STATIC
+  src/graphics.cpp
+  src/graphics_diagnostics.cpp)
 target_include_directories(terreate_graphics
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src")

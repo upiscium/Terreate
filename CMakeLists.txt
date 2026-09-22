@@ -157,6 +157,22 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
   terreate_configure_target(terreate_core_result_tests)
   add_test(NAME core.error_result COMMAND terreate_core_result_tests)
 
+  add_executable(terreate_core_diagnostics_tests tests/test_core_diagnostics.cpp)
+  target_link_libraries(terreate_core_diagnostics_tests PRIVATE Terreate::Core)
+  terreate_configure_target(terreate_core_diagnostics_tests)
+  add_test(NAME core.diagnostics COMMAND terreate_core_diagnostics_tests)
+
+  if(TERREATE_BUILD_GRAPHICS)
+    add_executable(terreate_graphics_diagnostics_tests
+      tests/test_graphics_diagnostics.cpp)
+    target_link_libraries(terreate_graphics_diagnostics_tests
+      PRIVATE Terreate::Graphics)
+    target_include_directories(terreate_graphics_diagnostics_tests PRIVATE
+      "${PROJECT_SOURCE_DIR}/modules/graphics/src")
+    terreate_configure_target(terreate_graphics_diagnostics_tests)
+    add_test(NAME graphics.diagnostics COMMAND terreate_graphics_diagnostics_tests)
+  endif()
+
   add_test(
     NAME cmake.component_matrix
     COMMAND ${CMAKE_COMMAND}
