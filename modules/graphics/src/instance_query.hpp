@@ -35,6 +35,14 @@ query_instance_capabilities_from_adapter(InstanceCapabilityAdapter capability_ad
 query_instance_capabilities(InstanceContextFactory context_factory,
                             InstanceCapabilityAdapter capability_adapter);
 
+/// Construct the context for native instance apply behind the loader-only
+/// exception boundary.  This private function-pointer seam keeps apply-time
+/// loader failures deterministic without exposing a production configuration
+/// hook; exceptions from any later apply operation remain outside this
+/// boundary.
+[[nodiscard]] terreate::Result<std::unique_ptr<vk::raii::Context>>
+create_instance_context(InstanceContextFactory context_factory);
+
 } // namespace terreate::graphics::detail
 
 #endif // TERREATE_GRAPHICS_INSTANCE_QUERY_HPP

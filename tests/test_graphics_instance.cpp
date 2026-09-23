@@ -25,6 +25,10 @@ namespace graphics_detail = terreate::graphics::detail;
   throw vk::SystemError{vk::Result::eErrorInitializationFailed};
 }
 
+[[nodiscard]] std::unique_ptr<vk::raii::Context> throwing_logic_error_context_factory() {
+  throw std::logic_error{"synthetic apply context logic failure"};
+}
+
 [[nodiscard]] terreate::Result<InstanceCapabilities>
 system_error_capability_adapter(const vk::raii::Context *) {
   throw vk::SystemError{vk::Result::eErrorInitializationFailed};
@@ -187,13 +191,54 @@ void emit_runtime_marker(const char *marker) {
   try {
     const auto logic_result =
         graphics_detail::query_instance_capabilities_from_adapter(logic_error_adapter, nullptr);
-    logic_error_propagated = !logic_result;
+    (void)logic_result;
+    passed &= check(false, "query adapter converted a non-native logic error into a Result");
   } catch (const std::logic_error &error) {
     logic_error_propagated = std::string{error.what()} == "synthetic query logic failure";
+    passed &= check(logic_error_propagated, "query adapter propagated an unexpected logic_error");
   } catch (...) {
-    logic_error_propagated = false;
+    passed &= check(false, "query adapter propagated the wrong exception type");
   }
-  passed &= check(logic_error_propagated, "query adapter masked a non-native logic error");
+  passed &= check(logic_error_propagated, "query adapter did not propagate logic_error");
+  return passed;
+}
+
+[[nodiscard]] bool test_apply_context_boundary_failures_are_narrow() {
+  const auto loader_failure = graphics_detail::create_instance_context(&throwing_context_factory);
+  bool passed = true;
+  passed &= check(!loader_failure, "apply loader construction failure was not a Result");
+  if (!loader_failure) {
+    const bool loader_code_preserved =
+        loader_failure.error().code() == make_error_code(InstanceError::loader_unavailable);
+    passed &= check(loader_code_preserved, "apply loader failure code did not identify the loader");
+    passed &= check(loader_failure.error().context() == "create Vulkan instance",
+                    "apply loader failure lost its native operation context");
+    passed &= check(loader_failure.error().detail() == "synthetic loader open failure",
+                    "apply loader failure lost its detail");
+  }
+
+  const auto native_failure =
+      graphics_detail::create_instance_context(&throwing_system_error_context_factory);
+  const vk::SystemError expected_native_error{vk::Result::eErrorInitializationFailed};
+  passed &= check(!native_failure, "apply native context failure was not a Result");
+  if (!native_failure) {
+    passed &= check(native_failure.error().code() == expected_native_error.code(),
+                    "apply native context failure did not preserve its vk::SystemError code");
+  }
+
+  bool logic_error_propagated = false;
+  try {
+    const auto logic_result =
+        graphics_detail::create_instance_context(&throwing_logic_error_context_factory);
+    (void)logic_result;
+    passed &= check(false, "apply context converted a non-native logic error into a Result");
+  } catch (const std::logic_error &error) {
+    logic_error_propagated = std::string{error.what()} == "synthetic apply context logic failure";
+    passed &= check(logic_error_propagated, "apply context propagated an unexpected logic_error");
+  } catch (...) {
+    passed &= check(false, "apply context propagated the wrong exception type");
+  }
+  passed &= check(logic_error_propagated, "apply context did not propagate logic_error");
   return passed;
 }
 
@@ -692,6 +737,7 @@ int main() {
   passed &= test_instance_error_codes_are_stable_and_truthy();
   passed &= test_vulkan_10_version_fallback();
   passed &= test_query_boundary_failures_are_results();
+  passed &= test_apply_context_boundary_failures_are_narrow();
   passed &= test_synthetic_resolution();
   passed &= test_contradictions_and_required_failures();
   passed &= test_rejects_embedded_nul_names();

@@ -510,6 +510,27 @@ detail::query_instance_api_version(detail::InstanceVersionFunction enumerate_ins
   return api_version;
 }
 
+Result<std::unique_ptr<vk::raii::Context>>
+detail::create_instance_context(detail::InstanceContextFactory context_factory) {
+  try {
+    auto context = context_factory();
+    if (context == nullptr) {
+      return std::unexpected(semantic_error(InstanceError::loader_unavailable,
+                                            "create Vulkan instance",
+                                            "Vulkan loader context was not constructed"));
+    }
+    return context;
+  } catch (const vk::SystemError &error) {
+    return std::unexpected(terreate::Error{error.code(), "create Vulkan instance", error.what()});
+  } catch (const std::runtime_error &error) {
+    // vk::raii::Context reports an unavailable Vulkan loader as a
+    // std::runtime_error.  Keep this catch limited to context construction so
+    // later allocation, logic, and native operations retain their behavior.
+    return std::unexpected(
+        semantic_error(InstanceError::loader_unavailable, "create Vulkan instance", error.what()));
+  }
+}
+
 namespace {
 
 [[nodiscard]] Result<InstanceCapabilities>
@@ -835,8 +856,13 @@ Result<Instance> createInstance(const InstancePlan &plan, terreate::DiagnosticSi
   }
 
   const char *native_operation = "create Vulkan instance";
+  auto context_result = detail::create_instance_context(&make_instance_context);
+  if (!context_result) {
+    return std::unexpected(context_result.error());
+  }
+
   try {
-    auto context = std::make_unique<vk::raii::Context>();
+    auto context = std::move(*context_result);
     auto callback = std::make_unique<CallbackState>();
     callback->sink = sink;
 
