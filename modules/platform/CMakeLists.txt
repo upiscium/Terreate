@@ -16,7 +16,7 @@ set_target_properties(terreate_platform PROPERTIES
 add_library(Terreate::Platform ALIAS terreate_platform)
 
 install(TARGETS terreate_platform
-  EXPORT TerreateTargets
+  EXPORT TerreatePlatformTargets
   ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")

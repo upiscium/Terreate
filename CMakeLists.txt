@@ -16,6 +16,15 @@ if(PROJECT_IS_TOP_LEVEL)
     "Export the compilation database for clangd and clang-tidy" FORCE)
 endif()
 
+# BUILD_* is the sole public option spelling.  In particular, a module never
+# turns Core on implicitly.
+option(TERREATE_BUILD_CORE
+  "Build the dependency-free Terreate Core component" ON)
+option(TERREATE_BUILD_PLATFORM
+  "Build the independently selectable Terreate Platform component" ON)
+option(TERREATE_BUILD_GRAPHICS
+  "Build the independently selectable Terreate Graphics component" ON)
+
 if(PROJECT_IS_TOP_LEVEL)
   # CMake deliberately omits compiler-provided include directories from a
   # compilation command.  clang-tidy uses those commands, however, and must be
@@ -33,30 +42,32 @@ if(PROJECT_IS_TOP_LEVEL)
   target_compile_options(project_compiler_context INTERFACE
     ${PROJECT_COMPILER_INCLUDE_OPTIONS})
 
-  # Vulkan-Hpp is a header-only development surface here.  It must come from
-  # the pinned project devShell rather than an inherited SDK or host search path.
-  # Keep the compiler's dynamically discovered implicit directories above for
-  # clang-tidy/compiler context only; they are not Vulkan dependency discovery.
-  if(NOT DEFINED ENV{VULKAN_HEADERS_INCLUDE} OR
-     "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "")
-    message(FATAL_ERROR
-      "Terreate requires the project devShell contract: "
-      "VULKAN_HEADERS_INCLUDE must be set before configuring. "
-      "Run `nix develop` and configure again.")
-  endif()
+  if(TERREATE_BUILD_GRAPHICS)
+    # Vulkan-Hpp is a header-only development surface here.  It must come from
+    # the pinned project devShell rather than an inherited SDK or host search path.
+    # Keep the compiler's dynamically discovered implicit directories above for
+    # clang-tidy/compiler context only; they are not Vulkan dependency discovery.
+    if(NOT DEFINED ENV{VULKAN_HEADERS_INCLUDE} OR
+       "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "")
+      message(FATAL_ERROR
+        "Terreate requires the project devShell contract: "
+        "VULKAN_HEADERS_INCLUDE must be set before configuring Graphics. "
+        "Run `nix develop` and configure again.")
+    endif()
 
-  set(PROJECT_VULKAN_HPP_INCLUDE_DIR "$ENV{VULKAN_HEADERS_INCLUDE}")
-  if(NOT EXISTS "${PROJECT_VULKAN_HPP_INCLUDE_DIR}/vulkan/vulkan_raii.hpp")
-    message(FATAL_ERROR
-      "Terreate requires Vulkan-Hpp at "
-      "${PROJECT_VULKAN_HPP_INCLUDE_DIR}/vulkan/vulkan_raii.hpp from "
-      "VULKAN_HEADERS_INCLUDE; refusing inherited or default search paths.")
-  endif()
-  message(STATUS "Vulkan-Hpp include directory: ${PROJECT_VULKAN_HPP_INCLUDE_DIR}")
+    set(PROJECT_VULKAN_HPP_INCLUDE_DIR "$ENV{VULKAN_HEADERS_INCLUDE}")
+    if(NOT EXISTS "${PROJECT_VULKAN_HPP_INCLUDE_DIR}/vulkan/vulkan_raii.hpp")
+      message(FATAL_ERROR
+        "Terreate requires Vulkan-Hpp at "
+        "${PROJECT_VULKAN_HPP_INCLUDE_DIR}/vulkan/vulkan_raii.hpp from "
+        "VULKAN_HEADERS_INCLUDE; refusing inherited or default search paths.")
+    endif()
+    message(STATUS "Vulkan-Hpp include directory: ${PROJECT_VULKAN_HPP_INCLUDE_DIR}")
 
-  add_library(project_vulkan_headers INTERFACE)
-  target_include_directories(project_vulkan_headers SYSTEM INTERFACE
-    "${PROJECT_VULKAN_HPP_INCLUDE_DIR}")
+    add_library(project_vulkan_headers INTERFACE)
+    target_include_directories(project_vulkan_headers SYSTEM INTERFACE
+      "${PROJECT_VULKAN_HPP_INCLUDE_DIR}")
+  endif()
 
   # Keep the editor entrypoint at the repository root while retaining the
   # canonical Ninja build tree.  The generated symlink is ignored by Git.  Do
@@ -94,15 +105,6 @@ include(GNUInstallDirs)
 
 set(TERREATE_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/Terreate"
   CACHE PATH "Installation directory for Terreate's CMake package")
-
-# BUILD_* is the sole public option spelling.  In particular, a module never
-# turns Core on implicitly.
-option(TERREATE_BUILD_CORE
-  "Build the dependency-free Terreate Core component" ON)
-option(TERREATE_BUILD_PLATFORM
-  "Build the independently selectable Terreate Platform component" ON)
-option(TERREATE_BUILD_GRAPHICS
-  "Build the independently selectable Terreate Graphics component" ON)
 
 if((TERREATE_BUILD_PLATFORM OR TERREATE_BUILD_GRAPHICS) AND
    NOT TERREATE_BUILD_CORE)
@@ -143,13 +145,11 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
   add_executable(terreate_app src/main.cpp)
   target_link_libraries(terreate_app PRIVATE Terreate::Core)
   terreate_configure_target(terreate_app)
-  target_link_libraries(terreate_app PRIVATE project_vulkan_headers)
 
   enable_testing()
   add_executable(terreate_tests tests/test_smoke.cpp)
   target_link_libraries(terreate_tests PRIVATE Terreate::Core)
   terreate_configure_target(terreate_tests)
-  target_link_libraries(terreate_tests PRIVATE project_vulkan_headers)
   add_test(NAME smoke COMMAND terreate_tests)
 
   add_executable(terreate_core_result_tests tests/test_core_result.cpp)
@@ -171,6 +171,15 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       "${PROJECT_SOURCE_DIR}/modules/graphics/src")
     terreate_configure_target(terreate_graphics_diagnostics_tests)
     add_test(NAME graphics.diagnostics COMMAND terreate_graphics_diagnostics_tests)
+
+    add_executable(terreate_graphics_instance_tests
+      tests/test_graphics_instance.cpp)
+    target_link_libraries(terreate_graphics_instance_tests
+      PRIVATE Terreate::Graphics)
+    target_include_directories(terreate_graphics_instance_tests PRIVATE
+      "${PROJECT_SOURCE_DIR}/modules/graphics/src")
+    terreate_configure_target(terreate_graphics_instance_tests)
+    add_test(NAME graphics.instance COMMAND terreate_graphics_instance_tests)
   endif()
 
   add_test(
@@ -201,9 +210,21 @@ if(TERREATE_BUILD_CORE OR TERREATE_BUILD_PLATFORM OR TERREATE_BUILD_GRAPHICS)
 endif()
 
 if(_terreate_has_components)
-  export(EXPORT TerreateTargets
-    FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateTargets.cmake"
-    NAMESPACE Terreate::)
+  if(TERREATE_BUILD_CORE)
+    export(TARGETS terreate_core
+      FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateCoreTargets.cmake"
+      NAMESPACE Terreate::)
+  endif()
+  if(TERREATE_BUILD_PLATFORM)
+    export(TARGETS terreate_platform
+      FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreatePlatformTargets.cmake"
+      NAMESPACE Terreate::)
+  endif()
+  if(TERREATE_BUILD_GRAPHICS)
+    export(TARGETS terreate_graphics
+      FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateGraphicsTargets.cmake"
+      NAMESPACE Terreate::)
+  endif()
 
   set(_terreate_build_config "${CMAKE_CURRENT_BINARY_DIR}/TerreateConfig.cmake")
   set(_terreate_install_config
@@ -223,10 +244,24 @@ if(_terreate_has_components)
     VERSION "${PROJECT_VERSION}"
     COMPATIBILITY SameMajorVersion)
 
-  install(EXPORT TerreateTargets
-    FILE TerreateTargets.cmake
-    NAMESPACE Terreate::
-    DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
+  if(TERREATE_BUILD_CORE)
+    install(EXPORT TerreateCoreTargets
+      FILE TerreateCoreTargets.cmake
+      NAMESPACE Terreate::
+      DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
+  endif()
+  if(TERREATE_BUILD_PLATFORM)
+    install(EXPORT TerreatePlatformTargets
+      FILE TerreatePlatformTargets.cmake
+      NAMESPACE Terreate::
+      DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
+  endif()
+  if(TERREATE_BUILD_GRAPHICS)
+    install(EXPORT TerreateGraphicsTargets
+      FILE TerreateGraphicsTargets.cmake
+      NAMESPACE Terreate::
+      DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
+  endif()
   install(FILES
     "${_terreate_install_config}"
     "${CMAKE_CURRENT_BINARY_DIR}/TerreateConfigVersion.cmake"
