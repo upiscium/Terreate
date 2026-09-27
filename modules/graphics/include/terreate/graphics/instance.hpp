@@ -61,7 +61,9 @@ struct InstanceDecision {
 
 /// The request owned by the application.  Required and optional lists are
 /// intentionally separate so the requested strength is explicit at the API
-/// boundary.
+/// boundary.  `resolveInstance` only observes a description for the duration
+/// of its call and copies its values into a successful InstancePlan; it does
+/// not retain references to this object.
 struct InstanceDescription {
   std::optional<std::uint32_t> api_version{};
 
@@ -80,52 +82,122 @@ struct InstanceDescription {
 /// A successful, value-owned observation of the Vulkan instance environment.
 /// It is intentionally usable as a synthetic snapshot in resolver tests; a
 /// snapshot is evidence and never causes every observed name to be enabled.
+/// `resolveInstance` copies the snapshot into a successful InstancePlan, so
+/// the caller may release or reuse the input after the call returns.
 struct InstanceCapabilities {
   std::uint32_t loader_api_version = VK_API_VERSION_1_0;
   std::vector<std::string> available_extensions{};
   std::vector<std::string> available_layers{};
+  /// Vulkan exposes no portable loader/backend identity query.  A caller may
+  /// attach identity obtained from an out-of-band source; native queries leave
+  /// this value empty rather than inventing an identity.
+  std::optional<std::string> loader_identity{};
 };
 
 /// The deterministic pre-native result of resolving a description against a
 /// successful capability snapshot.  Effective enabled collections and
 /// resolution decisions are canonicalised in lexicographic order and contain
-/// no duplicates; requested and capability snapshots preserve the exact input
-/// values, including their order and duplicates.
-struct InstancePlan {
-  // These fields remain public so callers can inspect every requested input,
-  // capability observation, and resolution decision.  Native apply validates
-  // them against the private resolver snapshot before using any field.
-  InstanceDescription requested{};
-  InstanceCapabilities capabilities{};
-
-  std::uint32_t effective_api_version = default_instance_api_version;
-  InstanceApiVersionProvenance api_version_provenance =
-      InstanceApiVersionProvenance::default_policy;
-
-  std::vector<std::string> enabled_extensions{};
-  std::vector<std::string> enabled_layers{};
-
-  std::vector<InstanceDecision> extension_decisions{};
-  std::vector<InstanceDecision> layer_decisions{};
-
-  bool debug_utils_enabled = false;
-  bool debug_utils_derived = false;
-
-  InstancePlan() = default;
-  InstancePlan(const InstancePlan &other);
-  InstancePlan &operator=(const InstancePlan &other);
-  InstancePlan(InstancePlan &&other) noexcept = default;
-  InstancePlan &operator=(InstancePlan &&other) noexcept = default;
+/// no duplicates; the requested and capability snapshots preserve the exact
+/// input values, including their order and duplicates.  Only resolveInstance
+/// can construct a plan.  The plan owns all snapshots, enabled collections,
+/// and decisions.  Its observers return independent owned values, so a
+/// successful resolution cannot be forged or changed before native apply and
+/// no observer reference has a plan lifetime to track.
+///
+/// InstancePlan is a copyable value.  Its move operations intentionally
+/// preserve the source as well as the destination because moving a
+/// pre-native configuration must not silently consume the successful result.
+class InstancePlan {
+public:
+  InstancePlan(const InstancePlan &) = default;
+  InstancePlan &operator=(const InstancePlan &) = default;
+  // A plan is a value-owned resolution result, not a resource handle.  Keep
+  // its source intact when an rvalue is used so direct native apply cannot
+  // accidentally consume the successful plan before it is observed again.
+  // These are copies of the value-owned Data member rather than destructive
+  // resource moves.  They intentionally do not promise noexcept: copying the
+  // owned strings and vectors may allocate.
+  // NOLINTNEXTLINE(performance-noexcept-move-constructor,performance-move-constructor-init)
+  InstancePlan(InstancePlan &&other) : data_(other.data_) {}
+  // NOLINTNEXTLINE(performance-noexcept-move-constructor)
+  InstancePlan &operator=(InstancePlan &&other) {
+    if (this != &other) {
+      data_ = other.data_;
+    }
+    return *this;
+  }
   ~InstancePlan() = default;
 
-  [[nodiscard]] bool matchesCanonical() const;
+  /// Return an owning copy of the original request snapshot.
+  [[nodiscard]] InstanceDescription requested() const { return data_.requested; }
+  /// Return an owning copy of the capability snapshot used for resolution.
+  [[nodiscard]] InstanceCapabilities capabilities() const { return data_.capabilities; }
+  [[nodiscard]] std::uint32_t effectiveApiVersion() const noexcept {
+    return data_.effective_api_version;
+  }
+  [[nodiscard]] InstanceApiVersionProvenance apiVersionProvenance() const noexcept {
+    return data_.api_version_provenance;
+  }
+  /// Return an owning copy of the canonical enabled extension collection.
+  [[nodiscard]] std::vector<std::string> enabledExtensions() const {
+    return data_.enabled_extensions;
+  }
+  /// Return an owning copy of the canonical enabled layer collection.
+  [[nodiscard]] std::vector<std::string> enabledLayers() const { return data_.enabled_layers; }
+  /// Return owning copies of the extension resolution decisions.
+  [[nodiscard]] std::vector<InstanceDecision> extensionDecisions() const {
+    return data_.extension_decisions;
+  }
+  /// Return owning copies of the layer resolution decisions.
+  [[nodiscard]] std::vector<InstanceDecision> layerDecisions() const {
+    return data_.layer_decisions;
+  }
+  [[nodiscard]] bool debugUtilsEnabled() const noexcept { return data_.debug_utils_enabled; }
+  [[nodiscard]] bool debugUtilsDerived() const noexcept { return data_.debug_utils_derived; }
 
 private:
-  // A plan returned by resolveInstance keeps an immutable copy of all of its
-  // public values.  This is provenance for native apply, not Vulkan/resource
-  // ownership.  Copies retain the provenance, while any public mutation is
-  // rejected instead of becoming a new native configuration.
-  std::unique_ptr<const InstancePlan> canonical_{};
+  struct Data {
+    Data(InstanceDescription requested, InstanceCapabilities capabilities,
+         std::uint32_t effective_api_version, InstanceApiVersionProvenance api_version_provenance,
+         std::vector<std::string> enabled_extensions, std::vector<std::string> enabled_layers,
+         std::vector<InstanceDecision> extension_decisions,
+         std::vector<InstanceDecision> layer_decisions, bool debug_utils_enabled,
+         bool debug_utils_derived)
+        : requested(std::move(requested)), capabilities(std::move(capabilities)),
+          effective_api_version(effective_api_version),
+          api_version_provenance(api_version_provenance),
+          enabled_extensions(std::move(enabled_extensions)),
+          enabled_layers(std::move(enabled_layers)),
+          extension_decisions(std::move(extension_decisions)),
+          layer_decisions(std::move(layer_decisions)), debug_utils_enabled(debug_utils_enabled),
+          debug_utils_derived(debug_utils_derived) {}
+
+    InstanceDescription requested{};
+    InstanceCapabilities capabilities{};
+    std::uint32_t effective_api_version = default_instance_api_version;
+    InstanceApiVersionProvenance api_version_provenance =
+        InstanceApiVersionProvenance::default_policy;
+    std::vector<std::string> enabled_extensions{};
+    std::vector<std::string> enabled_layers{};
+    std::vector<InstanceDecision> extension_decisions{};
+    std::vector<InstanceDecision> layer_decisions{};
+    bool debug_utils_enabled = false;
+    bool debug_utils_derived = false;
+  };
+
+  InstancePlan(InstanceDescription requested, InstanceCapabilities capabilities,
+               std::uint32_t effective_api_version,
+               InstanceApiVersionProvenance api_version_provenance,
+               std::vector<std::string> enabled_extensions, std::vector<std::string> enabled_layers,
+               std::vector<InstanceDecision> extension_decisions,
+               std::vector<InstanceDecision> layer_decisions, bool debug_utils_enabled,
+               bool debug_utils_derived)
+      : data_(std::move(requested), std::move(capabilities), effective_api_version,
+              api_version_provenance, std::move(enabled_extensions), std::move(enabled_layers),
+              std::move(extension_decisions), std::move(layer_decisions), debug_utils_enabled,
+              debug_utils_derived) {}
+
+  Data data_;
 
   friend auto resolveInstance(const InstanceDescription &, const InstanceCapabilities &)
       -> terreate::Result<InstancePlan>;
@@ -144,13 +216,17 @@ enum class InstanceError : std::uint8_t {
 [[nodiscard]] const std::error_category &instance_error_category() noexcept;
 [[nodiscard]] std::error_code make_error_code(InstanceError error) noexcept;
 
-/// A move-only owning Vulkan instance.  The native handle returned by
-/// nativeHandle() is an explicitly borrowed Vulkan-Hpp handle.  It is valid
-/// only while this Instance remains alive and must never be destroyed by the
-/// caller.
+/// A move-only owner of a Vulkan instance, its loader context, its optional
+/// Debug Utils messenger, and the effective plan retained for that instance.
+/// Instance has no public default constructor for an empty state and is
+/// produced only by a successful createInstance call.  Move construction and
+/// move assignment transfer the native ownership; a moved-from Instance has no
+/// handle or plan.  Borrowed values obtained from an Instance should not be
+/// retained across any move of that Instance; reacquire them from the new
+/// owner.
 class Instance {
 public:
-  Instance() noexcept;
+  Instance() = delete;
   Instance(const Instance &) = delete;
   Instance &operator=(const Instance &) = delete;
 
@@ -161,13 +237,18 @@ public:
   [[nodiscard]] explicit operator bool() const noexcept;
   [[nodiscard]] bool valid() const noexcept;
 
-  /// Return the borrowed native handle.  This does not transfer ownership or
-  /// permit destruction through the returned value.
+  /// Return a borrowed copy of the native handle.  This does not transfer
+  /// ownership or permit destruction through the returned value.  The handle
+  /// must not be used after this Instance is destroyed or participates in a
+  /// move; reacquire it from the current owning Instance instead.
   [[nodiscard]] vk::Instance nativeHandle() const noexcept;
 
-  /// The effective configuration used for native creation.  A moved-from or
-  /// default Instance returns an empty plan rather than exposing native state.
-  [[nodiscard]] const InstancePlan &plan() const noexcept;
+  /// Return a pointer to the effective configuration used for native creation.
+  /// The plan is owned by this Instance and is not the caller's plan passed to
+  /// createInstance.  The pointer is borrowed, is nullptr for a moved-from
+  /// Instance, and must not be retained across destruction or a move of this
+  /// Instance.
+  [[nodiscard]] const InstancePlan *plan() const noexcept;
 
 private:
   struct Impl;
@@ -183,20 +264,27 @@ private:
 /// Query the loader's instance API version, instance extensions, and layers.
 /// A Vulkan-Hpp vk::SystemError is returned with its original std::error_code;
 /// expected loader construction unavailability uses InstanceError::loader_unavailable;
-/// no failed query is converted into an empty capability snapshot.
+/// no failed query is converted into an empty capability snapshot.  The
+/// successful result owns its returned strings and may be retained by the
+/// caller independently of the loader context.  Vulkan has no portable loader
+/// identity query, so loader_identity is left unavailable.
 [[nodiscard]] terreate::Result<InstanceCapabilities> queryInstanceCapabilities();
 
 /// Resolve explicit instance intent against a successful capability snapshot.
-/// The input values are observed, never normalised in place, and the returned
-/// plan is complete before native creation is attempted.
+/// The input values are observed only during this call, never normalised in
+/// place, and copied into the returned plan.  The plan is complete before
+/// native creation is attempted; neither input needs to remain alive after the
+/// call returns.
 [[nodiscard]] terreate::Result<InstancePlan>
 resolveInstance(const InstanceDescription &description, const InstanceCapabilities &capabilities);
 
 /// Apply a previously resolved plan by creating an owning Vulkan instance (and
 /// an optional Debug Utils messenger).  A native failure does not mutate the
 /// supplied plan; it remains the successful pre-native result held by the
-/// caller.  The sink is borrowed and copied into callback state for the
-/// lifetime of the returned Instance.
+/// caller.  The plan is borrowed only for the duration of this call; a
+/// successful Instance retains its own copy.  The sink view is also copied into
+/// callback state, but its application-owned target is not; that target must
+/// outlive the returned Instance and all callbacks delivered through it.
 [[nodiscard]] auto createInstance(const InstancePlan &plan, terreate::DiagnosticSinkView sink = {})
     -> terreate::Result<Instance>;
 

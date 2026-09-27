@@ -48,6 +48,22 @@ just project::check
 vulkaninfo --summary
 ```
 
+To inspect the canonical headless Graphics runtime check and its marker, run:
+
+```sh
+ctest --preset default --output-on-failure --verbose --tests-regex '^graphics\.instance$'
+```
+
+The test must emit the exact line `graphics.instance: headless-instance=PASS`.
+That marker is also the CTest pass condition, so it proves that the real Vulkan
+loader was queried and a native headless instance was created successfully;
+synthetic resolver coverage alone cannot satisfy the project check. The
+`validation-layer=PASS` line is expected only when
+`VK_LAYER_KHRONOS_validation` is available; otherwise its explicit `SKIP` line
+is valid. Likewise, `debug-utils-callback=PASS` is emitted when
+`VK_EXT_debug_utils` is available, and its explicit `SKIP` line is valid when
+that optional extension is unavailable.
+
 The canonical build directory is `.build/default`.  CMake also creates the
 ignored root `compile_commands.json` entrypoint as a symlink to that build
 database; clangd can therefore use the repository root directly.  The preset
@@ -56,10 +72,14 @@ sets `gcc`/`g++`, C++23, Ninja, and `CMAKE_CXX_SCAN_FOR_MODULES=OFF`.
 `just project::check` is the canonical verification entrypoint.  Every
 invocation enters the pinned `nix develop` shell itself and dispatches the
 private check there, so it receives the pinned `VULKAN_HEADERS_INCLUDE` value.
-Direct `just project::configure` remains fail-closed when Graphics is enabled
-and `VULKAN_HEADERS_INCLUDE` is absent; Core-only and Graphics-OFF source trees
-do not discover Vulkan.  When a caller supplies the variable explicitly, CMake
-trusts that value rather than silently searching inherited SDK or host defaults.
+For a top-level Terreate configure, Graphics is fail-closed when
+`VULKAN_HEADERS_INCLUDE` is absent; Core-only and Graphics-OFF source trees do
+not discover Vulkan.  When Terreate is added with `add_subdirectory`, it does
+not impose that top-level environment contract on the parent project: Graphics
+uses the surrounding project's Vulkan package discovery, with
+`VULKAN_HEADERS_INCLUDE` as an optional explicit include override.  In either
+case, an explicitly supplied include path is used rather than silently
+searching inherited SDK or host defaults.
 
 The devShell dependencies are not consumer linkage.  Core and Platform remain
 Vulkan-free; Graphics owns the Vulkan loader link and publishes `Vulkan::Vulkan`
@@ -90,3 +110,19 @@ failing a quiet package lookup, while required requests fail through
 `find_package`.  Graphics discovers Vulkan only when that component is built and
 requested; Core-only and Graphics-OFF packages do not discover Vulkan.  No
 component discovers or links GLFW or VMA.
+
+### Graphics instance ownership
+
+`terreate/graphics/instance.hpp` separates configuration from native
+ownership. `resolveInstance` copies its `InstanceDescription` and
+`InstanceCapabilities` inputs into a value-owned `InstancePlan`; the inputs
+may be changed or destroyed after resolution. `InstancePlan` is copyable and
+its observer functions return owned values. `createInstance` borrows a plan
+only for the call and, on success, stores an independent copy in its
+move-only `Instance` owner.
+
+`Instance::nativeHandle()` and `Instance::plan()` are borrowed observers. Do
+not retain either result after destroying or moving the owning `Instance`;
+reacquire them from the current owner. A `DiagnosticSinkView` passed to
+`createInstance` is copied as a view, not as ownership of its target, so the
+application-owned sink target must outlive the resulting `Instance`.

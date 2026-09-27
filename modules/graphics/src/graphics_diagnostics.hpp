@@ -2,12 +2,14 @@
 #define TERREATE_GRAPHICS_DIAGNOSTICS_HPP
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <span>
 #include <string_view>
 
 #include <terreate/core/diagnostics.hpp>
+#include <vulkan/vulkan_core.h>
 
 namespace terreate::graphics::detail {
 
@@ -30,20 +32,43 @@ enum class NativeDiagnosticCategory : std::uint8_t {
   general,
   validation,
   performance,
+  device_address_binding,
   unknown,
 };
 
 // The native category order is also the order used when translating the
 // private callback payload into Core's producer-provided category strings.
-inline constexpr std::array<NativeDiagnosticCategory, 3> native_category_order{
+inline constexpr std::array<NativeDiagnosticCategory, 4> native_category_order{
     NativeDiagnosticCategory::general,
     NativeDiagnosticCategory::validation,
     NativeDiagnosticCategory::performance,
+    NativeDiagnosticCategory::device_address_binding,
 };
 
-inline constexpr std::array<NativeDiagnosticCategory, 1> default_native_categories{
-    NativeDiagnosticCategory::general,
+enum class NativeDiagnosticMessageTypeError : std::uint8_t {
+  unsupported,
 };
+
+/// The private result of adapting one raw Vulkan Debug Utils message-type mask.
+/// `categories` is populated in canonical semantic order; an unsupported mask
+/// is returned as an error instead of being truncated or mapped to GENERAL.
+struct NativeDiagnosticCategoryMapping {
+  std::array<NativeDiagnosticCategory, native_category_order.size()> categories{};
+  std::size_t count = 0;
+
+  [[nodiscard]] std::span<const NativeDiagnosticCategory> view() const noexcept {
+    return {categories.data(), count};
+  }
+};
+
+using NativeDiagnosticCategoryMappingResult =
+    std::expected<NativeDiagnosticCategoryMapping, NativeDiagnosticMessageTypeError>;
+
+/// Adapt the pinned Vulkan message-type flags used by the native callback.
+/// This source/test seam is private and is the callback's only raw-mask
+/// mapping path; zero, unknown-only, and mixed masks are unsupported.
+[[nodiscard]] NativeDiagnosticCategoryMappingResult
+map_vulkan_message_types(VkDebugUtilsMessageTypeFlagsEXT message_types) noexcept;
 
 /// A borrowed object view used only while translating a native callback.
 /// `type` is already a stable backend-neutral spelling; the owning Core event
@@ -59,7 +84,7 @@ struct NativeDiagnosticObject {
 /// no view is placed in the emitted Core event.
 struct NativeDiagnosticCallbackData {
   NativeDiagnosticSeverity severity = NativeDiagnosticSeverity::info;
-  std::span<const NativeDiagnosticCategory> categories = default_native_categories;
+  std::span<const NativeDiagnosticCategory> categories{};
   std::string_view source = "vulkan";
   std::string_view operation{};
   std::string_view message_id_name{};

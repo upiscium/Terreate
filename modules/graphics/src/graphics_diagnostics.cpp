@@ -43,6 +43,8 @@ native_category_name(NativeDiagnosticCategory category) noexcept {
     return "VALIDATION";
   case NativeDiagnosticCategory::performance:
     return "PERFORMANCE";
+  case NativeDiagnosticCategory::device_address_binding:
+    return "DEVICE_ADDRESS_BINDING";
   case NativeDiagnosticCategory::unknown:
     return {};
   }
@@ -56,6 +58,7 @@ translate_categories(std::span<const NativeDiagnosticCategory> categories) {
     case NativeDiagnosticCategory::general:
     case NativeDiagnosticCategory::validation:
     case NativeDiagnosticCategory::performance:
+    case NativeDiagnosticCategory::device_address_binding:
       break;
     case NativeDiagnosticCategory::unknown:
     default:
@@ -108,6 +111,39 @@ copy_objects(std::span<const NativeDiagnosticObject> objects) {
 }
 
 } // namespace
+
+NativeDiagnosticCategoryMappingResult
+map_vulkan_message_types(VkDebugUtilsMessageTypeFlagsEXT message_types) noexcept {
+  constexpr VkDebugUtilsMessageTypeFlagsEXT general = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
+  constexpr VkDebugUtilsMessageTypeFlagsEXT validation =
+      VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+  constexpr VkDebugUtilsMessageTypeFlagsEXT performance =
+      VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+  constexpr VkDebugUtilsMessageTypeFlagsEXT device_address_binding =
+      VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
+  constexpr auto known_message_type_mask =
+      general | validation | performance | device_address_binding;
+  constexpr std::array<VkDebugUtilsMessageTypeFlagsEXT, native_category_order.size()>
+      message_type_order{
+          general,
+          validation,
+          performance,
+          device_address_binding,
+      };
+
+  const auto native_message_types = static_cast<VkDebugUtilsMessageTypeFlagsEXT>(message_types);
+  if (native_message_types == 0 || (native_message_types & ~known_message_type_mask) != 0) {
+    return std::unexpected(NativeDiagnosticMessageTypeError::unsupported);
+  }
+
+  NativeDiagnosticCategoryMapping mapping{};
+  for (std::size_t index = 0; index < native_category_order.size(); ++index) {
+    if ((native_message_types & message_type_order[index]) != 0) {
+      mapping.categories[mapping.count++] = native_category_order[index];
+    }
+  }
+  return mapping;
+}
 
 TranslationResult translate_diagnostic(const NativeDiagnosticCallbackData &native) {
   const auto severity = translate_severity(native.severity);

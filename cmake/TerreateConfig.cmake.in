@@ -7,6 +7,21 @@ set(_Terreate_supported_components Core Platform Graphics)
 set(_Terreate_core_built "@TERREATE_BUILD_CORE@")
 set(_Terreate_platform_built "@TERREATE_BUILD_PLATFORM@")
 set(_Terreate_graphics_built "@TERREATE_BUILD_GRAPHICS@")
+set(_Terreate_minimum_vulkan_api_version "1.3")
+# CMake 3.28/3.29 let a dependency package overwrite PACKAGE_PREFIX_DIR in
+# this scope.  Preserve Terreate's prefix before any dependency is loaded so
+# the public Terreate headers are never probed below the dependency prefix.
+set(_Terreate_package_prefix_dir "${PACKAGE_PREFIX_DIR}")
+set(_Terreate_config_header_roots "@TERREATE_CONFIG_HEADER_ROOTS@")
+set(_Terreate_resolved_config_header_roots)
+foreach(_Terreate_config_header_root IN LISTS _Terreate_config_header_roots)
+  if(NOT IS_ABSOLUTE "${_Terreate_config_header_root}")
+    set(_Terreate_config_header_root
+      "${_Terreate_package_prefix_dir}/${_Terreate_config_header_root}")
+  endif()
+  list(APPEND _Terreate_resolved_config_header_roots
+    "${_Terreate_config_header_root}")
+endforeach()
 
 # Graphics is the only component that owns Vulkan.  A required Graphics
 # request must make the dependency failure visible, while an optional Graphics
@@ -30,28 +45,235 @@ elseif(_Terreate_graphics_built)
 endif()
 
 set(_Terreate_graphics_available FALSE)
+set(_Terreate_graphics_unavailable_reason
+  "Terreate Graphics is unavailable because Vulkan was not found")
 if(_Terreate_graphics_built AND _Terreate_graphics_requested)
   include(CMakeFindDependencyMacro)
   if(_Terreate_graphics_required)
     find_dependency(Vulkan)
-    if(Vulkan_FOUND AND TARGET Vulkan::Vulkan)
-      set(_Terreate_graphics_available TRUE)
-    endif()
   else()
     find_package(Vulkan QUIET)
-    if(Vulkan_FOUND AND TARGET Vulkan::Vulkan)
+  endif()
+  set(PACKAGE_PREFIX_DIR "${_Terreate_package_prefix_dir}")
+
+  if(NOT Vulkan_FOUND OR NOT TARGET Vulkan::Vulkan)
+    set(_Terreate_graphics_unavailable_reason
+      "Terreate Graphics is unavailable because the Vulkan package did not provide Vulkan::Vulkan")
+  elseif(DEFINED Vulkan_VERSION AND NOT "${Vulkan_VERSION}" STREQUAL "" AND
+         NOT "${Vulkan_VERSION}" MATCHES "-NOTFOUND$" AND
+         "${Vulkan_VERSION}" VERSION_LESS
+             "${_Terreate_minimum_vulkan_api_version}")
+    set(_Terreate_graphics_unavailable_reason
+      "Terreate Graphics requires Vulkan >= "
+      "${_Terreate_minimum_vulkan_api_version}; found Vulkan ${Vulkan_VERSION}")
+  else()
+    # FindVulkan locates the loader library, but a loader package is not
+    # necessarily a Vulkan-Hpp development package.  Graphics' public header
+    # includes vulkan/vulkan_raii.hpp.  Inspect the complete usage closure of
+    # Vulkan::Vulkan so a package may publish its headers through a linked
+    # Vulkan::Headers target, but never accept an unrelated target or package
+    # variable as a fallback search path.
+    set(_Terreate_vulkan_include_dirs)
+    set(_Terreate_vulkan_usage_targets Vulkan::Vulkan)
+    set(_Terreate_vulkan_usage_seen)
+    while(_Terreate_vulkan_usage_targets)
+      list(POP_FRONT _Terreate_vulkan_usage_targets
+        _Terreate_vulkan_usage_target)
+      if(NOT TARGET "${_Terreate_vulkan_usage_target}" OR
+         "${_Terreate_vulkan_usage_target}" IN_LIST _Terreate_vulkan_usage_seen)
+        continue()
+      endif()
+      list(APPEND _Terreate_vulkan_usage_seen "${_Terreate_vulkan_usage_target}")
+
+      foreach(_Terreate_vulkan_include_property IN ITEMS
+          INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
+        get_target_property(_Terreate_target_include_dirs
+          "${_Terreate_vulkan_usage_target}"
+          ${_Terreate_vulkan_include_property})
+        if(_Terreate_target_include_dirs AND
+          NOT "${_Terreate_target_include_dirs}" MATCHES "-NOTFOUND$")
+          foreach(_Terreate_target_include_dir IN LISTS _Terreate_target_include_dirs)
+            set(_Terreate_stripped_include_dir
+              "${_Terreate_target_include_dir}")
+            string(REGEX REPLACE
+              "^\\$<BUILD_INTERFACE:(.*)>$" "\\1"
+              _Terreate_stripped_include_dir
+              "${_Terreate_stripped_include_dir}")
+            string(REGEX REPLACE
+              "^\\$<INSTALL_INTERFACE:(.*)>$" "\\1"
+              _Terreate_stripped_include_dir
+              "${_Terreate_stripped_include_dir}")
+            string(GENEX_STRIP "${_Terreate_stripped_include_dir}"
+              _Terreate_stripped_include_dir)
+            if(NOT "${_Terreate_stripped_include_dir}" STREQUAL "")
+              list(APPEND _Terreate_vulkan_include_dirs
+                "${_Terreate_stripped_include_dir}")
+            endif()
+          endforeach()
+        endif()
+      endforeach()
+
+      get_target_property(_Terreate_vulkan_linked_targets
+        "${_Terreate_vulkan_usage_target}" INTERFACE_LINK_LIBRARIES)
+      if(_Terreate_vulkan_linked_targets AND
+        NOT "${_Terreate_vulkan_linked_targets}" MATCHES "-NOTFOUND$")
+        foreach(_Terreate_vulkan_linked_target IN LISTS
+            _Terreate_vulkan_linked_targets)
+          set(_Terreate_stripped_linked_target
+            "${_Terreate_vulkan_linked_target}")
+          string(REGEX REPLACE
+            "^\\$<LINK_ONLY:([^>]+)>$" "\\1"
+            _Terreate_stripped_linked_target
+            "${_Terreate_stripped_linked_target}")
+          string(GENEX_STRIP "${_Terreate_stripped_linked_target}"
+            _Terreate_stripped_linked_target)
+          if(TARGET "${_Terreate_stripped_linked_target}")
+            list(APPEND _Terreate_vulkan_usage_targets
+              "${_Terreate_stripped_linked_target}")
+          endif()
+        endforeach()
+      endif()
+    endwhile()
+    # FindVulkan's module target on some CMake versions relies on the
+    # compiler's implicit Vulkan include directory instead of publishing it on
+    # Vulkan::Vulkan.  Preserve that module-provided directory in the probe,
+    # but never use arbitrary Vulkan_INCLUDE_DIRS from a config package as a
+    # fallback for an unrelated target.
+    if(DEFINED Vulkan_LIBRARY AND NOT "${Vulkan_LIBRARY}" STREQUAL "" AND
+       DEFINED Vulkan_INCLUDE_DIR AND
+       NOT "${Vulkan_INCLUDE_DIR}" STREQUAL "")
+      list(APPEND _Terreate_vulkan_include_dirs "${Vulkan_INCLUDE_DIR}")
+    endif()
+    list(REMOVE_DUPLICATES _Terreate_vulkan_include_dirs)
+
+    # Resolve the include directories in Vulkan::Vulkan's effective order into
+    # an isolated compile probe.  Looking at each directory independently is
+    # not sufficient: a partial directory earlier in the target's usage
+    # requirements shadows a complete transitive header directory.
+    function(_Terreate_probe_vulkan_headers include_directories result_variable)
+      set(_Terreate_probe_root
+        "${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/TerreateVulkanHeadersProbe")
+      set(_Terreate_probe_source_dir "${_Terreate_probe_root}/source")
+      set(_Terreate_probe_binary_dir "${_Terreate_probe_root}/build")
+      file(REMOVE_RECURSE "${_Terreate_probe_root}")
+      file(MAKE_DIRECTORY "${_Terreate_probe_source_dir}")
+
+      file(WRITE "${_Terreate_probe_source_dir}/probe.cpp" [=[
+#include <terreate/graphics/instance.hpp>
+#include <vulkan/vulkan.hpp>
+#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan_raii.hpp>
+
+#include <cstdint>
+
+static_assert(VK_API_VERSION_1_3 != 0);
+static_assert(VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT != 0);
+static_assert(static_cast<std::uint32_t>(
+                  vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding) ==
+              VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT);
+static_assert(sizeof(vk::raii::Context) > 0);
+static_assert(sizeof(vk::raii::Instance) > 0);
+static_assert(sizeof(vk::raii::DebugUtilsMessengerEXT) > 0);
+
+int main() { return 0; }
+]=])
+      file(WRITE "${_Terreate_probe_source_dir}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateVulkanHeadersProbe LANGUAGES CXX)
+# Keep the explicitly supplied probe paths in target include order even when a
+# toolchain reports one of them as an implicit compiler directory.
+set(CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+add_library(terreate_vulkan_headers_probe STATIC probe.cpp)
+set_target_properties(terreate_vulkan_headers_probe PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+  CXX_SCAN_FOR_MODULES OFF)
+]=])
+      set(_Terreate_probe_sentinel_dir
+         "${_Terreate_probe_root}/ambient-header-sentinel")
+      file(MAKE_DIRECTORY "${_Terreate_probe_sentinel_dir}/vulkan")
+      foreach(_Terreate_probe_sentinel_header IN ITEMS
+          vulkan_core.h vulkan.hpp vulkan_raii.hpp)
+        file(WRITE
+          "${_Terreate_probe_sentinel_dir}/vulkan/${_Terreate_probe_sentinel_header}"
+          "#error Terreate Vulkan header probe reached an ambient header path\n")
+      endforeach()
+      # Use CMake's portable SYSTEM include abstraction rather than emitting a
+      # compiler-specific -isystem option.  Keep the configured package header
+      # roots and Vulkan target usage closure in order, then place the sentinel
+      # before implicit compiler directories so ambient Vulkan headers cannot
+      # satisfy the probe.
+      file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
+        "target_include_directories(terreate_vulkan_headers_probe SYSTEM PRIVATE\n")
+      foreach(_Terreate_config_header_root IN LISTS
+          _Terreate_resolved_config_header_roots)
+        if(NOT "${_Terreate_config_header_root}" STREQUAL "")
+          file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
+            "  \"${_Terreate_config_header_root}\"\n")
+        endif()
+      endforeach()
+      foreach(_Terreate_include_directory IN LISTS include_directories)
+        if(NOT "${_Terreate_include_directory}" STREQUAL "")
+          file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
+            "  \"${_Terreate_include_directory}\"\n")
+        endif()
+      endforeach()
+      file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
+        "  \"${_Terreate_probe_sentinel_dir}\"\n")
+      foreach(_Terreate_implicit_include_directory IN LISTS
+          CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+        if(NOT "${_Terreate_implicit_include_directory}" MATCHES "[Vv]ulkan")
+          file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
+            "  \"${_Terreate_implicit_include_directory}\"\n")
+        endif()
+      endforeach()
+      file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt" ")\n")
+      if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND
+         CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+        file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
+          "target_compile_options(terreate_vulkan_headers_probe PRIVATE -nostdinc)\n")
+      endif()
+
+      try_compile(_Terreate_probe_succeeded
+        "${_Terreate_probe_binary_dir}"
+        "${_Terreate_probe_source_dir}"
+        TerreateVulkanHeadersProbe
+        NO_CACHE
+        OUTPUT_VARIABLE _Terreate_probe_output)
+      file(REMOVE_RECURSE "${_Terreate_probe_root}")
+      set(${result_variable} "${_Terreate_probe_succeeded}" PARENT_SCOPE)
+    endfunction()
+
+    _Terreate_probe_vulkan_headers("${_Terreate_vulkan_include_dirs}"
+      _Terreate_vulkan_hpp_available)
+    if(_Terreate_vulkan_hpp_available)
       set(_Terreate_graphics_available TRUE)
     else()
-      set(Terreate_NOT_FOUND_MESSAGE
-        "Terreate Graphics is unavailable because Vulkan was not found")
+      set(_Terreate_graphics_unavailable_reason
+        "Terreate Graphics compile probe rejected the effective Vulkan::Vulkan "
+        "include order: missing or uncompileable declarations in "
+        "vulkan/vulkan_core.h, vulkan/vulkan.hpp, vulkan/vulkan_raii.hpp or "
+        "VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT for the "
+        "Vulkan >= ${_Terreate_minimum_vulkan_api_version} Hpp/RAII/API/device "
+        "usage closure")
     endif()
   endif()
 endif()
 
-# Import Core and Platform when they are built, plus a requested Graphics
-# target only when its Vulkan dependency is available.  Keeping component
-# exports separate means optional Graphics with no Vulkan target is not
-# imported or reported as found alongside Core.
+if(_Terreate_graphics_built AND _Terreate_graphics_requested AND
+   NOT _Terreate_graphics_available)
+  set(Terreate_NOT_FOUND_MESSAGE "${_Terreate_graphics_unavailable_reason}")
+  if(_Terreate_graphics_required)
+    set(Terreate_FOUND FALSE)
+  endif()
+endif()
+
+# Import exactly the requested component dependency closure.  Core is a
+# dependency of Platform and Graphics, but an explicit Core request must not
+# import either optional component merely because those targets were built.
+# Keeping component exports separate also means optional Graphics with no
+# Vulkan target is not imported or reported as found alongside Core.
 set(_Terreate_import_Core FALSE)
 set(_Terreate_import_Platform FALSE)
 set(_Terreate_import_Graphics FALSE)
@@ -68,15 +290,14 @@ if(NOT Terreate_FIND_COMPONENTS)
     set(_Terreate_import_Core TRUE)
   endif()
 else()
-  if(_Terreate_core_built)
-    set(_Terreate_import_Core TRUE)
-  endif()
-  if(_Terreate_platform_built)
-    set(_Terreate_import_Platform TRUE)
-  endif()
   foreach(_Terreate_requested_component IN LISTS Terreate_FIND_COMPONENTS)
-    if(_Terreate_requested_component STREQUAL "Graphics" AND
-       _Terreate_graphics_available)
+    if(_Terreate_requested_component STREQUAL "Core")
+      set(_Terreate_import_Core TRUE)
+    elseif(_Terreate_requested_component STREQUAL "Platform")
+      set(_Terreate_import_Platform TRUE)
+      set(_Terreate_import_Core TRUE)
+    elseif(_Terreate_requested_component STREQUAL "Graphics" AND
+           _Terreate_graphics_available)
       set(_Terreate_import_Graphics TRUE)
       set(_Terreate_import_Core TRUE)
     endif()
@@ -106,11 +327,13 @@ foreach(_Terreate_component IN LISTS Terreate_FIND_COMPONENTS)
   string(TOUPPER "${_Terreate_component}" _Terreate_component_upper)
   list(FIND _Terreate_supported_components "${_Terreate_component}"
     _Terreate_component_index)
-  if(_Terreate_component_index EQUAL -1)
-    set(Terreate_${_Terreate_component}_FOUND FALSE)
-    set(Terreate_NOT_FOUND_MESSAGE
-      "Terreate does not provide requested component '${_Terreate_component}'; "
-      "supported components are Core, Platform, and Graphics")
+    if(_Terreate_component_index EQUAL -1)
+      set(Terreate_${_Terreate_component}_FOUND FALSE)
+      if(NOT Terreate_NOT_FOUND_MESSAGE)
+        set(Terreate_NOT_FOUND_MESSAGE
+          "Terreate does not provide requested component '${_Terreate_component}'; "
+          "supported components are Core, Platform, and Graphics")
+      endif()
   elseif(NOT Terreate_${_Terreate_component}_FOUND)
     if(_Terreate_component STREQUAL "Graphics" AND
        _Terreate_graphics_built AND NOT _Terreate_graphics_available)

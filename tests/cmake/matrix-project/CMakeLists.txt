@@ -92,9 +92,32 @@ if(NOT _component MATCHES "^(Core|Platform|Graphics)$")
   message(FATAL_ERROR "unknown matrix component ${_component}")
 endif()
 
-set(_consumer_source [=[
+if(_component STREQUAL "Graphics")
+  set(_consumer_source [=[
+#include <terreate/graphics/instance.hpp>
+#include <vulkan/vulkan.hpp>
+#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan_raii.hpp>
+
+#include <cstdint>
+
+static_assert(VK_API_VERSION_1_3 != 0);
+static_assert(VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT != 0);
+static_assert(static_cast<std::uint32_t>(
+                  vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding) ==
+              VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT);
+static_assert(sizeof(vk::raii::Context) > 0);
+
+int main() {
+  const auto capabilities = terreate::graphics::queryInstanceCapabilities();
+  return capabilities.has_value() ? 0 : 1;
+}
+]=])
+else()
+  set(_consumer_source [=[
 int main() { return 0; }
 ]=])
+endif()
 
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/matrix_consumer.cpp"
   "${_consumer_source}")

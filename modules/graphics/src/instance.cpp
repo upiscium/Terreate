@@ -4,7 +4,6 @@
 #include "instance_query.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <limits>
 #include <map>
@@ -97,9 +96,10 @@ struct InstanceAbiCounts {
 };
 
 [[nodiscard]] std::optional<InstanceAbiCounts>
-checked_instance_abi_counts(const InstancePlan &plan) noexcept {
-  const auto extension_count = checked_abi_count(plan.enabled_extensions.size());
-  const auto layer_count = checked_abi_count(plan.enabled_layers.size());
+checked_instance_abi_counts(const std::vector<std::string> &enabled_extensions,
+                            const std::vector<std::string> &enabled_layers) noexcept {
+  const auto extension_count = checked_abi_count(enabled_extensions.size());
+  const auto layer_count = checked_abi_count(enabled_layers.size());
   if (!extension_count || !layer_count) {
     return std::nullopt;
   }
@@ -243,63 +243,6 @@ add_explicit_requirements(RequirementMap &requirements, ExplicitRequirementLists
   };
 }
 
-[[nodiscard]] bool same_description(const InstanceDescription &left,
-                                    const InstanceDescription &right) {
-  return left.api_version == right.api_version &&
-         left.required_extensions == right.required_extensions &&
-         left.optional_extensions == right.optional_extensions &&
-         left.required_layers == right.required_layers &&
-         left.optional_layers == right.optional_layers && left.debug_utils == right.debug_utils &&
-         left.application_name == right.application_name &&
-         left.application_version == right.application_version &&
-         left.engine_name == right.engine_name && left.engine_version == right.engine_version;
-}
-
-[[nodiscard]] bool same_capabilities(const InstanceCapabilities &left,
-                                     const InstanceCapabilities &right) {
-  return left.loader_api_version == right.loader_api_version &&
-         left.available_extensions == right.available_extensions &&
-         left.available_layers == right.available_layers;
-}
-
-[[nodiscard]] bool same_decisions(const std::vector<InstanceDecision> &left,
-                                  const std::vector<InstanceDecision> &right) {
-  if (left.size() != right.size()) {
-    return false;
-  }
-  for (std::size_t index = 0; index < left.size(); ++index) {
-    if (left[index].name != right[index].name) {
-      return false;
-    }
-    if (left[index].strength != right[index].strength) {
-      return false;
-    }
-    if (left[index].outcome != right[index].outcome) {
-      return false;
-    }
-    if (left[index].reason != right[index].reason) {
-      return false;
-    }
-    if (left[index].derived != right[index].derived) {
-      return false;
-    }
-  }
-  return true;
-}
-
-[[nodiscard]] bool same_plan_values(const InstancePlan &left, const InstancePlan &right) {
-  return same_description(left.requested, right.requested) &&
-         same_capabilities(left.capabilities, right.capabilities) &&
-         left.effective_api_version == right.effective_api_version &&
-         left.api_version_provenance == right.api_version_provenance &&
-         left.enabled_extensions == right.enabled_extensions &&
-         left.enabled_layers == right.enabled_layers &&
-         same_decisions(left.extension_decisions, right.extension_decisions) &&
-         same_decisions(left.layer_decisions, right.layer_decisions) &&
-         left.debug_utils_enabled == right.debug_utils_enabled &&
-         left.debug_utils_derived == right.debug_utils_derived;
-}
-
 [[nodiscard]] std::string version_detail(std::uint32_t requested, std::uint32_t available) {
   return "requested Vulkan API version " + std::to_string(requested) + " exceeds loader version " +
          std::to_string(available);
@@ -383,9 +326,9 @@ struct CallbackState {
 };
 
 VKAPI_ATTR VkBool32 VKAPI_CALL instance_debug_callback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
-    VkDebugUtilsMessageTypeFlagsEXT message_types,
-    const VkDebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data) noexcept {
+    vk::DebugUtilsMessageSeverityFlagBitsEXT message_severity,
+    vk::DebugUtilsMessageTypeFlagsEXT message_types,
+    const vk::DebugUtilsMessengerCallbackDataEXT *callback_data, void *user_data) noexcept {
   // Vulkan invokes this function from native code.  Neither a null user-data
   // pointer nor malformed optional callback data may escape into the bridge,
   // and no exception may cross the Vulkan ABI boundary.
@@ -396,19 +339,15 @@ VKAPI_ATTR VkBool32 VKAPI_CALL instance_debug_callback(
   try {
     auto *state = static_cast<CallbackState *>(user_data);
 
-    std::array<detail::NativeDiagnosticCategory, 3> categories{};
-    std::size_t category_count = 0;
-    if ((message_types & VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT) != 0) {
-      categories[category_count++] = detail::NativeDiagnosticCategory::general;
-    }
-    if ((message_types & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) != 0) {
-      categories[category_count++] = detail::NativeDiagnosticCategory::validation;
-    }
-    if ((message_types & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) != 0) {
-      categories[category_count++] = detail::NativeDiagnosticCategory::performance;
-    }
-    if (category_count == 0) {
-      categories[category_count++] = detail::NativeDiagnosticCategory::general;
+    // The Vulkan-Hpp callback typedef intentionally uses its strongly typed
+    // wrappers.  Convert those values explicitly at this private raw-mask
+    // boundary before handing them to the Vulkan-neutral diagnostics bridge.
+    const auto raw_message_severity =
+        static_cast<VkDebugUtilsMessageSeverityFlagBitsEXT>(message_severity);
+    const auto raw_message_types = static_cast<VkDebugUtilsMessageTypeFlagsEXT>(message_types);
+    const auto mapped_categories = detail::map_vulkan_message_types(raw_message_types);
+    if (!mapped_categories) {
+      return VK_FALSE;
     }
 
     std::vector<detail::NativeDiagnosticObject> objects;
@@ -426,9 +365,8 @@ VKAPI_ATTR VkBool32 VKAPI_CALL instance_debug_callback(
     }
 
     const detail::NativeDiagnosticCallbackData native{
-        .severity = callback_severity(message_severity),
-        .categories =
-            std::span<const detail::NativeDiagnosticCategory>{categories.data(), category_count},
+        .severity = callback_severity(raw_message_severity),
+        .categories = mapped_categories->view(),
         .source = "vulkan",
         .operation = {},
         .message_id_name = callback_data->pMessageIdName == nullptr
@@ -454,33 +392,6 @@ VKAPI_ATTR VkBool32 VKAPI_CALL instance_debug_callback(
 }
 
 } // namespace
-
-InstancePlan::InstancePlan(const InstancePlan &other)
-    : requested(other.requested), capabilities(other.capabilities),
-      effective_api_version(other.effective_api_version),
-      api_version_provenance(other.api_version_provenance),
-      enabled_extensions(other.enabled_extensions), enabled_layers(other.enabled_layers),
-      extension_decisions(other.extension_decisions), layer_decisions(other.layer_decisions),
-      debug_utils_enabled(other.debug_utils_enabled),
-      debug_utils_derived(other.debug_utils_derived) {
-  if (other.canonical_ != nullptr) {
-    canonical_ = std::make_unique<InstancePlan>(*other.canonical_);
-  }
-}
-
-InstancePlan &InstancePlan::operator=(const InstancePlan &other) {
-  if (this == &other) {
-    return *this;
-  }
-
-  InstancePlan copy{other};
-  *this = std::move(copy);
-  return *this;
-}
-
-bool InstancePlan::matchesCanonical() const {
-  return canonical_ != nullptr && same_plan_values(*this, *canonical_);
-}
 
 const std::error_category &instance_error_category() noexcept { return error_category(); }
 
@@ -603,6 +514,17 @@ Result<InstanceCapabilities> queryInstanceCapabilities() {
 
 Result<InstancePlan> resolveInstance(const InstanceDescription &description,
                                      const InstanceCapabilities &capabilities) {
+  switch (description.debug_utils) {
+  case DebugUtilsMode::disabled:
+  case DebugUtilsMode::optional:
+  case DebugUtilsMode::required:
+    break;
+  default:
+    return semantic_failure<InstancePlan>(
+        InstanceError::invalid_description, "resolve Vulkan instance",
+        "debug_utils contains an invalid underlying DebugUtilsMode value");
+  }
+
   if (description.application_name.find('\0') != std::string::npos) {
     return semantic_failure<InstancePlan>(InstanceError::invalid_description,
                                           "resolve Vulkan instance",
@@ -677,16 +599,10 @@ Result<InstancePlan> resolveInstance(const InstanceDescription &description,
     return std::binary_search(available_layers.begin(), available_layers.end(), name);
   };
 
-  InstancePlan plan;
-  // These are immutable input snapshots.  Only the effective enabled
-  // collections and decisions below are canonicalized; the public snapshots
-  // retain the caller's original ordering and duplicates for inspection.
-  plan.requested = description;
-  plan.capabilities = capabilities;
-  plan.effective_api_version = effective_api_version;
-  plan.api_version_provenance = explicit_api_version
-                                    ? InstanceApiVersionProvenance::explicit_request
-                                    : InstanceApiVersionProvenance::default_policy;
+  std::vector<std::string> enabled_extensions;
+  std::vector<std::string> enabled_layers;
+  std::vector<InstanceDecision> extension_decisions;
+  std::vector<InstanceDecision> layer_decisions;
 
   for (const auto &[name, requirement] : extension_requirements) {
     if (!has_extension(name)) {
@@ -699,19 +615,19 @@ Result<InstancePlan> resolveInstance(const InstanceDescription &description,
         // An optional Debug Utils prerequisite may be declined.  The decision
         // is retained in the successful plan rather than disappearing as an
         // implicit feature fallback.
-        plan.extension_decisions.push_back(make_decision(name, requirement,
-                                                         InstanceDecisionOutcome::declined,
-                                                         InstanceDecisionReason::unsupported));
+        extension_decisions.push_back(make_decision(name, requirement,
+                                                    InstanceDecisionOutcome::declined,
+                                                    InstanceDecisionReason::unsupported));
         continue;
       }
-      plan.extension_decisions.push_back(make_decision(name, requirement,
-                                                       InstanceDecisionOutcome::declined,
-                                                       InstanceDecisionReason::unsupported));
+      extension_decisions.push_back(make_decision(name, requirement,
+                                                  InstanceDecisionOutcome::declined,
+                                                  InstanceDecisionReason::unsupported));
       continue;
     }
 
-    plan.enabled_extensions.push_back(name);
-    plan.extension_decisions.push_back(
+    enabled_extensions.push_back(name);
+    extension_decisions.push_back(
         make_decision(name, requirement, InstanceDecisionOutcome::accepted,
                       requirement.derived ? InstanceDecisionReason::derived_prerequisite
                                           : (requirement.strength == RequirementStrength::optional
@@ -726,36 +642,44 @@ Result<InstancePlan> resolveInstance(const InstanceDescription &description,
                                               "resolve Vulkan instance",
                                               requirement_detail("required instance layer", name));
       }
-      plan.layer_decisions.push_back(make_decision(name, requirement,
-                                                   InstanceDecisionOutcome::declined,
-                                                   InstanceDecisionReason::unsupported));
+      const auto decision = make_decision(name, requirement, InstanceDecisionOutcome::declined,
+                                          InstanceDecisionReason::unsupported);
+      layer_decisions.push_back(decision);
       continue;
     }
 
-    plan.enabled_layers.push_back(name);
-    plan.layer_decisions.push_back(make_decision(
-        name, requirement, InstanceDecisionOutcome::accepted,
-        requirement.strength == RequirementStrength::optional ? InstanceDecisionReason::supported
-                                                              : InstanceDecisionReason::requested));
+    enabled_layers.push_back(name);
+    const auto decision = make_decision(name, requirement, InstanceDecisionOutcome::accepted,
+                                        requirement.strength == RequirementStrength::optional
+                                            ? InstanceDecisionReason::supported
+                                            : InstanceDecisionReason::requested);
+    layer_decisions.push_back(decision);
   }
 
-  plan.debug_utils_enabled =
+  const bool debug_utils_enabled =
       description.debug_utils != DebugUtilsMode::disabled &&
-      std::binary_search(plan.enabled_extensions.begin(), plan.enabled_extensions.end(),
+      std::binary_search(enabled_extensions.begin(), enabled_extensions.end(),
                          std::string{debug_utils_extension});
   const auto debug_decision = std::find_if(
-      plan.extension_decisions.begin(), plan.extension_decisions.end(),
+      extension_decisions.begin(), extension_decisions.end(),
       [&](const InstanceDecision &decision) { return decision.name == debug_utils_extension; });
-  plan.debug_utils_derived = plan.debug_utils_enabled &&
-                             debug_decision != plan.extension_decisions.end() &&
-                             debug_decision->derived;
-  // Keep a private, exclusive immutable provenance snapshot.  The public
-  // fields remain inspectable, but native apply must not accept a hand-built or
-  // subsequently mutated plan as if it had passed through this resolver.
-  // InstancePlan's explicit value-copy operations deep-copy this snapshot
-  // instead of sharing it.
-  plan.canonical_ = std::make_unique<InstancePlan>(plan);
-  return plan;
+  const bool debug_utils_derived =
+      debug_utils_enabled && debug_decision != extension_decisions.end() && debug_decision->derived;
+
+  // The only construction path is this successful resolver boundary.  The
+  // input snapshots are copied exactly once into the plan; effective values
+  // and decisions are the separate canonical collections built above.
+  return InstancePlan{description,
+                      capabilities,
+                      effective_api_version,
+                      explicit_api_version ? InstanceApiVersionProvenance::explicit_request
+                                           : InstanceApiVersionProvenance::default_policy,
+                      std::move(enabled_extensions),
+                      std::move(enabled_layers),
+                      std::move(extension_decisions),
+                      std::move(layer_decisions),
+                      debug_utils_enabled,
+                      debug_utils_derived};
 }
 
 struct Instance::Impl {
@@ -788,8 +712,6 @@ struct Instance::Impl {
 
 Instance::Instance(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
 
-Instance::Instance() noexcept = default;
-
 Instance::Instance(Instance &&other) noexcept : impl_(std::move(other.impl_)) {}
 
 Instance &Instance::operator=(Instance &&other) noexcept {
@@ -814,44 +736,31 @@ vk::Instance Instance::nativeHandle() const noexcept {
   return *impl_->instance;
 }
 
-const InstancePlan &Instance::plan() const noexcept {
-  static const InstancePlan empty_plan{};
-  return impl_ == nullptr ? empty_plan : impl_->plan;
+const InstancePlan *Instance::plan() const noexcept {
+  return impl_ == nullptr ? nullptr : &impl_->plan;
 }
 
 Result<Instance> createInstance(const InstancePlan &plan, terreate::DiagnosticSinkView sink) {
-  if (!plan.matchesCanonical()) {
-    return invalid_plan_failure("instance plan was not produced by resolveInstance or was mutated");
-  }
-
-  // Re-resolve the caller's request and capability snapshot even after the
-  // provenance check.  This keeps every effective value and decision coupled
-  // to the resolver's canonical result before native Vulkan is touched.
-  const auto resolved = resolveInstance(plan.requested, plan.capabilities);
-  if (!resolved) {
-    const auto validation_detail =
-        "instance plan could not be revalidated: " + resolved.error().detail();
-    return invalid_plan_failure(validation_detail);
-  }
-  if (!same_plan_values(plan, *resolved)) {
-    return invalid_plan_failure("instance plan does not match resolveInstance output");
-  }
-
-  const auto &effective_plan = *resolved;
-  const auto abi_counts = checked_instance_abi_counts(effective_plan);
+  // Native apply is deliberately a consumer of the successful resolver
+  // output.  It performs only structural/ABI checks; semantic policy and
+  // capability resolution never re-enter this boundary.
+  const auto requested = plan.requested();
+  const auto enabled_extensions = plan.enabledExtensions();
+  const auto enabled_layers = plan.enabledLayers();
+  const auto abi_counts = checked_instance_abi_counts(enabled_extensions, enabled_layers);
   if (!abi_counts) {
     return invalid_plan_failure(
         "enabled Vulkan extension or layer count exceeds the uint32_t ABI limit");
   }
 
   std::vector<const char *> extension_names;
-  extension_names.reserve(effective_plan.enabled_extensions.size());
-  for (const auto &name : effective_plan.enabled_extensions) {
+  extension_names.reserve(enabled_extensions.size());
+  for (const auto &name : enabled_extensions) {
     extension_names.push_back(name.c_str());
   }
   std::vector<const char *> layer_names;
-  layer_names.reserve(effective_plan.enabled_layers.size());
-  for (const auto &name : effective_plan.enabled_layers) {
+  layer_names.reserve(enabled_layers.size());
+  for (const auto &name : enabled_layers) {
     layer_names.push_back(name.c_str());
   }
 
@@ -867,15 +776,13 @@ Result<Instance> createInstance(const InstancePlan &plan, terreate::DiagnosticSi
     callback->sink = sink;
 
     vk::ApplicationInfo application_info{};
-    application_info.pApplicationName = effective_plan.requested.application_name.empty()
-                                            ? nullptr
-                                            : effective_plan.requested.application_name.c_str();
-    application_info.applicationVersion = effective_plan.requested.application_version;
-    application_info.pEngineName = effective_plan.requested.engine_name.empty()
-                                       ? nullptr
-                                       : effective_plan.requested.engine_name.c_str();
-    application_info.engineVersion = effective_plan.requested.engine_version;
-    application_info.apiVersion = effective_plan.effective_api_version;
+    application_info.pApplicationName =
+        requested.application_name.empty() ? nullptr : requested.application_name.c_str();
+    application_info.applicationVersion = requested.application_version;
+    application_info.pEngineName =
+        requested.engine_name.empty() ? nullptr : requested.engine_name.c_str();
+    application_info.engineVersion = requested.engine_version;
+    application_info.apiVersion = plan.effectiveApiVersion();
 
     vk::InstanceCreateInfo create_info{};
     create_info.pApplicationInfo = &application_info;
@@ -885,27 +792,26 @@ Result<Instance> createInstance(const InstancePlan &plan, terreate::DiagnosticSi
     create_info.ppEnabledLayerNames = layer_names.data();
 
     vk::DebugUtilsMessengerCreateInfoEXT debug_create_info{};
-    if (effective_plan.debug_utils_enabled) {
+    if (plan.debugUtilsEnabled()) {
       debug_create_info.messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose |
                                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo |
                                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
                                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
       debug_create_info.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
                                       vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
-                                      vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
-      // Vulkan-Hpp exposes a type-safe callback typedef using vk:: enum
-      // wrappers.  The underlying ABI is the native VKAPI callback; retaining
-      // this explicit cast keeps the callback's VKAPI/noexcept/null-safe
-      // boundary visible and portable across Vulkan-Hpp's wrapper types.
-      debug_create_info.pfnUserCallback =
-          reinterpret_cast<vk::PFN_DebugUtilsMessengerCallbackEXT>(&instance_debug_callback);
+                                      vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance |
+                                      vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding;
+      // This thunk has the exact Vulkan-Hpp callback signature, including its
+      // VKAPI calling convention and non-throwing boundary, so no function
+      // pointer reinterpretation is needed.
+      debug_create_info.pfnUserCallback = &instance_debug_callback;
       debug_create_info.pUserData = callback.get();
       create_info.pNext = &debug_create_info;
     }
 
     vk::raii::Instance native_instance{*context, create_info};
     std::optional<vk::raii::DebugUtilsMessengerEXT> messenger;
-    if (effective_plan.debug_utils_enabled) {
+    if (plan.debugUtilsEnabled()) {
       native_operation = "create Vulkan Debug Utils messenger";
       messenger.emplace(native_instance, debug_create_info);
     }

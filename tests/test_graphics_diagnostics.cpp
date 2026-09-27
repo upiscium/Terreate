@@ -1,5 +1,6 @@
 #include "graphics_diagnostics.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,8 @@ using terreate::DiagnosticSeverity;
 namespace graphics_detail = terreate::graphics::detail;
 using NativeCallbackData = graphics_detail::NativeDiagnosticCallbackData;
 using NativeCategory = graphics_detail::NativeDiagnosticCategory;
+using NativeMessageTypeError = graphics_detail::NativeDiagnosticMessageTypeError;
+using NativeMessageTypes = VkDebugUtilsMessageTypeFlagsEXT;
 using NativeObject = graphics_detail::NativeDiagnosticObject;
 using NativeSeverity = graphics_detail::NativeDiagnosticSeverity;
 
@@ -23,6 +26,67 @@ using NativeSeverity = graphics_detail::NativeDiagnosticSeverity;
     std::fputc('\n', stderr);
   }
   return condition;
+}
+
+[[nodiscard]] bool check_mapping(NativeMessageTypes message_types,
+                                 std::span<const NativeCategory> expected,
+                                 const char *description) {
+  const auto result = graphics_detail::map_vulkan_message_types(message_types);
+  if (!result) {
+    return check(false, description);
+  }
+
+  const auto categories = result->view();
+  const bool matches = categories.size() == expected.size() &&
+                       std::equal(categories.begin(), categories.end(), expected.begin());
+  return check(matches, description);
+}
+
+[[nodiscard]] bool check_unsupported(NativeMessageTypes message_types, const char *description) {
+  const auto result = graphics_detail::map_vulkan_message_types(message_types);
+  const bool unsupported = !result && result.error() == NativeMessageTypeError::unsupported;
+  return check(unsupported, description);
+}
+
+[[nodiscard]] bool test_vulkan_message_type_mapping() {
+  constexpr NativeMessageTypes general = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
+  constexpr NativeMessageTypes validation = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+  constexpr NativeMessageTypes performance = VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+  constexpr NativeMessageTypes device_address_binding =
+      VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
+  constexpr VkDebugUtilsMessageTypeFlagsEXT unknown =
+      static_cast<VkDebugUtilsMessageTypeFlagsEXT>(1u << 31);
+
+  const std::array<NativeCategory, 1> expected_general{NativeCategory::general};
+  const std::array<NativeCategory, 2> expected_validation_performance{
+      NativeCategory::validation,
+      NativeCategory::performance,
+  };
+  const std::array<NativeCategory, 2> expected_general_device{
+      NativeCategory::general,
+      NativeCategory::device_address_binding,
+  };
+  const std::array<NativeCategory, 4> expected_all{
+      NativeCategory::general,
+      NativeCategory::validation,
+      NativeCategory::performance,
+      NativeCategory::device_address_binding,
+  };
+
+  bool passed = true;
+  passed &= check_mapping(general, expected_general, "GENERAL message type was not mapped");
+  passed &= check_mapping(validation | performance, expected_validation_performance,
+                          "VALIDATION/PERFORMANCE message types were not mapped");
+  passed &= check_mapping(device_address_binding | general, expected_general_device,
+                          "GENERAL/DEVICE_ADDRESS_BINDING order was not preserved");
+  passed &= check_mapping(device_address_binding | performance | validation | general, expected_all,
+                          "known message types were not mapped in canonical order");
+
+  passed &= check_unsupported(0, "zero message-type mask was not explicitly rejected");
+  passed &= check_unsupported(unknown, "unknown-only mask was not explicitly rejected");
+  passed &= check_unsupported(general | unknown,
+                              "mixed known/unknown message-type mask was truncated or accepted");
+  return passed;
 }
 
 struct Recorder {
@@ -55,12 +119,13 @@ struct Recorder {
       NativeObject{"VkDevice", 0, {}},
       NativeObject{"VkBuffer", 0xABCDEF0123456789ULL, "buffer"},
   };
-  std::array<NativeCategory, 5> categories{};
+  std::array<NativeCategory, 6> categories{};
   categories[0] = NativeCategory::performance;
   categories[1] = NativeCategory::general;
   categories[2] = NativeCategory::performance;
   categories[3] = NativeCategory::validation;
   categories[4] = NativeCategory::general;
+  categories[5] = NativeCategory::device_address_binding;
   const NativeCallbackData native{
       .severity = NativeSeverity::error,
       .categories = categories,
@@ -81,7 +146,12 @@ struct Recorder {
   }
 
   const auto &event = *result;
-  const std::vector<std::string> expected_categories{"GENERAL", "VALIDATION", "PERFORMANCE"};
+  const std::vector<std::string> expected_categories{
+      "GENERAL",
+      "VALIDATION",
+      "PERFORMANCE",
+      "DEVICE_ADDRESS_BINDING",
+  };
   const bool severity_preserved = event.severity == DiagnosticSeverity::error;
   passed &= check(severity_preserved, "native error severity was not preserved");
   passed &= check(event.categories == expected_categories,
@@ -258,6 +328,7 @@ struct Recorder {
 
 int main() {
   bool passed = true;
+  passed &= test_vulkan_message_type_mapping();
   passed &= test_known_translation_copies_payload();
   passed &= test_single_category_translation();
   passed &= test_input_lifetime_and_no_guessed_context();
