@@ -399,10 +399,63 @@ std::error_code make_error_code(InstanceError error) noexcept {
   return {static_cast<int>(error), instance_error_category()};
 }
 
+detail::NativeDiagnosticCategoryMappingResult
+detail::map_vulkan_message_types(VkDebugUtilsMessageTypeFlagsEXT message_types) noexcept {
+  constexpr VkDebugUtilsMessageTypeFlagsEXT general = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
+  constexpr VkDebugUtilsMessageTypeFlagsEXT validation =
+      VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+  constexpr VkDebugUtilsMessageTypeFlagsEXT performance =
+      VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+
+  constexpr VkDebugUtilsMessageTypeFlagsEXT known_message_type_mask =
+#ifdef VK_EXT_device_address_binding
+      general | validation | performance |
+      VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
+#else
+      general | validation | performance;
+#endif
+
+  const auto native_message_types = static_cast<VkDebugUtilsMessageTypeFlagsEXT>(message_types);
+  if (native_message_types == 0 || (native_message_types & ~known_message_type_mask) != 0) {
+    return std::unexpected(NativeDiagnosticMessageTypeError::unsupported);
+  }
+
+  NativeDiagnosticCategoryMapping mapping{};
+  if ((native_message_types & general) != 0) {
+    mapping.categories[mapping.count++] = NativeDiagnosticCategory::general;
+  }
+  if ((native_message_types & validation) != 0) {
+    mapping.categories[mapping.count++] = NativeDiagnosticCategory::validation;
+  }
+  if ((native_message_types & performance) != 0) {
+    mapping.categories[mapping.count++] = NativeDiagnosticCategory::performance;
+  }
+#ifdef VK_EXT_device_address_binding
+  if ((native_message_types & VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT) != 0) {
+    mapping.categories[mapping.count++] = NativeDiagnosticCategory::device_address_binding;
+  }
+#endif
+  return mapping;
+}
+
 namespace {
 
 [[nodiscard]] std::unique_ptr<vk::raii::Context> make_instance_context() {
   return std::make_unique<vk::raii::Context>();
+}
+
+[[nodiscard]] auto debug_message_types() {
+  auto message_types = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
+                       vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
+                       vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance;
+#ifdef VK_EXT_device_address_binding
+  // Do not name the generated Hpp enumerator here.  The semantic category is
+  // optional in older Vulkan-Hpp surfaces even though the raw extension bit
+  // can be observed by a newer loader.
+  message_types |= static_cast<vk::DebugUtilsMessageTypeFlagBitsEXT>(
+      VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT);
+#endif
+  return message_types;
 }
 
 } // namespace
@@ -691,10 +744,11 @@ struct Instance::Impl {
 
   Impl(std::unique_ptr<vk::raii::Context> context_owner,
        std::unique_ptr<CallbackState> callback_owner, vk::raii::Instance instance_owner,
-       std::optional<vk::raii::DebugUtilsMessengerEXT> messenger_owner, InstancePlan instance_plan)
+       std::optional<vk::raii::DebugUtilsMessengerEXT> messenger_owner,
+       const InstancePlan &instance_plan)
       : context(std::move(context_owner)), callback(std::move(callback_owner)),
         instance(std::move(instance_owner)), messenger(std::move(messenger_owner)),
-        plan(std::move(instance_plan)) {}
+        plan(instance_plan) {}
 
   void destroy() noexcept {
     // pUserData points into callback.  Destroy the messenger while that state
@@ -744,9 +798,9 @@ Result<Instance> createInstance(const InstancePlan &plan, terreate::DiagnosticSi
   // Native apply is deliberately a consumer of the successful resolver
   // output.  It performs only structural/ABI checks; semantic policy and
   // capability resolution never re-enter this boundary.
-  const auto requested = plan.requested();
-  const auto enabled_extensions = plan.enabledExtensions();
-  const auto enabled_layers = plan.enabledLayers();
+  const auto &requested = plan.requested();
+  const auto &enabled_extensions = plan.enabledExtensions();
+  const auto &enabled_layers = plan.enabledLayers();
   const auto abi_counts = checked_instance_abi_counts(enabled_extensions, enabled_layers);
   if (!abi_counts) {
     return invalid_plan_failure(
@@ -797,10 +851,7 @@ Result<Instance> createInstance(const InstancePlan &plan, terreate::DiagnosticSi
                                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eInfo |
                                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
                                           vk::DebugUtilsMessageSeverityFlagBitsEXT::eError;
-      debug_create_info.messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
-                                      vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
-                                      vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance |
-                                      vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding;
+      debug_create_info.messageType = debug_message_types();
       // This thunk has the exact Vulkan-Hpp callback signature, including its
       // VKAPI calling convention and non-throwing boundary, so no function
       // pointer reinterpretation is needed.

@@ -117,12 +117,15 @@ component discovers or links GLFW or VMA.
 ownership. `resolveInstance` copies its `InstanceDescription` and
 `InstanceCapabilities` inputs into a value-owned `InstancePlan`; the inputs
 may be changed or destroyed after resolution. `InstancePlan` is copyable and
-its observer functions return owned values. `createInstance` borrows a plan
-only for the call and, on success, stores an independent copy in its
-move-only `Instance` owner.
+uses ordinary default move semantics. Its observer functions are zero-copy,
+read-only borrowed references, and `createInstance` consumes those references
+directly without normalizing or copying the plan before native apply. On
+success, `createInstance` stores an independent copy in its move-only
+`Instance` owner.
 
 `Instance::nativeHandle()` and `Instance::plan()` are borrowed observers. Do
 not retain either result after destroying or moving the owning `Instance`;
-reacquire them from the current owner. A `DiagnosticSinkView` passed to
+reacquire them from the current owner. Plan collection observers follow the
+same lifetime rule across plan moves. A `DiagnosticSinkView` passed to
 `createInstance` is copied as a view, not as ownership of its target, so the
 application-owned sink target must outlive the resulting `Instance`.

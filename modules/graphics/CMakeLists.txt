@@ -122,8 +122,7 @@ if(NOT _terreate_vulkan_headers_available)
     "Terreate Graphics requires Vulkan >= "
     "${TERREATE_MINIMUM_VULKAN_API_VERSION} with a compileable "
     "vulkan/vulkan_core.h, vulkan/vulkan.hpp, and "
-    "vulkan/vulkan_raii.hpp usage closure, including the "
-    "DEVICE_ADDRESS_BINDING message type, through the effective "
+    "vulkan/vulkan_raii.hpp usage closure through the effective "
     "Vulkan::Vulkan include order; refusing a loader/basic-only, "
     "partial, or decoy package before compile")
 endif()

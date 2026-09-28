@@ -100,56 +100,52 @@ struct InstanceCapabilities {
 /// no duplicates; the requested and capability snapshots preserve the exact
 /// input values, including their order and duplicates.  Only resolveInstance
 /// can construct a plan.  The plan owns all snapshots, enabled collections,
-/// and decisions.  Its observers return independent owned values, so a
-/// successful resolution cannot be forged or changed before native apply and
-/// no observer reference has a plan lifetime to track.
+/// and decisions.  Its observers return borrowed read-only views, so a
+/// successful resolution cannot be forged or changed before native apply;
+/// observer references must not outlive the plan they view.
 ///
-/// InstancePlan is a copyable value.  Its move operations intentionally
-/// preserve the source as well as the destination because moving a
-/// pre-native configuration must not silently consume the successful result.
+/// InstancePlan is a copyable value.  Its move operations use the ordinary
+/// value semantics of its owned data; borrowed observers must not be retained
+/// across a move of the plan.
 class InstancePlan {
 public:
   InstancePlan(const InstancePlan &) = default;
   InstancePlan &operator=(const InstancePlan &) = default;
-  // A plan is a value-owned resolution result, not a resource handle.  Keep
-  // its source intact when an rvalue is used so direct native apply cannot
-  // accidentally consume the successful plan before it is observed again.
-  // These are copies of the value-owned Data member rather than destructive
-  // resource moves.  They intentionally do not promise noexcept: copying the
-  // owned strings and vectors may allocate.
-  // NOLINTNEXTLINE(performance-noexcept-move-constructor,performance-move-constructor-init)
-  InstancePlan(InstancePlan &&other) : data_(other.data_) {}
-  // NOLINTNEXTLINE(performance-noexcept-move-constructor)
-  InstancePlan &operator=(InstancePlan &&other) {
-    if (this != &other) {
-      data_ = other.data_;
-    }
-    return *this;
-  }
+  InstancePlan(InstancePlan &&) noexcept = default;
+  InstancePlan &operator=(InstancePlan &&) noexcept = default;
   ~InstancePlan() = default;
 
-  /// Return an owning copy of the original request snapshot.
-  [[nodiscard]] InstanceDescription requested() const { return data_.requested; }
-  /// Return an owning copy of the capability snapshot used for resolution.
-  [[nodiscard]] InstanceCapabilities capabilities() const { return data_.capabilities; }
+  /// Return a borrowed, read-only view of the original request snapshot.
+  /// The reference is valid while this plan remains alive and is invalidated
+  /// by moving from or assigning to the plan.
+  [[nodiscard]] const InstanceDescription &requested() const noexcept { return data_.requested; }
+  /// Return a borrowed, read-only view of the capability snapshot used for
+  /// resolution.  The reference follows the same lifetime rules as requested().
+  [[nodiscard]] const InstanceCapabilities &capabilities() const noexcept {
+    return data_.capabilities;
+  }
   [[nodiscard]] std::uint32_t effectiveApiVersion() const noexcept {
     return data_.effective_api_version;
   }
   [[nodiscard]] InstanceApiVersionProvenance apiVersionProvenance() const noexcept {
     return data_.api_version_provenance;
   }
-  /// Return an owning copy of the canonical enabled extension collection.
-  [[nodiscard]] std::vector<std::string> enabledExtensions() const {
+  /// Return a borrowed, read-only view of the canonical enabled extension
+  /// collection.  No observer allocation or copy is performed.
+  [[nodiscard]] const std::vector<std::string> &enabledExtensions() const noexcept {
     return data_.enabled_extensions;
   }
-  /// Return an owning copy of the canonical enabled layer collection.
-  [[nodiscard]] std::vector<std::string> enabledLayers() const { return data_.enabled_layers; }
-  /// Return owning copies of the extension resolution decisions.
-  [[nodiscard]] std::vector<InstanceDecision> extensionDecisions() const {
+  /// Return a borrowed, read-only view of the canonical enabled layer
+  /// collection.
+  [[nodiscard]] const std::vector<std::string> &enabledLayers() const noexcept {
+    return data_.enabled_layers;
+  }
+  /// Return a borrowed, read-only view of the extension resolution decisions.
+  [[nodiscard]] const std::vector<InstanceDecision> &extensionDecisions() const noexcept {
     return data_.extension_decisions;
   }
-  /// Return owning copies of the layer resolution decisions.
-  [[nodiscard]] std::vector<InstanceDecision> layerDecisions() const {
+  /// Return a borrowed, read-only view of the layer resolution decisions.
+  [[nodiscard]] const std::vector<InstanceDecision> &layerDecisions() const noexcept {
     return data_.layer_decisions;
   }
   [[nodiscard]] bool debugUtilsEnabled() const noexcept { return data_.debug_utils_enabled; }

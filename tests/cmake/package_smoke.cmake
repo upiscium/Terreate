@@ -256,10 +256,6 @@ file(WRITE "${_all_consumer}/main.cpp" [=[
 #include <cstdint>
 
 static_assert(VK_API_VERSION_1_3 != 0);
-static_assert(VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT != 0);
-static_assert(static_cast<std::uint32_t>(
-                  vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding) ==
-              VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT);
 static_assert(sizeof(vk::raii::Context) > 0);
 
 int main() {
@@ -728,7 +724,6 @@ file(WRITE "${_linked_headers_vulkan_include}/vulkan/vulkan_core.h" [=[
 #define VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 0x00000001U
 #define VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 0x00000002U
 #define VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT 0x00000004U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT 0x00000008U
 
 using VkDebugUtilsMessageTypeFlagsEXT = std::uint32_t;
 ]=])
@@ -746,7 +741,6 @@ enum class DebugUtilsMessageTypeFlagBitsEXT : std::uint32_t {
   eGeneral = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
   eValidation = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
   ePerformance = VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-  eDeviceAddressBinding = VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
 };
 
 using DebugUtilsMessageTypeFlagsEXT = std::uint32_t;
@@ -832,10 +826,6 @@ file(WRITE "${_linked_headers_consumer}/main.cpp"
   "#include <vulkan/vulkan_raii.hpp>\n"
   "#include <cstdint>\n"
   "static_assert(VK_API_VERSION_1_3 != 0);\n"
-  "static_assert(VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT != 0);\n"
-  "static_assert(static_cast<std::uint32_t>(\n"
-  "                  vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding) ==\n"
-  "              VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT);\n"
   "static_assert(sizeof(vk::raii::Context) > 0);\n"
   "int main() {\n"
   "  const auto capabilities =\n"
@@ -1085,12 +1075,202 @@ function(terreate_expect_installed_graphics_rejection name vulkan_config_dir)
   endif()
   string(TOLOWER "${_configure_output}\n${_configure_error}" _diagnostics)
   if(NOT _diagnostics MATCHES
-       "vulkan/vulkan_raii|device_address_binding|partial|decoy")
+       "vulkan/vulkan_raii|partial|decoy")
     message(FATAL_ERROR
       "installed ${name} rejection did not identify the incomplete Vulkan "
       "declarations\n${_configure_output}\n${_configure_error}")
   endif()
 endfunction()
+
+# A complete Vulkan::Vulkan closure must not hide an earlier, partial legacy
+# Vulkan_INCLUDE_DIR.  The installed Graphics target publishes that legacy
+# path directly, before Vulkan::Vulkan's transitive includes; the config probe
+# must therefore reject this conflicting package instead of accepting a
+# consumer that would select the stale headers.
+set(_legacy_partial_shadow_vulkan_root
+  "${_terreate_package_root}/legacy-partial-shadow-vulkan")
+set(_legacy_partial_shadow_vulkan_config_dir
+  "${_legacy_partial_shadow_vulkan_root}/lib/cmake/Vulkan")
+file(MAKE_DIRECTORY "${_legacy_partial_shadow_vulkan_config_dir}")
+file(WRITE "${_legacy_partial_shadow_vulkan_config_dir}/VulkanConfig.cmake"
+  "set(Vulkan_VERSION 1.3.0)\n"
+  "set(Vulkan_FOUND TRUE)\n"
+  "set(Vulkan_INCLUDE_DIR \"${_partial_shadow_vulkan_include}\")\n"
+  "set(Vulkan_INCLUDE_DIRS \"${_partial_shadow_vulkan_include}\")\n"
+  "set(Vulkan_LIBRARY \"${_linked_headers_vulkan_library}\")\n"
+  "add_library(Vulkan::Vulkan UNKNOWN IMPORTED)\n"
+  "set_target_properties(Vulkan::Vulkan PROPERTIES\n"
+  "  IMPORTED_LOCATION \"${_linked_headers_vulkan_library}\"\n"
+  "  INTERFACE_INCLUDE_DIRECTORIES \"${_linked_headers_vulkan_include}\")\n")
+file(WRITE
+  "${_legacy_partial_shadow_vulkan_config_dir}/VulkanConfigVersion.cmake"
+  "set(PACKAGE_VERSION \"1.3.0\")\n"
+  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
+  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
+  "endif()\n")
+terreate_expect_installed_graphics_rejection(
+  legacy-partial-shadow "${_legacy_partial_shadow_vulkan_config_dir}")
+
+function(terreate_expect_installed_graphics_acceptance name vulkan_config_dir)
+  set(_consumer
+    "${_terreate_package_root}/all_components/${name}-consumer")
+  file(MAKE_DIRECTORY "${_consumer}")
+  file(WRITE "${_consumer}/CMakeLists.txt"
+    "cmake_minimum_required(VERSION 3.28)\n"
+    "project(Terreate${name} LANGUAGES CXX)\n"
+    "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
+    "set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)\n"
+    "find_package(Terreate REQUIRED COMPONENTS Graphics)\n"
+    "if(NOT TARGET Terreate::Graphics)\n"
+    "  message(FATAL_ERROR \"accepted Vulkan package omitted Graphics\")\n"
+    "endif()\n")
+
+  set(_consumer_build
+    "${_terreate_package_root}/all_components/${name}-consumer-build")
+  file(REMOVE_RECURSE "${_consumer_build}")
+  set(_configure
+    "${CMAKE_COMMAND}"
+    -S "${_consumer}"
+    -B "${_consumer_build}")
+  if(DEFINED TERREATE_CMAKE_GENERATOR AND
+     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+    list(APPEND _configure -G "${TERREATE_CMAKE_GENERATOR}")
+  endif()
+  if(DEFINED TERREATE_CXX_COMPILER AND
+     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+    list(APPEND _configure
+      "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+  endif()
+  list(APPEND _configure
+    "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+    "-DVulkan_DIR:PATH=${vulkan_config_dir}"
+    -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE)
+  execute_process(
+    COMMAND ${_configure}
+    RESULT_VARIABLE _configure_result
+    OUTPUT_VARIABLE _configure_output
+    ERROR_VARIABLE _configure_error)
+  if(NOT _configure_result EQUAL 0)
+    message(FATAL_ERROR
+      "installed ${name} Vulkan package was rejected unexpectedly\n"
+      "${_configure_output}\n${_configure_error}")
+  endif()
+endfunction()
+
+function(terreate_expect_installed_graphics_legacy_include
+    name vulkan_config_dir expected_include_dir)
+  set(_consumer
+    "${_terreate_package_root}/all_components/${name}-consumer")
+  file(MAKE_DIRECTORY "${_consumer}")
+  file(WRITE "${_consumer}/CMakeLists.txt"
+    "cmake_minimum_required(VERSION 3.28)\n"
+    "project(Terreate${name} LANGUAGES CXX)\n"
+    "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
+    "set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)\n"
+    "find_package(Terreate REQUIRED COMPONENTS Graphics)\n"
+    "if(NOT TARGET Terreate::Graphics)\n"
+    "  message(FATAL_ERROR \"legacy Vulkan include fixture omitted Graphics\")\n"
+    "endif()\n"
+    "get_target_property(_legacy_graphics_includes Terreate::Graphics\n"
+    "  INTERFACE_INCLUDE_DIRECTORIES)\n"
+    "get_target_property(_legacy_graphics_system_includes Terreate::Graphics\n"
+    "  INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)\n"
+    "set(_legacy_graphics_all_includes\n"
+    "  \"\${_legacy_graphics_includes};\${_legacy_graphics_system_includes}\")\n"
+    "list(FIND _legacy_graphics_all_includes \"${expected_include_dir}\"\n"
+    "  _legacy_graphics_include_index)\n"
+    "if(_legacy_graphics_include_index EQUAL -1)\n"
+    "  message(FATAL_ERROR \"validated legacy Vulkan include path was not propagated to Graphics: "
+    "\${_legacy_graphics_all_includes}\")\n"
+    "endif()\n"
+    "add_executable(legacy_vulkan_include_consumer main.cpp)\n"
+    "target_link_libraries(legacy_vulkan_include_consumer PRIVATE Terreate::Graphics)\n"
+    "set_target_properties(legacy_vulkan_include_consumer PROPERTIES\n"
+    "  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)\n")
+  file(WRITE "${_consumer}/main.cpp" [=[
+#include <terreate/graphics/instance.hpp>
+#include <vulkan/vulkan_raii.hpp>
+
+static_assert(sizeof(vk::raii::Context) > 0);
+
+int main() { return 0; }
+]=])
+
+  set(_consumer_build
+    "${_terreate_package_root}/all_components/${name}-consumer-build")
+  file(REMOVE_RECURSE "${_consumer_build}")
+  set(_configure
+    "${CMAKE_COMMAND}"
+    -S "${_consumer}"
+    -B "${_consumer_build}")
+  if(DEFINED TERREATE_CMAKE_GENERATOR AND
+     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+    list(APPEND _configure -G "${TERREATE_CMAKE_GENERATOR}")
+  endif()
+  if(DEFINED TERREATE_CXX_COMPILER AND
+     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+    list(APPEND _configure
+      "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+  endif()
+  list(APPEND _configure
+    "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+    "-DVulkan_DIR:PATH=${vulkan_config_dir}"
+    -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE
+    -DCMAKE_FIND_PACKAGE_NO_MODULE=TRUE)
+  execute_process(
+    COMMAND ${_configure}
+    RESULT_VARIABLE _configure_result
+    OUTPUT_VARIABLE _configure_output
+    ERROR_VARIABLE _configure_error)
+  if(NOT _configure_result EQUAL 0)
+    message(FATAL_ERROR
+      "installed ${name} legacy Vulkan include consumer configuration failed\n"
+      "${_configure_output}\n${_configure_error}")
+  endif()
+
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${_consumer_build}"
+    RESULT_VARIABLE _build_result
+    OUTPUT_VARIABLE _build_output
+    ERROR_VARIABLE _build_error)
+  if(NOT _build_result EQUAL 0)
+    message(FATAL_ERROR
+      "installed ${name} legacy Vulkan include consumer build failed\n"
+      "${_build_output}\n${_build_error}")
+  endif()
+endfunction()
+
+# FindVulkan-compatible legacy variables can describe a complete Vulkan-Hpp
+# tree even when Vulkan::Vulkan publishes only the loader.  The installed
+# package must either reject that package or propagate the validated path to
+# the exported Graphics consumer; exercise the latter contract here.
+set(_legacy_variable_vulkan_root
+  "${_terreate_package_root}/legacy-variable-vulkan")
+set(_legacy_variable_vulkan_config_dir
+  "${_legacy_variable_vulkan_root}/lib/cmake/Vulkan")
+find_library(_legacy_variable_vulkan_library NAMES vulkan)
+if(NOT _legacy_variable_vulkan_library)
+  message(FATAL_ERROR
+    "legacy Vulkan variable fixture could not locate a Vulkan loader library")
+endif()
+file(MAKE_DIRECTORY "${_legacy_variable_vulkan_config_dir}")
+file(WRITE "${_legacy_variable_vulkan_config_dir}/VulkanConfig.cmake"
+  "set(Vulkan_VERSION 1.3.0)\n"
+  "set(Vulkan_FOUND TRUE)\n"
+  "set(Vulkan_INCLUDE_DIR \"$ENV{VULKAN_HEADERS_INCLUDE}\")\n"
+  "set(Vulkan_INCLUDE_DIRS \"$ENV{VULKAN_HEADERS_INCLUDE}\")\n"
+  "set(Vulkan_LIBRARY \"${_legacy_variable_vulkan_library}\")\n"
+  "add_library(Vulkan::Vulkan UNKNOWN IMPORTED)\n"
+  "set_target_properties(Vulkan::Vulkan PROPERTIES\n"
+  "  IMPORTED_LOCATION \"${_legacy_variable_vulkan_library}\")\n")
+file(WRITE "${_legacy_variable_vulkan_config_dir}/VulkanConfigVersion.cmake"
+  "set(PACKAGE_VERSION \"1.3.0\")\n"
+  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
+  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
+  "endif()\n")
+terreate_expect_installed_graphics_legacy_include(
+  legacy-variable "${_legacy_variable_vulkan_config_dir}"
+  "$ENV{VULKAN_HEADERS_INCLUDE}")
 
 # Each of these package-local Vulkan fixtures is intentionally incomplete.
 # They all declare a Vulkan 1.3 version and a Vulkan::Vulkan target so a
@@ -1132,7 +1312,6 @@ file(WRITE "${_missing_hpp_vulkan_include}/vulkan/vulkan_core.h" [=[
 #define VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 0x00000001U
 #define VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 0x00000002U
 #define VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT 0x00000004U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT 0x00000008U
 using VkDebugUtilsMessageTypeFlagsEXT = unsigned int;
 ]=])
 file(WRITE "${_missing_hpp_vulkan_include}/vulkan/vulkan_raii.hpp"
@@ -1159,6 +1338,7 @@ set(_missing_device_vulkan_config_dir
 file(MAKE_DIRECTORY "${_missing_device_vulkan_include}/vulkan"
   "${_missing_device_vulkan_config_dir}")
 file(WRITE "${_missing_device_vulkan_include}/vulkan/vulkan_core.h" [=[
+#define VK_API_VERSION_1_0 4194304U
 #define VK_API_VERSION_1_3 4202496U
 #define VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 0x00000001U
 #define VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 0x00000002U
@@ -1166,14 +1346,28 @@ file(WRITE "${_missing_device_vulkan_include}/vulkan/vulkan_core.h" [=[
 using VkDebugUtilsMessageTypeFlagsEXT = unsigned int;
 ]=])
 file(WRITE "${_missing_device_vulkan_include}/vulkan/vulkan.hpp" [=[
+#pragma once
+
+#include <vulkan/vulkan_core.h>
+
+namespace vk {
+
 enum class DebugUtilsMessageTypeFlagBitsEXT : unsigned int {
   eGeneral = 1,
   eValidation = 2,
   ePerformance = 4,
 };
+
+struct Instance {};
+
+} // namespace vk
 ]=])
 file(WRITE "${_missing_device_vulkan_include}/vulkan/vulkan_raii.hpp"
-  "class Context {}; class Instance {}; class DebugUtilsMessengerEXT {};\n")
+  "#pragma once\n"
+  "#include <vulkan/vulkan.hpp>\n"
+  "namespace vk::raii {\n"
+  "class Context {}; class Instance {}; class DebugUtilsMessengerEXT {};\n"
+  "}\n")
 file(WRITE "${_missing_device_vulkan_config_dir}/VulkanConfig.cmake"
   "set(Vulkan_VERSION 1.3.0)\n"
   "set(Vulkan_FOUND TRUE)\n"
@@ -1185,7 +1379,7 @@ file(WRITE "${_missing_device_vulkan_config_dir}/VulkanConfigVersion.cmake"
   "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
   "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
   "endif()\n")
-terreate_expect_installed_graphics_rejection(
+terreate_expect_installed_graphics_acceptance(
   missing-device-address-binding "${_missing_device_vulkan_config_dir}")
 
 # A Vulkan loader package can be present without the Vulkan-Hpp RAII header
@@ -1670,3 +1864,110 @@ if(NOT "${_disabled_output}\n${_disabled_error}" MATCHES
     "disabled component diagnostic did not name the exact remediation option:\n"
     "${_disabled_output}\n${_disabled_error}")
 endif()
+
+# Exercise the other independently installable component closures as packages,
+# not only as source-subdirectory configurations.  The installed exports must
+# retain Core as the dependency of Platform and Graphics, while never importing
+# an optional sibling merely because it was built in a different package.
+function(terreate_build_installed_component_consumer name prefix component)
+  set(_consumer
+    "${_terreate_package_root}/${name}/consumer")
+  file(MAKE_DIRECTORY "${_consumer}")
+
+  set(_consumer_contents "")
+  string(APPEND _consumer_contents
+    "cmake_minimum_required(VERSION 3.28)\n"
+    "project(Terreate${name}Consumer LANGUAGES CXX)\n"
+    "find_package(Terreate REQUIRED COMPONENTS ${component})\n"
+    "if(NOT TARGET Terreate::Core OR NOT TARGET Terreate::${component})\n"
+    "  message(FATAL_ERROR \"${name} package omitted its requested target closure\")\n"
+    "endif()\n")
+  set(_source "")
+  if("${component}" STREQUAL "Platform")
+    string(APPEND _consumer_contents
+      "if(TARGET Terreate::Graphics OR TARGET Vulkan::Vulkan)\n"
+      "  message(FATAL_ERROR \"Platform-only package imported Graphics or Vulkan\")\n"
+      "endif()\n"
+      "get_target_property(_platform_links Terreate::Platform\n"
+      "  INTERFACE_LINK_LIBRARIES)\n"
+      "if(NOT \"\${_platform_links}\" MATCHES \"Core\" OR\n"
+      "   \"\${_platform_links}\" MATCHES \"Graphics|Vulkan\")\n"
+      "  message(FATAL_ERROR \"Platform package has an invalid dependency closure: \${_platform_links}\")\n"
+      "endif()\n"
+      "add_executable(package_component_consumer main.cpp)\n"
+      "target_link_libraries(package_component_consumer PRIVATE Terreate::Platform)\n")
+    string(APPEND _source "int main() { return 0; }\n")
+  elseif("${component}" STREQUAL "Graphics")
+    string(APPEND _consumer_contents
+      "if(TARGET Terreate::Platform OR NOT TARGET Vulkan::Vulkan OR NOT Vulkan_FOUND)\n"
+      "  message(FATAL_ERROR \"Graphics-only package omitted Vulkan or imported Platform\")\n"
+      "endif()\n"
+      "get_target_property(_graphics_links Terreate::Graphics\n"
+      "  INTERFACE_LINK_LIBRARIES)\n"
+      "if(NOT \"\${_graphics_links}\" MATCHES \"Core\" OR\n"
+      "   NOT \"\${_graphics_links}\" MATCHES \"Vulkan::Vulkan\" OR\n"
+      "   \"\${_graphics_links}\" MATCHES \"Platform\")\n"
+      "  message(FATAL_ERROR \"Graphics package has an invalid dependency closure: \${_graphics_links}\")\n"
+      "endif()\n"
+      "add_executable(package_component_consumer main.cpp)\n"
+      "target_link_libraries(package_component_consumer PRIVATE Terreate::Graphics)\n")
+    string(APPEND _source
+      "#include <terreate/graphics/instance.hpp>\n"
+      "int main() { return 0; }\n")
+  else()
+    message(FATAL_ERROR "unsupported installed package component ${component}")
+  endif()
+  string(APPEND _consumer_contents
+    "set_target_properties(package_component_consumer PROPERTIES\n"
+    "  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)\n")
+
+  file(WRITE "${_consumer}/CMakeLists.txt" "${_consumer_contents}")
+  file(WRITE "${_consumer}/main.cpp" "${_source}")
+
+  set(_consumer_build
+    "${_terreate_package_root}/${name}/consumer-build")
+  file(REMOVE_RECURSE "${_consumer_build}")
+  set(_configure
+    "${CMAKE_COMMAND}"
+    -S "${_consumer}"
+    -B "${_consumer_build}")
+  if(DEFINED TERREATE_CMAKE_GENERATOR AND
+     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+    list(APPEND _configure -G "${TERREATE_CMAKE_GENERATOR}")
+  endif()
+  if(DEFINED TERREATE_CXX_COMPILER AND
+     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+    list(APPEND _configure
+      "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+  endif()
+  list(APPEND _configure "-DCMAKE_PREFIX_PATH:PATH=${prefix}")
+  execute_process(
+    COMMAND ${_configure}
+    RESULT_VARIABLE _configure_result
+    OUTPUT_VARIABLE _configure_output
+    ERROR_VARIABLE _configure_error)
+  if(NOT _configure_result EQUAL 0)
+    message(FATAL_ERROR
+      "installed ${name} ${component} consumer configuration failed\n"
+      "${_configure_output}\n${_configure_error}")
+  endif()
+
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${_consumer_build}"
+    RESULT_VARIABLE _build_result
+    OUTPUT_VARIABLE _build_output
+    ERROR_VARIABLE _build_error)
+  if(NOT _build_result EQUAL 0)
+    message(FATAL_ERROR
+      "installed ${name} ${component} consumer build failed\n"
+      "${_build_output}\n${_build_error}")
+  endif()
+endfunction()
+
+terreate_package_configure_and_install(platform_only ON OFF)
+terreate_build_installed_component_consumer(
+  platform_only "${platform_only_PREFIX}" Platform)
+
+terreate_package_configure_and_install(graphics_only OFF ON)
+terreate_build_installed_component_consumer(
+  graphics_only "${graphics_only_PREFIX}" Graphics)

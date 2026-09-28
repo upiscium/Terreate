@@ -80,8 +80,9 @@ ownership/lifetime contract above are unchanged.
 ## Graphics translation boundary
 
 Graphics keeps its translation input private in `modules/graphics/src/`. The
-input is a Vulkan-neutral representation of the Debug Utils callback data after
-the native adapter has translated ABI values into private semantic values:
+#350 bridge is Vulkan-neutral: its input is a Vulkan-neutral representation of
+the Debug Utils callback data after the #268 native adapter has translated ABI
+values into private semantic values:
 severity, a borrowed collection of semantic category values, message ID
 name/number, message text, operation/context, and object
 `object_handle`/type/name values. These input fields may borrow the native
@@ -112,10 +113,15 @@ downgraded to an error event or
 silently discarded. The private severity and category representations reserve
 semantic unknown sentinels for this rejection path; they are not Vulkan values.
 
-The Vulkan callback adapter recognizes the four pinned message-type bits,
-including `VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT`. It
-rejects a zero mask and any unknown bit before translation; it never truncates
-unknown bits or fabricates a `GENERAL` category for an empty mask.
+The #268 native callback adapter recognizes the common General, Validation,
+and Performance message-type bits and, when the selected Vulkan headers expose
+it, the optional `VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT`
+bit. It rejects a zero mask and any unknown bit before translation; it never
+truncates unknown bits or fabricates a `GENERAL` category for an empty mask.
+The public Graphics header and package compile probe do not require the
+optional Device Address Binding declaration. A Vulkan-Hpp surface that lacks
+that extension can still consume the public instance API; only that raw bit is
+then treated as unknown by the native adapter.
 
 No messenger or Instance is created or owned here. Actual Vulkan callback
 wiring, `VkDebugUtils` types and constants, and `DebugMessenger`
@@ -144,8 +150,12 @@ not installed or exported as a public Graphics diagnostics API.
 The Graphics instance adapter accepts a `DiagnosticSinkView` at the explicit
 native-apply boundary, `createInstance(plan, sink)`. The plan and its requested
 configuration contain configuration only; they do not retain the borrowed
-view. `createInstance` borrows the plan only for that call and copies the
-effective configuration into the resulting `Instance`; callers may release or
+view. Plan observers are read-only borrowed references, so inspecting a plan
+does not copy its snapshots, enabled collections, or decision lists.
+`createInstance` consumes those views directly for native apply without
+rerunning resolution or making temporary full-vector copies; it borrows the
+plan only for that call and copies the effective configuration once into the
+resulting `Instance` after native creation succeeds. Callers may release or
 reuse their plan after the call returns. The `Instance` owns the native
 instance, loader context, optional messenger, callback state, and retained
 plan. Its `nativeHandle()` and `plan()` observers return borrowed values, so

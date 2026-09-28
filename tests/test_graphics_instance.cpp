@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -19,22 +20,26 @@ namespace {
 
 using namespace terreate::graphics;
 namespace graphics_detail = terreate::graphics::detail;
+using NativeCategory = graphics_detail::NativeDiagnosticCategory;
+using NativeCategorySpan = std::span<const NativeCategory>;
 
 static_assert(!std::default_initializable<InstancePlan>);
 static_assert(!std::default_initializable<Instance>);
 static_assert(std::copy_constructible<InstancePlan>);
+static_assert(std::is_nothrow_move_constructible_v<InstancePlan>);
+static_assert(std::is_nothrow_move_assignable_v<InstancePlan>);
 static_assert(std::is_same_v<decltype(std::declval<const InstancePlan &>().requested()),
-                             InstanceDescription>);
+                             const InstanceDescription &>);
 static_assert(std::is_same_v<decltype(std::declval<const InstancePlan &>().capabilities()),
-                             InstanceCapabilities>);
+                             const InstanceCapabilities &>);
 static_assert(std::is_same_v<decltype(std::declval<const InstancePlan &>().enabledExtensions()),
-                             std::vector<std::string>>);
+                             const std::vector<std::string> &>);
 static_assert(std::is_same_v<decltype(std::declval<const InstancePlan &>().enabledLayers()),
-                             std::vector<std::string>>);
+                             const std::vector<std::string> &>);
 static_assert(std::is_same_v<decltype(std::declval<const InstancePlan &>().extensionDecisions()),
-                             std::vector<InstanceDecision>>);
+                             const std::vector<InstanceDecision> &>);
 static_assert(std::is_same_v<decltype(std::declval<const InstancePlan &>().layerDecisions()),
-                             std::vector<InstanceDecision>>);
+                             const std::vector<InstanceDecision> &>);
 
 [[nodiscard]] std::unique_ptr<vk::raii::Context> throwing_context_factory() {
   throw std::runtime_error{"synthetic loader open failure"};
@@ -181,6 +186,86 @@ void emit_runtime_marker(const char *marker) {
   return passed;
 }
 
+[[nodiscard]] bool check_message_type_mapping(VkDebugUtilsMessageTypeFlagsEXT message_types,
+                                              NativeCategorySpan expected,
+                                              const char *description) {
+  const auto result = graphics_detail::map_vulkan_message_types(message_types);
+  if (!result) {
+    return check(false, description);
+  }
+
+  const auto categories = result->view();
+  const bool matches = categories.size() == expected.size() &&
+                       std::equal(categories.begin(), categories.end(), expected.begin());
+  return check(matches, description);
+}
+
+[[nodiscard]] bool check_unsupported_message_types(VkDebugUtilsMessageTypeFlagsEXT message_types,
+                                                   const char *description) {
+  const auto result = graphics_detail::map_vulkan_message_types(message_types);
+  const bool unsupported =
+      !result && result.error() == graphics_detail::NativeDiagnosticMessageTypeError::unsupported;
+  return check(unsupported, description);
+}
+
+[[nodiscard]] bool test_vulkan_message_type_mapping() {
+  constexpr VkDebugUtilsMessageTypeFlagsEXT general = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
+  constexpr VkDebugUtilsMessageTypeFlagsEXT validation =
+      VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+  constexpr VkDebugUtilsMessageTypeFlagsEXT performance =
+      VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+  constexpr VkDebugUtilsMessageTypeFlagsEXT unknown =
+      static_cast<VkDebugUtilsMessageTypeFlagsEXT>(1u << 31);
+
+  const std::array<NativeCategory, 1> expected_general{NativeCategory::general};
+  const std::array<NativeCategory, 2> expected_validation_performance{
+      NativeCategory::validation,
+      NativeCategory::performance,
+  };
+  const std::array<NativeCategory, 3> expected_all{
+      NativeCategory::general,
+      NativeCategory::validation,
+      NativeCategory::performance,
+  };
+
+  bool passed = true;
+  passed &= check_message_type_mapping(general, expected_general,
+                                       "GENERAL message type was not mapped by the raw adapter");
+  passed &= check_message_type_mapping(
+      validation | performance, expected_validation_performance,
+      "VALIDATION/PERFORMANCE message types were not mapped by the raw adapter");
+  passed &= check_message_type_mapping(
+      performance | validation | general, expected_all,
+      "known message types were not mapped in semantic order by the raw adapter");
+
+#ifdef VK_EXT_device_address_binding
+  constexpr auto device_address_binding =
+      VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
+  const std::array<NativeCategory, 2> expected_general_device{
+      NativeCategory::general,
+      NativeCategory::device_address_binding,
+  };
+  const std::array<NativeCategory, 4> expected_all_with_device{
+      NativeCategory::general,
+      NativeCategory::validation,
+      NativeCategory::performance,
+      NativeCategory::device_address_binding,
+  };
+  passed &= check_message_type_mapping(
+      device_address_binding | general, expected_general_device,
+      "GENERAL/DEVICE_ADDRESS_BINDING order was not preserved by the raw adapter");
+  passed &= check_message_type_mapping(
+      device_address_binding | performance | validation | general, expected_all_with_device,
+      "optional DEVICE_ADDRESS_BINDING was not mapped in semantic order");
+#endif
+
+  passed &= check_unsupported_message_types(0, "zero message-type mask was not rejected");
+  passed &= check_unsupported_message_types(unknown, "unknown-only message-type mask was accepted");
+  passed &= check_unsupported_message_types(
+      general | unknown, "mixed known/unknown message-type mask was truncated or accepted");
+  return passed;
+}
+
 [[nodiscard]] bool test_query_boundary_failures_are_results() {
   const auto loader_failure = graphics_detail::query_instance_capabilities(
       &throwing_context_factory, &system_error_capability_adapter);
@@ -317,7 +402,7 @@ void emit_runtime_marker(const char *marker) {
                   "enabled extensions were not canonical or explicit-only");
   passed &= check(plan.enabledLayers() == std::vector<std::string>{"VK_LAYER_optional"},
                   "enabled layers were not canonical");
-  const auto enabled_extensions = plan.enabledExtensions();
+  const auto &enabled_extensions = plan.enabledExtensions();
   passed &= check(std::find(enabled_extensions.begin(), enabled_extensions.end(),
                             "VK_EXT_unrequested") == enabled_extensions.end(),
                   "an observed but unrequested extension was enabled");
@@ -346,25 +431,19 @@ void emit_runtime_marker(const char *marker) {
   passed &= check(assignment_preserved, "copy assignment changed observer values");
 
   auto moved_source = plan;
-  // InstancePlan deliberately copies its value-owned state across an rvalue
-  // operation; checking the source is the regression under test.
-  const auto *moved_source_view = &moved_source;
-  const auto plan_comparator = &same_plan_values;
-  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   auto moved_plan = std::move(moved_source);
-  const bool source_preserved = plan_comparator(*moved_source_view, plan);
-  const bool plan_preserved = plan_comparator(moved_plan, plan);
-  passed &= check(source_preserved, "rvalue InstancePlan move changed its source");
-  passed &= check(plan_preserved, "moving an InstancePlan changed its value");
+  passed &= check(same_plan_values(moved_plan, plan),
+                  "default InstancePlan move changed its destination value");
+  // A moved-from plan remains a valid object that can be assigned a new value;
+  // its owned collections are otherwise intentionally unspecified.
+  moved_source = plan;
+  passed &= check(same_plan_values(moved_source, plan),
+                  "moved-from InstancePlan could not be assigned a new value");
   auto move_assigned_source = plan;
-  const auto *move_assigned_source_view = &move_assigned_source;
   auto move_assigned_plan = *result;
   move_assigned_plan = std::move(move_assigned_source);
-  const bool assigned_source_preserved = plan_comparator(*move_assigned_source_view, plan);
-  const bool assigned_plan_preserved = plan_comparator(move_assigned_plan, plan);
-  passed &= check(assigned_source_preserved,
-                  "move assignment destructively changed its InstancePlan source");
-  passed &= check(assigned_plan_preserved, "move assignment changed its value");
+  passed &= check(same_plan_values(move_assigned_plan, plan),
+                  "default InstancePlan move assignment changed its destination value");
   return passed;
 }
 
@@ -566,34 +645,31 @@ test_native_apply_failure_preserves_plan(const InstanceCapabilities &loader_capa
   }
 
   const auto before_native_apply = std::make_unique<InstancePlan>(*resolved);
-  // Every collection observer returns an owned copy.  Mutating those copies
-  // must not mutate the resolved plan or change the values consumed by apply.
-  auto observed_requested = resolved->requested();
-  observed_requested.application_name = "mutated observer request";
-  auto observed_capabilities = resolved->capabilities();
-  observed_capabilities.available_extensions.clear();
-  auto observed_enabled_extensions = resolved->enabledExtensions();
-  observed_enabled_extensions.clear();
-  auto observed_enabled_layers = resolved->enabledLayers();
-  observed_enabled_layers.push_back("VK_LAYER_terreate_mutated_observer");
-  auto observed_extension_decisions = resolved->extensionDecisions();
-  if (!observed_extension_decisions.empty()) {
-    observed_extension_decisions.front().outcome = InstanceDecisionOutcome::declined;
-  }
-  auto observed_layer_decisions = resolved->layerDecisions();
-  if (!observed_layer_decisions.empty()) {
-    observed_layer_decisions.front().outcome = InstanceDecisionOutcome::accepted;
-  }
+  // Every collection observer is a borrowed const reference.  Repeated
+  // observation must not allocate a copy or expose a mutation path.
+  const auto *observed_requested = std::addressof(resolved->requested());
+  const auto *observed_capabilities = std::addressof(resolved->capabilities());
+  const auto *observed_enabled_extensions = std::addressof(resolved->enabledExtensions());
+  const auto *observed_enabled_layers = std::addressof(resolved->enabledLayers());
+  const auto *observed_extension_decisions = std::addressof(resolved->extensionDecisions());
+  const auto *observed_layer_decisions = std::addressof(resolved->layerDecisions());
 
   bool passed = true;
+  passed &= check(observed_requested == std::addressof(resolved->requested()),
+                  "request observer was not a zero-copy borrowed view");
+  passed &= check(observed_capabilities == std::addressof(resolved->capabilities()),
+                  "capability observer was not a zero-copy borrowed view");
+  passed &= check(observed_enabled_extensions == std::addressof(resolved->enabledExtensions()),
+                  "extension observer was not a zero-copy borrowed view");
+  passed &= check(observed_enabled_layers == std::addressof(resolved->enabledLayers()),
+                  "layer observer was not a zero-copy borrowed view");
+  passed &= check(observed_extension_decisions == std::addressof(resolved->extensionDecisions()),
+                  "extension decision observer was not a zero-copy borrowed view");
+  passed &= check(observed_layer_decisions == std::addressof(resolved->layerDecisions()),
+                  "layer decision observer was not a zero-copy borrowed view");
   passed &= check(same_plan_values(*resolved, *before_native_apply),
-                  "mutating observer results changed the resolved plan");
-  auto direct_apply_source = *resolved;
-  const auto direct_apply_snapshot = direct_apply_source;
-  // The public apply API intentionally accepts const references, so this
-  // verifies that an rvalue call does not consume the source plan.
-  // NOLINTNEXTLINE(performance-move-const-arg)
-  const auto failed_creation = createInstance(std::move(direct_apply_source));
+                  "read-only observer access changed the resolved plan");
+  const auto failed_creation = createInstance(*resolved);
   passed &= check(!failed_creation, "synthetic unavailable extension unexpectedly created");
   if (!failed_creation) {
     passed &= check(failed_creation.error().code().value() == VK_ERROR_EXTENSION_NOT_PRESENT,
@@ -603,9 +679,6 @@ test_native_apply_failure_preserves_plan(const InstanceCapabilities &loader_capa
   }
   passed &= check(same_plan_values(*resolved, *before_native_apply),
                   "observer mutation or native apply failure mutated the resolved plan");
-  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
-  passed &= check(same_plan_values(direct_apply_source, direct_apply_snapshot),
-                  "direct rvalue apply destructively changed the source plan");
   passed &= check(resolved->enabledExtensions() ==
                       std::vector<std::string>{synthetic_unavailable_extension},
                   "native apply failure discarded the effective extension collection");
@@ -668,12 +741,12 @@ struct Recorder {
                     "Instance did not retain its effective plan");
   }
   if (validation_available) {
-    const auto enabled_layers = original_plan.enabledLayers();
+    const auto &enabled_layers = original_plan.enabledLayers();
     const bool validation_enabled = contains_name(enabled_layers, "VK_LAYER_KHRONOS_validation");
     passed &= check(validation_enabled, "validation layer was not enabled");
     emit_runtime_marker("graphics.instance: validation-layer=PASS");
   } else {
-    const auto layer_decisions = original_plan.layerDecisions();
+    const auto &layer_decisions = original_plan.layerDecisions();
     bool validation_was_declined = false;
     for (const auto &decision : layer_decisions) {
       if (decision.name == "VK_LAYER_KHRONOS_validation" &&
@@ -732,8 +805,12 @@ struct Recorder {
       .pMessage = submitted_message.c_str(),
   };
   submit(raw_instance, VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
+#ifdef VK_EXT_device_address_binding
          VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT |
              VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
+#else
+         VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
+#endif
          &callback_data);
   submitted_message = "mutated after vkSubmitDebugUtilsMessageEXT returned";
 
@@ -747,8 +824,12 @@ struct Recorder {
                       recorder.event.code->name == "terreate-instance-debug-utils-runtime" &&
                       recorder.event.code->value == 26812,
                   "Debug Utils callback message ID was not copied into the application sink event");
-  passed &= check(recorder.event.categories ==
-                      std::vector<std::string>{"GENERAL", "DEVICE_ADDRESS_BINDING"},
+#ifdef VK_EXT_device_address_binding
+  const std::vector<std::string> expected_categories{"GENERAL", "DEVICE_ADDRESS_BINDING"};
+#else
+  const std::vector<std::string> expected_categories{"GENERAL"};
+#endif
+  passed &= check(recorder.event.categories == expected_categories,
                   "Debug Utils callback categories were not mapped in semantic order");
   if (passed) {
     emit_runtime_marker("graphics.instance: debug-utils-callback=PASS");
@@ -762,6 +843,7 @@ int main() {
   bool passed = true;
   passed &= test_instance_error_codes_are_stable_and_truthy();
   passed &= test_vulkan_10_version_fallback();
+  passed &= test_vulkan_message_type_mapping();
   passed &= test_query_boundary_failures_are_results();
   passed &= test_apply_context_boundary_failures_are_narrow();
   passed &= test_synthetic_resolution_and_immutable_observers();

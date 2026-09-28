@@ -1,10 +1,17 @@
 #ifndef TERREATE_GRAPHICS_INSTANCE_QUERY_HPP
 #define TERREATE_GRAPHICS_INSTANCE_QUERY_HPP
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <memory>
+#include <span>
+
+#include "graphics_diagnostics.hpp"
 
 #include <terreate/graphics/instance.hpp>
+#include <vulkan/vulkan_core.h>
 
 namespace terreate::graphics::detail {
 
@@ -12,6 +19,32 @@ using InstanceContextFactory = std::unique_ptr<vk::raii::Context> (*)();
 using InstanceCapabilityAdapter =
     terreate::Result<InstanceCapabilities> (*)(const vk::raii::Context *);
 using InstanceVersionFunction = PFN_vkEnumerateInstanceVersion;
+
+// These types belong to the #268 Vulkan callback adapter.  Keep raw-mask
+// conversion state out of the Vulkan-neutral diagnostics bridge; only the
+// resulting semantic categories cross that boundary.
+struct NativeDiagnosticCategoryMapping {
+  std::array<NativeDiagnosticCategory, native_category_order.size()> categories{};
+  std::size_t count = 0;
+
+  [[nodiscard]] std::span<const NativeDiagnosticCategory> view() const noexcept {
+    return {categories.data(), count};
+  }
+};
+
+enum class NativeDiagnosticMessageTypeError : std::uint8_t {
+  unsupported,
+};
+
+using NativeDiagnosticCategoryMappingResult =
+    std::expected<NativeDiagnosticCategoryMapping, NativeDiagnosticMessageTypeError>;
+
+/// Adapt the raw Vulkan Debug Utils message-type mask into the semantic
+/// category values consumed by the Vulkan-neutral diagnostics bridge.  Zero
+/// masks and bits absent from this header's supported raw surface are
+/// rejected instead of being truncated or guessed as GENERAL.
+[[nodiscard]] NativeDiagnosticCategoryMappingResult
+map_vulkan_message_types(VkDebugUtilsMessageTypeFlagsEXT message_types) noexcept;
 
 /// Query a loader API version without entering Vulkan-Hpp's asserting
 /// Context::enumerateInstanceVersion wrapper when the native entry point is

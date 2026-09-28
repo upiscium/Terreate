@@ -110,16 +110,14 @@ function(terreate_vulkan_headers_complete include_directory result_variable)
     endforeach()
     set(_complete TRUE)
 
-    # Graphics uses the C Vulkan declarations directly in its diagnostic
-    # bridge. Keep all four message-type bits here: accepting a header set
-    # that predates DEVICE_ADDRESS_BINDING would make the private source
-    # compile boundary depend on an accidental fallback include directory.
+    # Graphics uses the common C Vulkan declarations directly in its native
+    # adapter. Device Address Binding remains an optional raw extension bit;
+    # it is deliberately not part of the public header compile contract.
     foreach(_declaration IN ITEMS
         VK_API_VERSION_1_3
         VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
         VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
         VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT
-        VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT
         VkDebugUtilsMessageTypeFlagsEXT)
       string(FIND "${_core_contents}" "${_declaration}" _declaration_position)
       if(_declaration_position EQUAL -1)
@@ -135,8 +133,7 @@ function(terreate_vulkan_headers_complete include_directory result_variable)
         DebugUtilsMessageTypeFlagBitsEXT
         eGeneral
         eValidation
-        ePerformance
-        eDeviceAddressBinding)
+        ePerformance)
       string(FIND "${_hpp_contents}" "${_declaration}" _declaration_position)
       if(_declaration_position EQUAL -1)
         set(_complete FALSE)
@@ -168,8 +165,8 @@ function(terreate_require_vulkan_headers include_directory description)
       "${TERREATE_MINIMUM_VULKAN_API_VERSION} declarations in "
       "${description}/vulkan/vulkan_core.h, "
       "${description}/vulkan/vulkan.hpp, and "
-      "${description}/vulkan/vulkan_raii.hpp, including the "
-      "DEVICE_ADDRESS_BINDING message type; refusing a loader-only, "
+      "${description}/vulkan/vulkan_raii.hpp, including the required "
+      "Debug Utils declarations; refusing a loader-only, "
       "partial, or decoy header package at ${include_directory}")
   endif()
 endfunction()
@@ -196,10 +193,6 @@ function(terreate_probe_vulkan_headers include_directories result_variable)
 #include <cstdint>
 
 static_assert(VK_API_VERSION_1_3 != 0);
-static_assert(VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT != 0);
-static_assert(static_cast<std::uint32_t>(
-                  vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding) ==
-              VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT);
 static_assert(sizeof(vk::raii::Context) > 0);
 static_assert(sizeof(vk::raii::Instance) > 0);
 static_assert(sizeof(vk::raii::DebugUtilsMessengerEXT) > 0);

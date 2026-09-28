@@ -9,7 +9,6 @@
 #include <string_view>
 
 #include <terreate/core/diagnostics.hpp>
-#include <vulkan/vulkan_core.h>
 
 namespace terreate::graphics::detail {
 
@@ -44,31 +43,6 @@ inline constexpr std::array<NativeDiagnosticCategory, 4> native_category_order{
     NativeDiagnosticCategory::performance,
     NativeDiagnosticCategory::device_address_binding,
 };
-
-enum class NativeDiagnosticMessageTypeError : std::uint8_t {
-  unsupported,
-};
-
-/// The private result of adapting one raw Vulkan Debug Utils message-type mask.
-/// `categories` is populated in canonical semantic order; an unsupported mask
-/// is returned as an error instead of being truncated or mapped to GENERAL.
-struct NativeDiagnosticCategoryMapping {
-  std::array<NativeDiagnosticCategory, native_category_order.size()> categories{};
-  std::size_t count = 0;
-
-  [[nodiscard]] std::span<const NativeDiagnosticCategory> view() const noexcept {
-    return {categories.data(), count};
-  }
-};
-
-using NativeDiagnosticCategoryMappingResult =
-    std::expected<NativeDiagnosticCategoryMapping, NativeDiagnosticMessageTypeError>;
-
-/// Adapt the pinned Vulkan message-type flags used by the native callback.
-/// This source/test seam is private and is the callback's only raw-mask
-/// mapping path; zero, unknown-only, and mixed masks are unsupported.
-[[nodiscard]] NativeDiagnosticCategoryMappingResult
-map_vulkan_message_types(VkDebugUtilsMessageTypeFlagsEXT message_types) noexcept;
 
 /// A borrowed object view used only while translating a native callback.
 /// `type` is already a stable backend-neutral spelling; the owning Core event

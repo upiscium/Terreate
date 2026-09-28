@@ -136,13 +136,22 @@ if(_Terreate_graphics_built AND _Terreate_graphics_requested)
     endwhile()
     # FindVulkan's module target on some CMake versions relies on the
     # compiler's implicit Vulkan include directory instead of publishing it on
-    # Vulkan::Vulkan.  Preserve that module-provided directory in the probe,
-    # but never use arbitrary Vulkan_INCLUDE_DIRS from a config package as a
-    # fallback for an unrelated target.
+    # Vulkan::Vulkan.  Preserve that legacy directory in the probe.  If it is
+    # needed, publish the validated path on Terreate::Graphics below so the
+    # consumer sees the same Hpp headers that passed this probe.
+    set(_Terreate_vulkan_legacy_include_dir)
     if(DEFINED Vulkan_LIBRARY AND NOT "${Vulkan_LIBRARY}" STREQUAL "" AND
        DEFINED Vulkan_INCLUDE_DIR AND
        NOT "${Vulkan_INCLUDE_DIR}" STREQUAL "")
-      list(APPEND _Terreate_vulkan_include_dirs "${Vulkan_INCLUDE_DIR}")
+      set(_Terreate_vulkan_legacy_include_dir "${Vulkan_INCLUDE_DIR}")
+      # The validated legacy path is added directly to the exported Graphics
+      # target below.  CMake resolves those direct include directories before
+      # the transitive Vulkan::Vulkan usage requirements, so mirror that
+      # effective consumer order in the isolated probe.  Otherwise a complete
+      # target closure could hide a stale partial legacy directory here and
+      # leave consumers with a different, broken header selection.
+      list(PREPEND _Terreate_vulkan_include_dirs
+        "${Vulkan_INCLUDE_DIR}")
     endif()
     list(REMOVE_DUPLICATES _Terreate_vulkan_include_dirs)
 
@@ -167,10 +176,6 @@ if(_Terreate_graphics_built AND _Terreate_graphics_requested)
 #include <cstdint>
 
 static_assert(VK_API_VERSION_1_3 != 0);
-static_assert(VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT != 0);
-static_assert(static_cast<std::uint32_t>(
-                  vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding) ==
-              VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT);
 static_assert(sizeof(vk::raii::Context) > 0);
 static_assert(sizeof(vk::raii::Instance) > 0);
 static_assert(sizeof(vk::raii::DebugUtilsMessengerEXT) > 0);
@@ -253,10 +258,10 @@ set_target_properties(terreate_vulkan_headers_probe PROPERTIES
       set(_Terreate_graphics_unavailable_reason
         "Terreate Graphics compile probe rejected the effective Vulkan::Vulkan "
         "include order: missing or uncompileable declarations in "
-        "vulkan/vulkan_core.h, vulkan/vulkan.hpp, vulkan/vulkan_raii.hpp or "
-        "VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT for the "
-        "Vulkan >= ${_Terreate_minimum_vulkan_api_version} Hpp/RAII/API/device "
-        "usage closure")
+        "vulkan/vulkan_core.h, vulkan/vulkan.hpp, and "
+        "vulkan/vulkan_raii.hpp for the required Vulkan >= "
+        "${_Terreate_minimum_vulkan_api_version} Hpp/RAII/API/device usage "
+        "closure")
     endif()
   endif()
 endif()
@@ -318,6 +323,12 @@ foreach(_Terreate_component IN ITEMS Core Platform Graphics)
       include("${_Terreate_component_file}")
       if(TARGET Terreate::${_Terreate_component})
         set(Terreate_${_Terreate_component}_FOUND TRUE)
+        if(_Terreate_component STREQUAL "Graphics" AND
+           NOT "${_Terreate_vulkan_legacy_include_dir}" STREQUAL "")
+          set_property(TARGET Terreate::Graphics APPEND PROPERTY
+            INTERFACE_INCLUDE_DIRECTORIES
+            "${_Terreate_vulkan_legacy_include_dir}")
+        endif()
       endif()
     endif()
   endif()

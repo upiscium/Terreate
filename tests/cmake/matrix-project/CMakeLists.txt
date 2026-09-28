@@ -102,10 +102,6 @@ if(_component STREQUAL "Graphics")
 #include <cstdint>
 
 static_assert(VK_API_VERSION_1_3 != 0);
-static_assert(VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT != 0);
-static_assert(static_cast<std::uint32_t>(
-                  vk::DebugUtilsMessageTypeFlagBitsEXT::eDeviceAddressBinding) ==
-              VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT);
 static_assert(sizeof(vk::raii::Context) > 0);
 
 int main() {
