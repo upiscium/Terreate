@@ -172,6 +172,8 @@ endif()
 if(NOT EXISTS "${_all_prefix}/include/terreate/graphics/instance.hpp")
   message(FATAL_ERROR "Graphics install is missing its public instance header")
 endif()
+# C: Preserve the explicit Core+Graphics isolation contract: Core and Graphics
+# are imported, Platform is absent, and Vulkan is resolved for Graphics.
 set(_all_consumer "${_terreate_package_root}/all_components/consumer")
 file(MAKE_DIRECTORY "${_all_consumer}")
 file(WRITE "${_all_consumer}/CMakeLists.txt" [=[
@@ -320,6 +322,168 @@ if(NOT _consumer_run_result EQUAL 0)
   message(FATAL_ERROR
     "installed package consumer runtime failed\n"
     "${_consumer_run_output}\n${_consumer_run_error}")
+endif()
+
+# A: An explicit Core request from the all-components installation must import
+# only Core, even when Vulkan discovery is deliberately unavailable.
+set(_all_core_consumer
+  "${_terreate_package_root}/all_components/core-consumer")
+file(MAKE_DIRECTORY "${_all_core_consumer}")
+file(WRITE "${_all_core_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateAllComponentsCoreConsumer LANGUAGES CXX)
+set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
+find_package(Terreate REQUIRED COMPONENTS Core)
+if(NOT Terreate_FOUND OR NOT Terreate_Core_FOUND OR
+   NOT TARGET Terreate::Core)
+  message(FATAL_ERROR
+    "all-components Core request did not import Terreate::Core")
+endif()
+if(TARGET Terreate::Platform OR TARGET Terreate::Graphics OR
+   TARGET Vulkan::Vulkan OR Vulkan_FOUND)
+  message(FATAL_ERROR
+    "all-components Core request imported an optional or Vulkan target")
+endif()
+get_target_property(_core_links Terreate::Core INTERFACE_LINK_LIBRARIES)
+if("${_core_links}" MATCHES "Platform|Graphics|Vulkan")
+  message(FATAL_ERROR
+    "all-components Core target has an invalid dependency closure: "
+    "${_core_links}")
+endif()
+add_executable(all_components_core_consumer main.cpp)
+target_link_libraries(all_components_core_consumer PRIVATE Terreate::Core)
+set_target_properties(all_components_core_consumer PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+file(WRITE "${_all_core_consumer}/main.cpp" [=[
+#include <terreate/core/result.hpp>
+
+int main() {
+  terreate::Result<int> result = 47;
+  return terreate::unwrap(result) == 47 ? 0 : 1;
+}
+]=])
+
+set(_all_core_consumer_build
+  "${_terreate_package_root}/all_components/core-consumer-build")
+file(REMOVE_RECURSE "${_all_core_consumer_build}")
+set(_all_core_configure
+  "${CMAKE_COMMAND}"
+  -S "${_all_core_consumer}"
+  -B "${_all_core_consumer_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _all_core_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _all_core_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _all_core_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE)
+execute_process(
+  COMMAND ${_all_core_configure}
+  RESULT_VARIABLE _all_core_configure_result
+  OUTPUT_VARIABLE _all_core_configure_output
+  ERROR_VARIABLE _all_core_configure_error)
+if(NOT _all_core_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "all-components Core consumer configuration failed\n"
+    "${_all_core_configure_output}\n${_all_core_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_all_core_consumer_build}"
+  RESULT_VARIABLE _all_core_build_result
+  OUTPUT_VARIABLE _all_core_build_output
+  ERROR_VARIABLE _all_core_build_error)
+if(NOT _all_core_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "all-components Core consumer build failed\n"
+    "${_all_core_build_output}\n${_all_core_build_error}")
+endif()
+
+# B: An explicit Platform request from the all-components installation must
+# import Core and Platform, but neither Graphics nor Vulkan.
+set(_all_platform_consumer
+  "${_terreate_package_root}/all_components/platform-consumer")
+file(MAKE_DIRECTORY "${_all_platform_consumer}")
+file(WRITE "${_all_platform_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateAllComponentsPlatformConsumer LANGUAGES CXX)
+set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
+find_package(Terreate REQUIRED COMPONENTS Platform)
+if(NOT Terreate_FOUND OR NOT Terreate_Core_FOUND OR
+   NOT Terreate_Platform_FOUND OR NOT TARGET Terreate::Core OR
+   NOT TARGET Terreate::Platform)
+  message(FATAL_ERROR
+    "all-components Platform request did not import Core and Platform")
+endif()
+if(TARGET Terreate::Graphics OR TARGET Vulkan::Vulkan OR Vulkan_FOUND)
+  message(FATAL_ERROR
+    "all-components Platform request imported Graphics or Vulkan")
+endif()
+get_target_property(_platform_links Terreate::Platform
+  INTERFACE_LINK_LIBRARIES)
+if(NOT "${_platform_links}" MATCHES "Core" OR
+   "${_platform_links}" MATCHES "Graphics|Vulkan")
+  message(FATAL_ERROR
+    "all-components Platform target has an invalid dependency closure: "
+    "${_platform_links}")
+endif()
+add_executable(all_components_platform_consumer main.cpp)
+target_link_libraries(all_components_platform_consumer PRIVATE
+  Terreate::Platform)
+set_target_properties(all_components_platform_consumer PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+file(WRITE "${_all_platform_consumer}/main.cpp" [=[
+int main() { return 0; }
+]=])
+
+set(_all_platform_consumer_build
+  "${_terreate_package_root}/all_components/platform-consumer-build")
+file(REMOVE_RECURSE "${_all_platform_consumer_build}")
+set(_all_platform_configure
+  "${CMAKE_COMMAND}"
+  -S "${_all_platform_consumer}"
+  -B "${_all_platform_consumer_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _all_platform_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _all_platform_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _all_platform_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE)
+execute_process(
+  COMMAND ${_all_platform_configure}
+  RESULT_VARIABLE _all_platform_configure_result
+  OUTPUT_VARIABLE _all_platform_configure_output
+  ERROR_VARIABLE _all_platform_configure_error)
+if(NOT _all_platform_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "all-components Platform consumer configuration failed\n"
+    "${_all_platform_configure_output}\n${_all_platform_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_all_platform_consumer_build}"
+  RESULT_VARIABLE _all_platform_build_result
+  OUTPUT_VARIABLE _all_platform_build_output
+  ERROR_VARIABLE _all_platform_build_error)
+if(NOT _all_platform_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "all-components Platform consumer build failed\n"
+    "${_all_platform_build_output}\n${_all_platform_build_error}")
 endif()
 
 # The build-tree package must remain usable when Vulkan::Vulkan contributes
