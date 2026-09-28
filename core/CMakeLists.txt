@@ -17,7 +17,7 @@ set_target_properties(terreate_core PROPERTIES
 add_library(Terreate::Core ALIAS terreate_core)
 
 install(TARGETS terreate_core
-  EXPORT TerreateTargets
+  EXPORT TerreateCoreTargets
   ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")

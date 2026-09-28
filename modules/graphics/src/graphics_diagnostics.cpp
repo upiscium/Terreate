@@ -43,6 +43,8 @@ native_category_name(NativeDiagnosticCategory category) noexcept {
     return "VALIDATION";
   case NativeDiagnosticCategory::performance:
     return "PERFORMANCE";
+  case NativeDiagnosticCategory::device_address_binding:
+    return "DEVICE_ADDRESS_BINDING";
   case NativeDiagnosticCategory::unknown:
     return {};
   }
@@ -56,6 +58,7 @@ translate_categories(std::span<const NativeDiagnosticCategory> categories) {
     case NativeDiagnosticCategory::general:
     case NativeDiagnosticCategory::validation:
     case NativeDiagnosticCategory::performance:
+    case NativeDiagnosticCategory::device_address_binding:
       break;
     case NativeDiagnosticCategory::unknown:
     default:

@@ -2,6 +2,7 @@
 #define TERREATE_GRAPHICS_DIAGNOSTICS_HPP
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <span>
@@ -30,19 +31,17 @@ enum class NativeDiagnosticCategory : std::uint8_t {
   general,
   validation,
   performance,
+  device_address_binding,
   unknown,
 };
 
 // The native category order is also the order used when translating the
 // private callback payload into Core's producer-provided category strings.
-inline constexpr std::array<NativeDiagnosticCategory, 3> native_category_order{
+inline constexpr std::array<NativeDiagnosticCategory, 4> native_category_order{
     NativeDiagnosticCategory::general,
     NativeDiagnosticCategory::validation,
     NativeDiagnosticCategory::performance,
-};
-
-inline constexpr std::array<NativeDiagnosticCategory, 1> default_native_categories{
-    NativeDiagnosticCategory::general,
+    NativeDiagnosticCategory::device_address_binding,
 };
 
 /// A borrowed object view used only while translating a native callback.
@@ -59,7 +58,7 @@ struct NativeDiagnosticObject {
 /// no view is placed in the emitted Core event.
 struct NativeDiagnosticCallbackData {
   NativeDiagnosticSeverity severity = NativeDiagnosticSeverity::info;
-  std::span<const NativeDiagnosticCategory> categories = default_native_categories;
+  std::span<const NativeDiagnosticCategory> categories{};
   std::string_view source = "vulkan";
   std::string_view operation{};
   std::string_view message_id_name{};

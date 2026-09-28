@@ -55,12 +55,13 @@ struct Recorder {
       NativeObject{"VkDevice", 0, {}},
       NativeObject{"VkBuffer", 0xABCDEF0123456789ULL, "buffer"},
   };
-  std::array<NativeCategory, 5> categories{};
+  std::array<NativeCategory, 6> categories{};
   categories[0] = NativeCategory::performance;
   categories[1] = NativeCategory::general;
   categories[2] = NativeCategory::performance;
   categories[3] = NativeCategory::validation;
   categories[4] = NativeCategory::general;
+  categories[5] = NativeCategory::device_address_binding;
   const NativeCallbackData native{
       .severity = NativeSeverity::error,
       .categories = categories,
@@ -81,7 +82,12 @@ struct Recorder {
   }
 
   const auto &event = *result;
-  const std::vector<std::string> expected_categories{"GENERAL", "VALIDATION", "PERFORMANCE"};
+  const std::vector<std::string> expected_categories{
+      "GENERAL",
+      "VALIDATION",
+      "PERFORMANCE",
+      "DEVICE_ADDRESS_BINDING",
+  };
   const bool severity_preserved = event.severity == DiagnosticSeverity::error;
   passed &= check(severity_preserved, "native error severity was not preserved");
   passed &= check(event.categories == expected_categories,

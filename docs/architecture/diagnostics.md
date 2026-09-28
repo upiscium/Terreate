@@ -80,8 +80,9 @@ ownership/lifetime contract above are unchanged.
 ## Graphics translation boundary
 
 Graphics keeps its translation input private in `modules/graphics/src/`. The
-input is a Vulkan-neutral representation of the Debug Utils callback data after
-the native adapter has translated ABI values into private semantic values:
+#350 bridge is Vulkan-neutral: its input is a Vulkan-neutral representation of
+the Debug Utils callback data after the #268 native adapter has translated ABI
+values into private semantic values:
 severity, a borrowed collection of semantic category values, message ID
 name/number, message text, operation/context, and object
 `object_handle`/type/name values. These input fields may borrow the native
@@ -90,9 +91,10 @@ Core event before synchronous sink delivery; no callback data view escapes the
 translation call.
 
 The private translator maps exactly the four semantic severity values to the
-four Core severities. General, Validation, and Performance category values are
-translated to `GENERAL`, `VALIDATION`, and `PERFORMANCE` in that canonical
-order; input order is ignored and duplicates are removed. Native object types
+four Core severities. General, Validation, Performance, and Device Address
+Binding category values are translated to `GENERAL`, `VALIDATION`,
+`PERFORMANCE`, and `DEVICE_ADDRESS_BINDING` in that canonical order; input
+order is ignored and duplicates are removed. Native object types
 are supplied as stable backend-neutral strings. Each native `uint64_t`
 `object_handle` becomes the owning Core `id` spelling `0x` followed by exactly
 16 lowercase hexadecimal digits, including `0x0000000000000000` for zero.
@@ -110,6 +112,16 @@ return `DiagnosticTranslationError::unknown_category`. Neither case is
 downgraded to an error event or
 silently discarded. The private severity and category representations reserve
 semantic unknown sentinels for this rejection path; they are not Vulkan values.
+
+The #268 native callback adapter recognizes the common General, Validation,
+and Performance message-type bits and, when the selected Vulkan headers expose
+it, the optional `VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT`
+bit. It rejects a zero mask and any unknown bit before translation; it never
+truncates unknown bits or fabricates a `GENERAL` category for an empty mask.
+The public Graphics header and package compile probe do not require the
+optional Device Address Binding declaration. A Vulkan-Hpp surface that lacks
+that extension can still consume the public instance API; only that raw bit is
+then treated as unknown by the native adapter.
 
 No messenger or Instance is created or owned here. Actual Vulkan callback
 wiring, `VkDebugUtils` types and constants, and `DebugMessenger`
@@ -132,3 +144,30 @@ is installed with `Terreate::Core`, and the Core-only package smoke test uses
 `DiagnosticEvent` and `DiagnosticSinkView` without Graphics or Vulkan.
 Graphics' translation header is a private source implementation detail and is
 not installed or exported as a public Graphics diagnostics API.
+
+## Vulkan instance callback lifetime
+
+The Graphics instance adapter accepts a `DiagnosticSinkView` at the explicit
+native-apply boundary, `createInstance(plan, sink)`. The plan and its requested
+configuration contain configuration only; they do not retain the borrowed
+view. Plan observers are read-only borrowed references, so inspecting a plan
+does not copy its snapshots, enabled collections, or decision lists.
+`createInstance` consumes those views directly for native apply without
+rerunning resolution or making temporary full-vector copies; it borrows the
+plan only for that call and copies the effective configuration once into the
+resulting `Instance` after native creation succeeds. Callers may release or
+reuse their plan after the call returns. The `Instance` owns the native
+instance, loader context, optional messenger, callback state, and retained
+plan. Its `nativeHandle()` and `plan()` observers return borrowed values, so
+callers must reacquire them after moving the `Instance` and must not use them
+after its destruction.
+
+The sink view is copied into callback state during apply, but the
+application-owned sink target is not. That target must outlive the resulting
+`Instance` and every Debug Utils callback delivered by it. Destroying an
+`Instance` destroys its messenger before the callback state and loader context,
+so no callback may observe a dead sink target through the adapter's own
+teardown. The adapter copies Vulkan callback strings and object data into an
+owning `DiagnosticEvent` before synchronous sink delivery, and its callback
+always returns `VK_FALSE`; no Vulkan callback data or `pUserData` storage
+escapes the callback.

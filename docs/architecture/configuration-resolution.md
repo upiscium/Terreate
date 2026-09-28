@@ -432,9 +432,12 @@ An application may explicitly request a minimum API version, required instance
 extensions for an explicitly supplied surface/window context, and optional
 validation layers or diagnostic extensions. The instance capability query can
 report the loader API version, available instance extensions and layers, and
-context-specific surface integration facts. It must not infer a window-system
-requirement from an unrelated host property or enable every reported
-diagnostic extension.
+context-specific surface integration facts. Vulkan has no portable
+loader/backend identity query, so identity is optional evidence supplied by an
+out-of-band integration when available; a query that cannot obtain one leaves
+identity unavailable rather than inventing a value. It must not infer a
+window-system requirement from an unrelated host property or enable every
+reported diagnostic extension.
 
 If `queryCapabilities(context)` cannot obtain a trustworthy loader or
 context-specific snapshot, it returns a structured `Capability Query Failure`.
