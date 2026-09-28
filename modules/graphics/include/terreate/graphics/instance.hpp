@@ -15,6 +15,11 @@
 
 namespace terreate::graphics {
 
+class Instance;
+struct PhysicalDeviceInventory;
+[[nodiscard]] terreate::Result<PhysicalDeviceInventory>
+queryPhysicalDevices(const Instance &instance);
+
 /// Vulkan instance API versions are represented using Vulkan's packed version
 /// value.  A missing version in InstanceDescription is deliberately different
 /// from an explicit value: it selects Vulkan 1.3 through the documented
@@ -239,6 +244,12 @@ public:
   /// move; reacquire it from the current owning Instance instead.
   [[nodiscard]] vk::Instance nativeHandle() const noexcept;
 
+  /// Return the stable, opaque identity of this Instance implementation.  It
+  /// is a correlation token only: callers must not dereference it.  The token
+  /// remains stable when ownership moves between Instance objects.
+  [[nodiscard]] const void *implementationIdentity() const noexcept { return impl_.get(); }
+  [[nodiscard]] const void *identityToken() const noexcept { return implementationIdentity(); }
+
   /// Return a pointer to the effective configuration used for native creation.
   /// The plan is owned by this Instance and is not the caller's plan passed to
   /// createInstance.  The pointer is borrowed, is nullptr for a moved-from
@@ -255,6 +266,7 @@ private:
 
   friend terreate::Result<Instance> createInstance(const InstancePlan &plan,
                                                    terreate::DiagnosticSinkView sink);
+  friend terreate::Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &instance);
 };
 
 /// Query the loader's instance API version, instance extensions, and layers.
@@ -285,6 +297,8 @@ resolveInstance(const InstanceDescription &description, const InstanceCapabiliti
     -> terreate::Result<Instance>;
 
 } // namespace terreate::graphics
+
+#include <terreate/graphics/physical_device.hpp>
 
 namespace std {
 template <> struct is_error_code_enum<terreate::graphics::InstanceError> : true_type {};

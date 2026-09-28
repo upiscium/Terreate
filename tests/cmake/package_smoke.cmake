@@ -40,7 +40,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-          "^include/terreate/(core/(diagnostics|error|result)|graphics/instance)\\.hpp$")
+           "^include/terreate/(core/(diagnostics|error|result)|graphics/(instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -172,6 +172,9 @@ endif()
 if(NOT EXISTS "${_all_prefix}/include/terreate/graphics/instance.hpp")
   message(FATAL_ERROR "Graphics install is missing its public instance header")
 endif()
+if(NOT EXISTS "${_all_prefix}/include/terreate/graphics/physical_device.hpp")
+  message(FATAL_ERROR "Graphics install is missing its public physical-device header")
+endif()
 # C: Preserve the explicit Core+Graphics isolation contract: Core and Graphics
 # are imported, Platform is absent, and Vulkan is resolved for Graphics.
 set(_all_consumer "${_terreate_package_root}/all_components/consumer")
@@ -251,6 +254,7 @@ int main() {
 ]=])
 file(WRITE "${_all_consumer}/main.cpp" [=[
 #include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_raii.hpp>
@@ -274,7 +278,11 @@ int main() {
   }
 
   const auto instance = terreate::graphics::createInstance(*plan);
-  return instance && instance->valid() ? 0 : 1;
+  if (!instance || !instance->valid()) {
+    return 1;
+  }
+  const auto devices = terreate::graphics::queryPhysicalDevices(*instance);
+  return devices.has_value() ? 0 : 1;
 }
 ]=])
 
@@ -553,6 +561,7 @@ set_target_properties(build_tree_consumer PROPERTIES
 ]=])
 file(WRITE "${_build_tree_consumer}/main.cpp" [=[
 #include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
 
 int main() {
   terreate::graphics::InstanceDescription description;
@@ -866,8 +875,17 @@ endif()
 set(_linked_headers_vulkan_root "${_terreate_package_root}/linked-headers-vulkan")
 set(_linked_headers_vulkan_loader_include
   "${_linked_headers_vulkan_root}/loader/include")
+# Reuse the pinned complete headers as the separate Headers target.  The
+# loader target remains headerless, so this still proves that the installed
+# package follows Vulkan::Vulkan's linked usage closure without maintaining a
+# second fake declaration set for every public PhysicalDevice snapshot type.
+if(NOT DEFINED ENV{VULKAN_HEADERS_INCLUDE} OR
+   "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "")
+  message(FATAL_ERROR
+    "linked Vulkan::Headers fixture requires the pinned Vulkan-Hpp headers")
+endif()
 set(_linked_headers_vulkan_include
-  "${_linked_headers_vulkan_root}/headers/include")
+  "$ENV{VULKAN_HEADERS_INCLUDE}")
 set(_linked_headers_vulkan_config_dir
   "${_linked_headers_vulkan_root}/lib/cmake/Vulkan")
 find_library(_linked_headers_vulkan_library NAMES vulkan)
@@ -876,61 +894,7 @@ if(NOT _linked_headers_vulkan_library)
     "linked Vulkan::Headers fixture could not locate a Vulkan loader library")
 endif()
 file(MAKE_DIRECTORY "${_linked_headers_vulkan_loader_include}"
-  "${_linked_headers_vulkan_include}/vulkan"
   "${_linked_headers_vulkan_config_dir}")
-file(WRITE "${_linked_headers_vulkan_include}/vulkan/vulkan_core.h" [=[
-#pragma once
-
-#include <cstdint>
-
-#define VK_API_VERSION_1_0 4194304U
-#define VK_API_VERSION_1_3 4202496U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 0x00000001U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 0x00000002U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT 0x00000004U
-
-using VkDebugUtilsMessageTypeFlagsEXT = std::uint32_t;
-]=])
-file(WRITE "${_linked_headers_vulkan_include}/vulkan/vulkan.hpp" [=[
-#pragma once
-
-#include <cstdint>
-#include <system_error>
-
-#include <vulkan/vulkan_core.h>
-
-namespace vk {
-
-enum class DebugUtilsMessageTypeFlagBitsEXT : std::uint32_t {
-  eGeneral = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
-  eValidation = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
-  ePerformance = VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-};
-
-using DebugUtilsMessageTypeFlagsEXT = std::uint32_t;
-
-struct Instance {};
-
-class SystemError : public std::system_error {
-public:
-  using std::system_error::system_error;
-};
-
-} // namespace vk
-]=])
-file(WRITE "${_linked_headers_vulkan_include}/vulkan/vulkan_raii.hpp" [=[
-#pragma once
-
-#include <vulkan/vulkan.hpp>
-
-namespace vk::raii {
-
-class Context {};
-class Instance {};
-class DebugUtilsMessengerEXT {};
-
-} // namespace vk::raii
-]=])
 file(WRITE "${_linked_headers_vulkan_config_dir}/VulkanConfig.cmake"
   "set(Vulkan_VERSION 1.3.0)\n"
   "set(Vulkan_FOUND TRUE)\n"
@@ -984,7 +948,8 @@ file(WRITE "${_linked_headers_consumer}/CMakeLists.txt"
   "set_target_properties(linked_headers_consumer PROPERTIES\n"
   "  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)\n")
 file(WRITE "${_linked_headers_consumer}/main.cpp"
-  "#include <terreate/graphics/instance.hpp>\n"
+   "#include <terreate/graphics/instance.hpp>\n"
+   "#include <terreate/graphics/physical_device.hpp>\n"
   "#include <vulkan/vulkan.hpp>\n"
   "#include <vulkan/vulkan_core.h>\n"
   "#include <vulkan/vulkan_raii.hpp>\n"
@@ -1351,9 +1316,10 @@ function(terreate_expect_installed_graphics_legacy_include
     "target_link_libraries(legacy_vulkan_include_consumer PRIVATE Terreate::Graphics)\n"
     "set_target_properties(legacy_vulkan_include_consumer PROPERTIES\n"
     "  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)\n")
-  file(WRITE "${_consumer}/main.cpp" [=[
-#include <terreate/graphics/instance.hpp>
-#include <vulkan/vulkan_raii.hpp>
+ file(WRITE "${_consumer}/main.cpp" [=[
+ #include <terreate/graphics/instance.hpp>
+ #include <terreate/graphics/physical_device.hpp>
+ #include <vulkan/vulkan_raii.hpp>
 
 static_assert(sizeof(vk::raii::Context) > 0);
 
@@ -1496,42 +1462,15 @@ terreate_expect_installed_graphics_rejection(
 
 set(_missing_device_vulkan_root
   "${_terreate_package_root}/missing-device-address-binding-vulkan")
-set(_missing_device_vulkan_include "${_missing_device_vulkan_root}/include")
+if(NOT DEFINED ENV{VULKAN_HEADERS_INCLUDE} OR
+   "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "")
+  message(FATAL_ERROR
+    "missing-device-address-binding fixture requires the pinned Vulkan-Hpp headers")
+endif()
+set(_missing_device_vulkan_include "$ENV{VULKAN_HEADERS_INCLUDE}")
 set(_missing_device_vulkan_config_dir
   "${_missing_device_vulkan_root}/lib/cmake/Vulkan")
-file(MAKE_DIRECTORY "${_missing_device_vulkan_include}/vulkan"
-  "${_missing_device_vulkan_config_dir}")
-file(WRITE "${_missing_device_vulkan_include}/vulkan/vulkan_core.h" [=[
-#define VK_API_VERSION_1_0 4194304U
-#define VK_API_VERSION_1_3 4202496U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 0x00000001U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 0x00000002U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT 0x00000004U
-using VkDebugUtilsMessageTypeFlagsEXT = unsigned int;
-]=])
-file(WRITE "${_missing_device_vulkan_include}/vulkan/vulkan.hpp" [=[
-#pragma once
-
-#include <vulkan/vulkan_core.h>
-
-namespace vk {
-
-enum class DebugUtilsMessageTypeFlagBitsEXT : unsigned int {
-  eGeneral = 1,
-  eValidation = 2,
-  ePerformance = 4,
-};
-
-struct Instance {};
-
-} // namespace vk
-]=])
-file(WRITE "${_missing_device_vulkan_include}/vulkan/vulkan_raii.hpp"
-  "#pragma once\n"
-  "#include <vulkan/vulkan.hpp>\n"
-  "namespace vk::raii {\n"
-  "class Context {}; class Instance {}; class DebugUtilsMessengerEXT {};\n"
-  "}\n")
+file(MAKE_DIRECTORY "${_missing_device_vulkan_config_dir}")
 file(WRITE "${_missing_device_vulkan_config_dir}/VulkanConfig.cmake"
   "set(Vulkan_VERSION 1.3.0)\n"
   "set(Vulkan_FOUND TRUE)\n"
@@ -2075,9 +2014,10 @@ function(terreate_build_installed_component_consumer name prefix component)
       "endif()\n"
       "add_executable(package_component_consumer main.cpp)\n"
       "target_link_libraries(package_component_consumer PRIVATE Terreate::Graphics)\n")
-    string(APPEND _source
-      "#include <terreate/graphics/instance.hpp>\n"
-      "int main() { return 0; }\n")
+     string(APPEND _source
+       "#include <terreate/graphics/instance.hpp>\n"
+       "#include <terreate/graphics/physical_device.hpp>\n"
+       "int main() { return 0; }\n")
   else()
     message(FATAL_ERROR "unsupported installed package component ${component}")
   endif()

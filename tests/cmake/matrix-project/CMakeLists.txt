@@ -95,6 +95,7 @@ endif()
 if(_component STREQUAL "Graphics")
   set(_consumer_source [=[
 #include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_raii.hpp>

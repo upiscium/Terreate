@@ -406,10 +406,12 @@ keep the same observable boundaries:
 - **#268** must be able to show the caller's immutable `Requested` snapshot
   and the `Effective` choices without presenting backend support as user
   intent.
-- **#269** must be able to explain optional acceptance or decline,
-  defaults, and queue/resource decisions from the `Resolution` record rather
-  than from unstructured logs.
-- **#270** must be able to surface either a `Resolution Failure` with its
+- **#269** must be able to explain API, identity/type, extension, and queue
+  decisions from its physical-device evaluation rather than from unstructured
+  logs. Its native feature snapshots remain observable evidence, not feature
+  requests or enablement intent.
+- **#270** owns feature selection and enable chains, and must be able to
+  surface either a `Resolution Failure` with its
   failed requirement, retained `Supported` evidence, and explicit native-not-
   reached status; a `Capability Query Failure` when no support snapshot could
   be produced; or a native/backend application failure with the successful
@@ -485,41 +487,40 @@ a diagnostic `Resolution Failure`.
 
 ### Vulkan Device
 
-An application may explicitly request a presentation-capable device with:
+For the physical-device boundary, an application may explicitly request:
 
-- required device extensions and features;
-- optional features or a preference for a dedicated compute queue;
-- required queue roles such as graphics, compute, and present; and
-- an allowed set or preference ordering for surface formats and present
-  modes.
+- a minimum Vulkan API version;
+- an explicit device UUID or device type;
+- required or optional device extensions; and
+- required or optional queue-family criteria.
 
-The device capability query can report physical-device features and limits,
-extension support, queue-family properties and counts, per-surface queue
-support, and compatible formats and present modes. A supported feature is not
-enabled unless the request or documented policy selects it.
+The physical-device capability query can also report owned native Vulkan 1.0,
+1.1, 1.2, and 1.3 feature snapshots, properties, limits, memory observations,
+extension support, and queue-family properties. Those feature snapshots are
+for inspection only at this boundary. A supported feature is not a request,
+and #269 neither accepts feature names as requirements nor creates a feature
+enable chain. Logical-device feature selection and enablement belong to #270.
 
-Resolution rejects a missing required feature, extension, queue role, or
-compatible surface choice with structured evidence. It may drop an optional
-feature or preference and explain why. The effective device plan records the
-exact feature/extension selections, format and present-mode choice, and a
-queue plan. The native boundary then reports success or a distinct
-native/backend application failure with the final enabled feature set, created
-queues, and any native diagnostic available from that boundary.
+Physical-device evaluation rejects a missing required API, identity/type,
+extension, or queue criterion with structured evidence. It may decline an
+optional extension or queue criterion and explain why. The native boundary
+does not create a logical device or enable feature state here.
 
-#### Device required feature A with optional feature B declined observably
+#### Feature snapshots remain separate from enablement
 
-For a concrete feature case, let `Requested` require feature A
-(`samplerAnisotropy`) and optionally request feature B (`shaderInt64`). Let
-`Supported` report feature A as supported and feature B as unsupported. The
-successful `Resolution` returns an `Effective` device plan that enables A and
-does not enable B. It also contains an observable optional decision for B:
-`declined`, reason `unsupported`, with the supporting feature evidence. This
-is a resolution-level decline, not a native/backend application failure. It is
-not a missing field or a silent fallback; callers and diagnostics can inspect
-that B was requested, declined during resolution, and why. Feature A remains
-required, and the input snapshots remain unchanged.
+The 1.0 through 1.3 snapshots are retained as value-owned observations so a
+caller can inspect native support manually. Their presence must not create an
+implicit requirement, optional decision, or enablement intent. A downstream
+logical-device request may use that evidence when #270 constructs its explicit
+feature enable chain; that later choice is outside physical-device
+evaluation.
 
 #### Queue-role aliasing
+
+Queue-role allocation and aliasing are downstream logical-device concerns;
+#269 only evaluates the declared queue-family criteria and does not allocate or
+alias native queues. The following example therefore applies to #270 rather
+than to physical-device evaluation.
 
 Queue roles are semantic demands; a queue family and queue handle are native
 resources. A graphics role and a present role may be served by the same queue
@@ -600,11 +601,10 @@ of these exact cases:
    accepted and once when declined, with the outcome and reason observable in
    the successful `Resolution` unless a required combination is thereby made
    impossible.
-8. **Vulkan Device feature A/B:** with required feature A
-   (`samplerAnisotropy`) supported and optional feature B (`shaderInt64`)
-   unsupported, `Effective` enables A, omits B, and observably records B as
-   declined during resolution for the unsupported reason; this is not a
-   native/backend application failure.
+8. **Vulkan Device feature observations:** #269 retains owned native Vulkan
+    1.0 through 1.3 feature snapshots for manual inspection without treating
+    feature names as requirements or constructing enable chains. #270 owns
+    explicit feature selection and enablement.
 9. **Defaults and alternatives:** explicit values beat defaults; omitted values
    use only documented defaults with provenance; declared priorities and stable
    tie-breakers decide alternatives, while an equal-priority case with no
@@ -615,14 +615,14 @@ of these exact cases:
      `Supported` snapshots, the successful `Effective` plan, and the
      backend/native error detail available at that boundary. The resolution
      remains `Effective` and is not rewritten as an unrequested value.
-11. **Vulkan Device selection:** required and optional device extensions,
-    feature support, surface format and present-mode choices, queue-family
-    constraints, required versus optional dedicated queues, and insufficient
-    queue counts are each observable in the resolution decision.
-12. **Explicit queue aliasing:** when family 0 is the only family with one
-    queue supporting graphics and compute, a required graphics role plus
-    optional compute explicitly maps both roles to **family 0, queue 0** and
-    records one alias group; a request for distinct queues fails instead.
+11. **Vulkan Device selection:** API, identity/type, required and optional
+     device extensions, queue-family constraints, and insufficient queue
+     counts are each observable in the physical-device evaluation; feature
+     snapshots are observable evidence but not evaluation decisions.
+12. **Explicit queue aliasing (#270):** when family 0 is the only family with
+     one queue supporting graphics and compute, a required graphics role plus
+     optional compute explicitly maps both roles to **family 0, queue 0** and
+     records one alias group; a request for distinct queues fails instead.
 13. **Usability consumers:** #268, #269, and #270 can separately expose
      `Requested`, `Supported`, `Effective`, optional decisions, structured
      `Capability Query Failure` query detail, `Resolution Failure` resolution

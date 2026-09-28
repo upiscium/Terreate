@@ -133,8 +133,9 @@ if(NOT "${_terreate_vulkan_explicit_include_dir}" STREQUAL "")
 endif()
 
 # Graphics is intentionally independent of Platform.  Vulkan is the first
-# Graphics-owned native dependency; Window/GLFW, Surface, PhysicalDevice,
-# Device, and VMA remain outside this component.
+# Graphics-owned native dependency; Window/GLFW, Surface presentation, logical
+# Device creation, and VMA/resources remain outside this component.  The
+# PhysicalDevice API below is observation-only and owns no native device.
 add_library(terreate_graphics STATIC
   src/graphics.cpp
   src/graphics_diagnostics.cpp
