@@ -30,7 +30,7 @@ struct PhysicalDeviceQueryApiVersions {
   std::uint32_t physical_device_api = VK_API_VERSION_1_0;
 };
 
-[[nodiscard]] inline PhysicalDeviceQueryAvailability
+[[nodiscard]] constexpr inline PhysicalDeviceQueryAvailability
 physical_device_query_availability(PhysicalDeviceQueryApiVersions api_versions,
                                    bool properties2_extension, bool external_memory_extension,
                                    bool driver_properties_extension) noexcept {
@@ -47,11 +47,12 @@ physical_device_query_availability(PhysicalDeviceQueryApiVersions api_versions,
   const bool core12_available = instance_supports_12 && device_supports_12;
   const bool core13_available = instance_supports_13 && device_supports_13;
   availability.properties2 = properties2_available;
-  // VK_KHR_external_memory_capabilities is an instance-level compatibility
-  // path for ID properties only when the parent API is pre-1.1.  Once the
-  // parent is 1.1 or newer, the core query path is the sole source of IDs.
-  const bool pre_11_id_fallback = !instance_supports_11 && external_memory_extension;
-  availability.id_properties = availability.properties2 && (core11_available || pre_11_id_fallback);
+  // ID properties are queryable only through an available Properties2 path.
+  // VK_KHR_external_memory_capabilities authorizes the extension path even
+  // when the parent Instance is already 1.1 but the device advertises only
+  // Vulkan 1.0.
+  availability.id_properties =
+      properties2_available && (core11_available || external_memory_extension);
   // VK_KHR_driver_properties is a device extension.  It is valid with
   // Properties2 independently of the instance's enabled extension list.
   availability.driver_properties =
@@ -62,6 +63,17 @@ physical_device_query_availability(PhysicalDeviceQueryApiVersions api_versions,
   availability.memory_properties2 = availability.properties2;
   return availability;
 }
+
+[[nodiscard]] constexpr bool id_properties_boundary_is_supported() noexcept {
+  const auto vulkan10_without_properties2 = physical_device_query_availability(
+      {VK_API_VERSION_1_0, VK_API_VERSION_1_0}, false, true, false);
+  const auto vulkan11_instance_with_vulkan10_device = physical_device_query_availability(
+      {VK_API_VERSION_1_1, VK_API_VERSION_1_0}, false, true, false);
+  return !vulkan10_without_properties2.id_properties &&
+         vulkan11_instance_with_vulkan10_device.id_properties;
+}
+
+static_assert(id_properties_boundary_is_supported());
 
 /// The private test adapter receives only the native-query inputs.  It has no
 /// construction capability; production physical-device views are created by

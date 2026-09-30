@@ -136,7 +136,7 @@ endif()
 # Graphics-owned native dependency; Window/GLFW, Surface presentation, logical
 # Device creation, and VMA/resources remain outside this component.  The
 # PhysicalDevice API below is observation-only and owns no native device.
-add_library(terreate_graphics SHARED
+add_library(terreate_graphics STATIC
   src/graphics.cpp
   src/graphics_diagnostics.cpp
   src/instance.cpp
@@ -155,29 +155,12 @@ target_link_libraries(terreate_graphics
 terreate_configure_target(terreate_graphics)
 
 set_target_properties(terreate_graphics PROPERTIES
-  EXPORT_NAME Graphics
-  CXX_VISIBILITY_PRESET hidden
-  VISIBILITY_INLINES_HIDDEN YES
-  BUILD_RPATH_USE_ORIGIN TRUE
-  INSTALL_RPATH "$ORIGIN")
-target_compile_definitions(terreate_graphics PRIVATE TERREATE_GRAPHICS_BUILDING_SHARED)
-
-# Graphics is a single relocatable ELF boundary.  Bind calls to definitions in
-# this DSO so a consumer cannot interpose the public query/observer methods
-# used by production selection, and reject any unresolved implementation
-# reference at link time.  Core is PIC and --exclude-libs keeps its static
-# implementation out of Graphics' dynamic API.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
-   CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_link_options(terreate_graphics PRIVATE
-    "-Wl,-Bsymbolic-functions"
-    "-Wl,-z,defs"
-    "-Wl,--exclude-libs,ALL")
-endif()
+  EXPORT_NAME Graphics)
 add_library(Terreate::Graphics ALIAS terreate_graphics)
 
 install(TARGETS terreate_graphics
   EXPORT TerreateGraphicsTargets
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 

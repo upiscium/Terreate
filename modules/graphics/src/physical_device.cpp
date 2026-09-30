@@ -1,10 +1,12 @@
 #include <terreate/graphics/physical_device.hpp>
 
+#include "instance_impl.hpp"
 #include "instance_query.hpp"
 #include "physical_device_query.hpp"
 
 #include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -14,15 +16,7 @@
 
 namespace terreate::graphics {
 
-struct PhysicalDevice::QueryTag {};
-
 namespace {
-
-struct PhysicalDeviceState final {
-  vk::PhysicalDevice native_handle{};
-  vk::Instance parent_instance{};
-  const void *authority = nullptr;
-};
 
 class PhysicalDeviceErrorCategory final : public std::error_category {
 public:
@@ -171,28 +165,7 @@ validate_physical_requirements(const PhysicalDeviceRequirements &requirements) {
   if (const auto error = validate_queue_requirements(requirements.optional_queue_families)) {
     return error;
   }
-  for (const auto flags : requirements.required_queue_flags) {
-    if (static_cast<VkQueueFlags>(flags) == 0) {
-      return "required queue flag masks must be non-zero";
-    }
-  }
-  for (const auto flags : requirements.optional_queue_flags) {
-    if (static_cast<VkQueueFlags>(flags) == 0) {
-      return "optional queue flag masks must be non-zero";
-    }
-  }
   return std::nullopt;
-}
-
-[[nodiscard]] std::vector<PhysicalDeviceQueueRequirement>
-queue_requirements_with_masks(const std::vector<PhysicalDeviceQueueRequirement> &families,
-                              const std::vector<vk::QueueFlags> &masks) {
-  auto result = families;
-  result.reserve(result.size() + masks.size());
-  for (const auto flags : masks) {
-    result.push_back(PhysicalDeviceQueueRequirement{.flags = flags, .min_queue_count = 1});
-  }
-  return result;
 }
 
 [[nodiscard]] PhysicalDeviceRequirementDecision
@@ -428,42 +401,6 @@ std::error_code make_error_code(PhysicalDeviceError error) noexcept {
   return {static_cast<int>(error), physical_device_error_category()};
 }
 
-const PhysicalDevice::QueryTag *PhysicalDevice::query_tag() noexcept {
-  static const QueryTag tag;
-  return &tag;
-}
-
-PhysicalDevice::PhysicalDevice(vk::PhysicalDevice native_handle, vk::Instance parent_instance,
-                               const QueryTag *query_tag_value) noexcept {
-  if (query_tag_value != query_tag()) {
-    return;
-  }
-  auto state = std::make_shared<PhysicalDeviceState>();
-  state->native_handle = native_handle;
-  state->parent_instance = parent_instance;
-  state->authority = query_tag_value;
-  state_ = std::shared_ptr<const void>{std::move(state)};
-}
-
-PhysicalDevice::operator bool() const noexcept { return valid(); }
-
-bool PhysicalDevice::valid() const noexcept {
-  const auto *state = static_cast<const PhysicalDeviceState *>(state_.get());
-  return state != nullptr && state->authority == static_cast<const void *>(query_tag()) &&
-         static_cast<VkPhysicalDevice>(state->native_handle) != VK_NULL_HANDLE &&
-         static_cast<VkInstance>(state->parent_instance) != VK_NULL_HANDLE;
-}
-
-vk::PhysicalDevice PhysicalDevice::nativeHandle() const noexcept {
-  const auto *state = static_cast<const PhysicalDeviceState *>(state_.get());
-  return state == nullptr ? vk::PhysicalDevice{} : state->native_handle;
-}
-
-bool PhysicalDevice::correlatedWith(const Instance &instance) const noexcept {
-  const auto *state = static_cast<const PhysicalDeviceState *>(state_.get());
-  return valid() && instance.valid() && state->parent_instance == instance.nativeHandle();
-}
-
 terreate::Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &instance) {
   try {
     const auto native_instance = instance.nativeHandle();
@@ -524,9 +461,19 @@ terreate::Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &i
         capabilities.memory_budget = memory_budget;
       }
 
+      const vk::PhysicalDevice native_handle{native};
+      auto device_token = std::make_unique<Instance::PhysicalDeviceToken>();
+      device_token->native_handle = native_handle;
+      device_token->parent_identity = instance.implementation_.get();
+      capabilities.query_identity = static_cast<const void *>(device_token.get());
+      device_token->capabilities = capabilities;
+      const auto *device_token_pointer = device_token.get();
+      device_token->next = std::move(instance.implementation_->physical_device_tokens);
+      instance.implementation_->physical_device_tokens = std::move(device_token);
+
       inventory.candidates.push_back(PhysicalDeviceCandidate{
-          .device = PhysicalDevice{vk::PhysicalDevice{native}, native_instance,
-                                   PhysicalDevice::query_tag()},
+          .device = PhysicalDevice{native_handle, device_token_pointer,
+                                   PhysicalDevice::query_authority()},
           .capabilities = std::move(capabilities),
           .enumeration_index = index,
       });
@@ -602,11 +549,7 @@ evaluatePhysicalDevice(const PhysicalDeviceCapabilities &capabilities,
                  });
   }
 
-  const auto required_queues = queue_requirements_with_masks(requirements.required_queue_families,
-                                                             requirements.required_queue_flags);
-  const auto optional_queues = queue_requirements_with_masks(requirements.optional_queue_families,
-                                                             requirements.optional_queue_flags);
-  for (const auto &queue : required_queues) {
+  for (const auto &queue : requirements.required_queue_families) {
     auto indices = matching_queue_indices(capabilities, queue);
     const bool supported = !indices.empty();
     add_decision(evaluation, matches, PhysicalDeviceRequirementKind::queue,
@@ -616,7 +559,7 @@ evaluatePhysicalDevice(const PhysicalDeviceCapabilities &capabilities,
                      .matching_queue_indices = std::move(indices),
                  });
   }
-  for (const auto &queue : optional_queues) {
+  for (const auto &queue : requirements.optional_queue_families) {
     auto indices = matching_queue_indices(capabilities, queue);
     const bool supported = !indices.empty();
     add_decision(evaluation, matches, PhysicalDeviceRequirementKind::queue,
@@ -635,145 +578,6 @@ terreate::Result<PhysicalDeviceEvaluation>
 evaluatePhysicalDevice(const PhysicalDeviceCandidate &candidate,
                        const PhysicalDeviceRequirements &requirements) {
   return evaluatePhysicalDevice(candidate.capabilities, requirements);
-}
-
-terreate::Result<PhysicalDeviceSelection>
-selectPhysicalDevice(const PhysicalDeviceCandidate &candidate,
-                     const PhysicalDeviceRequirements &requirements) {
-  if (!candidate.device.valid()) {
-    return fail<PhysicalDeviceSelection>(
-        PhysicalDeviceError::invalid_view, "select Vulkan physical device",
-        "the manually supplied physical-device candidate has no valid native view "
-        "and parent token");
-  }
-  const auto evaluation = evaluatePhysicalDevice(candidate, requirements);
-  if (!evaluation) {
-    return std::unexpected(evaluation.error());
-  }
-  if (!evaluation->matches) {
-    return fail<PhysicalDeviceSelection>(
-        PhysicalDeviceError::no_match, "select Vulkan physical device",
-        "the manually supplied physical-device candidate does not satisfy the requirements");
-  }
-  return PhysicalDeviceSelection{
-      .candidate = candidate,
-      .reason = PhysicalDeviceSelectionReason::sole_match,
-      .policy_index = std::nullopt,
-  };
-}
-
-terreate::Result<PhysicalDeviceSelection>
-selectPhysicalDevice(std::span<const PhysicalDeviceCandidate> candidates,
-                     const PhysicalDeviceRequirements &requirements,
-                     const PhysicalDeviceSelectionPolicy &policy) {
-  if (const auto error = validate_physical_requirements(requirements)) {
-    return fail<PhysicalDeviceSelection>(PhysicalDeviceError::invalid_requirements,
-                                         "select Vulkan physical device", *error);
-  }
-  if (policy.explicit_uuid && !policy.uuid_order.empty()) {
-    return fail<PhysicalDeviceSelection>(
-        PhysicalDeviceError::invalid_requirements, "select Vulkan physical device",
-        "explicit UUID selection cannot be combined with UUID ordering");
-  }
-  if (policy.explicit_uuid && requirements.required_device_uuid &&
-      !same_uuid(*policy.explicit_uuid, *requirements.required_device_uuid)) {
-    return fail<PhysicalDeviceSelection>(
-        PhysicalDeviceError::invalid_requirements, "select Vulkan physical device",
-        "explicit UUID selection conflicts with required_device_uuid");
-  }
-  for (std::size_t left = 0; left < policy.uuid_order.size(); ++left) {
-    if (std::find(policy.uuid_order.begin() + static_cast<std::ptrdiff_t>(left + 1),
-                  policy.uuid_order.end(), policy.uuid_order[left]) != policy.uuid_order.end()) {
-      return fail<PhysicalDeviceSelection>(PhysicalDeviceError::invalid_requirements,
-                                           "select Vulkan physical device",
-                                           "uuid_order must not contain duplicate UUIDs");
-    }
-  }
-
-  std::vector<const PhysicalDeviceCandidate *> matches;
-  matches.reserve(candidates.size());
-  for (const auto &candidate : candidates) {
-    if (!candidate.device.valid()) {
-      return fail<PhysicalDeviceSelection>(
-          PhysicalDeviceError::invalid_view, "select Vulkan physical device",
-          "an enumerated physical-device candidate has no valid native view and parent token");
-    }
-    const auto evaluation = evaluatePhysicalDevice(candidate, requirements);
-    if (!evaluation) {
-      return std::unexpected(evaluation.error());
-    }
-    if (evaluation->matches) {
-      matches.push_back(&candidate);
-    }
-  }
-
-  if (matches.empty()) {
-    return fail<PhysicalDeviceSelection>(
-        PhysicalDeviceError::no_match, "select Vulkan physical device",
-        "no enumerated physical-device candidate satisfies the requirements");
-  }
-
-  if (policy.explicit_uuid) {
-    std::vector<const PhysicalDeviceCandidate *> uuid_matches;
-    for (const auto *candidate : matches) {
-      if (matches_available_uuid(candidate->capabilities, *policy.explicit_uuid)) {
-        uuid_matches.push_back(candidate);
-      }
-    }
-    if (uuid_matches.empty()) {
-      return fail<PhysicalDeviceSelection>(
-          PhysicalDeviceError::no_match, "select Vulkan physical device",
-          "the explicitly selected device UUID is not a matching candidate");
-    }
-    if (uuid_matches.size() != 1) {
-      return fail<PhysicalDeviceSelection>(
-          PhysicalDeviceError::ambiguous_match, "select Vulkan physical device",
-          "the explicitly selected UUID identifies multiple matching candidates");
-    }
-    return PhysicalDeviceSelection{
-        .candidate = *uuid_matches.front(),
-        .reason = PhysicalDeviceSelectionReason::explicit_uuid,
-        .policy_index = std::nullopt,
-    };
-  }
-
-  if (!policy.uuid_order.empty()) {
-    for (std::size_t policy_index = 0; policy_index < policy.uuid_order.size(); ++policy_index) {
-      const auto &uuid = policy.uuid_order[policy_index];
-      std::vector<const PhysicalDeviceCandidate *> uuid_matches;
-      for (const auto *candidate : matches) {
-        if (matches_available_uuid(candidate->capabilities, uuid)) {
-          uuid_matches.push_back(candidate);
-        }
-      }
-      if (uuid_matches.size() > 1) {
-        return fail<PhysicalDeviceSelection>(
-            PhysicalDeviceError::ambiguous_match, "select Vulkan physical device",
-            "the explicit UUID ordering contains a UUID shared by multiple candidates");
-      }
-      if (uuid_matches.size() == 1) {
-        return PhysicalDeviceSelection{
-            .candidate = *uuid_matches.front(),
-            .reason = PhysicalDeviceSelectionReason::uuid_order,
-            .policy_index = policy_index,
-        };
-      }
-    }
-    return fail<PhysicalDeviceSelection>(
-        PhysicalDeviceError::no_match, "select Vulkan physical device",
-        "the explicit UUID ordering contains no matching candidate");
-  }
-
-  if (matches.size() != 1) {
-    return fail<PhysicalDeviceSelection>(
-        PhysicalDeviceError::ambiguous_match, "select Vulkan physical device",
-        "multiple candidates matched and no explicit UUID selection policy was supplied");
-  }
-  return PhysicalDeviceSelection{
-      .candidate = *matches.front(),
-      .reason = PhysicalDeviceSelectionReason::sole_match,
-      .policy_index = std::nullopt,
-  };
 }
 
 } // namespace terreate::graphics

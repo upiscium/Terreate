@@ -4,7 +4,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -21,6 +20,11 @@ namespace terreate::graphics {
 
 class Instance;
 struct PhysicalDeviceInventory;
+struct PhysicalDeviceCapabilities;
+struct PhysicalDeviceCandidate;
+struct PhysicalDeviceRequirements;
+struct PhysicalDeviceSelectionPolicy;
+struct PhysicalDeviceSelection;
 
 /// The UUID is a value-owned copy of VkPhysicalDeviceIDProperties::deviceUUID.
 /// It is deliberately an array rather than a string: Vulkan UUIDs are binary
@@ -30,13 +34,19 @@ using PhysicalDeviceUuid = std::array<std::uint8_t, VK_UUID_SIZE>;
 /// A borrowed PhysicalDevice handle.  Physical devices are owned by Vulkan's
 /// parent Instance, not by this value.  Ownership never transfers to callers;
 /// callers must never destroy a physical device through nativeHandle().  A
-/// returned native handle is invalid after the parent Instance is destroyed or
-/// participates in a move and must be reacquired from the current owner.
+/// returned native handle is invalid after the parent Instance is destroyed.
+/// A source view follows its parent implementation through an Instance move;
+/// a view belonging to a destination implementation displaced by move
+/// assignment fails closed and must be reacquired from the current owner.
 ///
-/// The representation is deliberately an opaque, library-owned state pointer.
-/// Only the production query path can create valid state.  Copies and moves
-/// copy or transfer borrowed metadata; they never acquire native ownership or
-/// retain ownership of the parent Instance.
+/// The representation is deliberately a small borrowed value: the native
+/// handle and a private, non-owning per-device token owned by the parent
+/// Instance implementation.  That token records the exact handle, parent
+/// identity, and pNext-free capability snapshot, so replacing only the copied
+/// handle or public capabilities fails closed.  Only the production query path
+/// can create a valid value.  Copies and moves copy or transfer borrowed
+/// metadata; they never acquire native ownership, allocate, or retain ownership
+/// of the parent Instance.
 class PhysicalDevice final {
 public:
   PhysicalDevice() noexcept = default;
@@ -46,35 +56,45 @@ public:
   PhysicalDevice &operator=(PhysicalDevice &&) noexcept = default;
   ~PhysicalDevice() = default;
 
-  [[nodiscard]] TERREATE_GRAPHICS_EXPORT explicit operator bool() const noexcept;
-  [[nodiscard]] TERREATE_GRAPHICS_EXPORT bool valid() const noexcept;
+  [[nodiscard]] explicit operator bool() const noexcept;
+  [[nodiscard]] bool valid() const noexcept;
 
   /// Return a borrowed native handle.  Ownership never transfers to the
   /// caller, and callers must never destroy the Vulkan physical device through
-  /// this handle.  The returned handle is invalid after the parent Instance is
-  /// destroyed or participates in a move; reacquire it from the current owner.
-  [[nodiscard]] TERREATE_GRAPHICS_EXPORT vk::PhysicalDevice nativeHandle() const noexcept;
+  /// this handle.  The returned handle is empty when this view is invalid and
+  /// is invalid after the parent Instance is destroyed or its implementation
+  /// is displaced; reacquire it from the current owner.
+  [[nodiscard]] vk::PhysicalDevice nativeHandle() const noexcept;
 
-  /// Compare only the borrowed parent handle stored in the opaque state against
-  /// the current private native parent handle.  No parent implementation state
-  /// is dereferenced by this operation; a moved Instance retains the same
-  /// native handle.
-  [[nodiscard]] TERREATE_GRAPHICS_EXPORT bool
-  correlatedWith(const Instance &instance) const noexcept;
+  /// Compare the private per-device token against the current Instance
+  /// implementation.  A source view follows its moved implementation, while
+  /// a view belonging to a displaced destination implementation fails closed.
+  [[nodiscard]] bool correlatedWith(const Instance &instance) const noexcept;
 
 private:
-  struct QueryTag;
+  struct QueryAuthority;
 
-  TERREATE_GRAPHICS_HIDDEN
-  PhysicalDevice(vk::PhysicalDevice native_handle, vk::Instance parent_instance,
-                 const QueryTag *query_tag) noexcept;
+  [[nodiscard]] bool
+  capabilitiesMatch(const PhysicalDeviceCapabilities &capabilities) const noexcept;
 
-  [[nodiscard]] TERREATE_GRAPHICS_HIDDEN static const QueryTag *query_tag() noexcept;
+  PhysicalDevice(vk::PhysicalDevice native_handle,
+                 const Instance::PhysicalDeviceToken *device_token,
+                 const QueryAuthority *query_authority) noexcept;
 
-  std::shared_ptr<const void> state_{};
+  [[nodiscard]] static const QueryAuthority *query_authority() noexcept;
+
+  vk::PhysicalDevice native_handle_{};
+  const Instance::PhysicalDeviceToken *device_token_ = nullptr;
 
   friend auto queryPhysicalDevices(const Instance &instance)
       -> terreate::Result<PhysicalDeviceInventory>;
+  friend auto selectPhysicalDevice(const PhysicalDeviceCandidate &candidate,
+                                   const PhysicalDeviceRequirements &requirements)
+      -> terreate::Result<PhysicalDeviceSelection>;
+  friend auto selectPhysicalDevice(std::span<const PhysicalDeviceCandidate> candidates,
+                                   const PhysicalDeviceRequirements &requirements,
+                                   const PhysicalDeviceSelectionPolicy &policy)
+      -> terreate::Result<PhysicalDeviceSelection>;
 };
 
 /// A copied device-extension property.  `name` is owned and the collection in
@@ -144,6 +164,13 @@ struct PhysicalDeviceCapabilities {
   /// VK_EXT_memory_budget was not reported or the memory-properties2 query
   /// was not available for the parent instance API.
   std::optional<vk::PhysicalDeviceMemoryBudgetPropertiesEXT> memory_budget{};
+
+  /// Opaque query provenance.  Native query results carry the address of the
+  /// parent-owned per-device token; synthetic snapshots intentionally leave it
+  /// null.  Pure evaluation ignores this marker, while selection uses it to
+  /// prevent a value copied from another view or parent from being substituted
+  /// before evaluation.
+  const void *query_identity = nullptr;
 };
 
 /// A query result item: the borrowed native view is correlated with the
@@ -268,9 +295,6 @@ struct PhysicalDeviceRequirements {
 
   std::vector<PhysicalDeviceQueueRequirement> required_queue_families{};
   std::vector<PhysicalDeviceQueueRequirement> optional_queue_families{};
-  /// Convenience masks for callers that do not need a queue-count constraint.
-  std::vector<vk::QueueFlags> required_queue_flags{};
-  std::vector<vk::QueueFlags> optional_queue_flags{};
 };
 
 struct PhysicalDeviceEvaluation {
@@ -289,6 +313,9 @@ struct PhysicalDeviceSelectionPolicy {
 };
 
 enum class PhysicalDeviceSelectionReason : std::uint8_t {
+  /// The caller supplied one already chosen candidate directly.
+  explicit_candidate,
+  /// The complete inventory contained exactly one matching candidate.
   sole_match,
   explicit_uuid,
   uuid_order,
@@ -308,39 +335,37 @@ enum class PhysicalDeviceError : std::uint8_t {
   invalid_view = 5,
 };
 
-[[nodiscard]] TERREATE_GRAPHICS_EXPORT const std::error_category &
-physical_device_error_category() noexcept;
-[[nodiscard]] TERREATE_GRAPHICS_EXPORT std::error_code
-make_error_code(PhysicalDeviceError error) noexcept;
+[[nodiscard]] const std::error_category &physical_device_error_category() noexcept;
+[[nodiscard]] std::error_code make_error_code(PhysicalDeviceError error) noexcept;
 
 /// Enumerate physical devices and eagerly copy every supported observation.
 /// A successful zero-device enumeration returns an empty inventory; it is not
 /// converted into an error.  vk::SystemError codes from enumeration or any
 /// per-device native query are preserved in the returned terreate::Error.
-[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<PhysicalDeviceInventory>
+[[nodiscard]] terreate::Result<PhysicalDeviceInventory>
 queryPhysicalDevices(const Instance &instance);
 
 /// Evaluate only explicit requirements against one candidate.  No native
 /// calls, global state, enumeration order, score, or mutation is involved.
-[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<PhysicalDeviceEvaluation>
+[[nodiscard]] terreate::Result<PhysicalDeviceEvaluation>
 evaluatePhysicalDevice(const PhysicalDeviceCandidate &candidate,
                        const PhysicalDeviceRequirements &requirements);
 
-[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<PhysicalDeviceEvaluation>
+[[nodiscard]] terreate::Result<PhysicalDeviceEvaluation>
 evaluatePhysicalDevice(const PhysicalDeviceCapabilities &capabilities,
                        const PhysicalDeviceRequirements &requirements);
 
 /// Select one candidate after pure evaluation.  A single match is selected;
 /// zero matches and multiple matches are distinct errors.  Multiple matches
 /// can only be resolved by an explicit UUID policy.
-[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<PhysicalDeviceSelection>
+[[nodiscard]] terreate::Result<PhysicalDeviceSelection>
 selectPhysicalDevice(std::span<const PhysicalDeviceCandidate> candidates,
                      const PhysicalDeviceRequirements &requirements,
                      const PhysicalDeviceSelectionPolicy &policy = {});
 
 /// Manual selection of one already chosen candidate.  This overload never
 /// compares or ranks other candidates.
-[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<PhysicalDeviceSelection>
+[[nodiscard]] terreate::Result<PhysicalDeviceSelection>
 selectPhysicalDevice(const PhysicalDeviceCandidate &candidate,
                      const PhysicalDeviceRequirements &requirements);
 

@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,7 +26,8 @@ namespace graphics_detail = terreate::graphics::detail;
 
 static_assert(std::copy_constructible<PhysicalDevice>);
 static_assert(std::is_nothrow_copy_constructible_v<PhysicalDevice>);
-static_assert(!std::is_trivially_copyable_v<PhysicalDevice>);
+static_assert(std::is_trivially_copyable_v<PhysicalDevice>);
+static_assert(sizeof(PhysicalDevice) <= 2 * sizeof(void *));
 static_assert(std::is_nothrow_move_constructible_v<PhysicalDevice>);
 static_assert(std::is_nothrow_move_assignable_v<PhysicalDevice>);
 static_assert(!std::is_constructible_v<PhysicalDevice, vk::PhysicalDevice, const void *>);
@@ -40,6 +43,20 @@ static_assert(std::copy_constructible<PhysicalDeviceCandidate>);
     std::fputc('\n', stderr);
   }
   return condition;
+}
+
+[[nodiscard]] PhysicalDevice replace_native_handle_bytes(const PhysicalDevice &genuine) {
+  static_assert(std::is_standard_layout_v<PhysicalDevice>);
+  static_assert(std::is_trivially_copyable_v<vk::PhysicalDevice>);
+  static_assert(sizeof(vk::PhysicalDevice) <= sizeof(PhysicalDevice));
+
+  auto bytes = std::bit_cast<std::array<std::byte, sizeof(PhysicalDevice)>>(genuine);
+  const auto replacement_handle = std::bit_cast<VkPhysicalDevice>(std::uintptr_t{1});
+  const auto replacement = vk::PhysicalDevice{replacement_handle};
+  const auto replacement_bytes =
+      std::bit_cast<std::array<std::byte, sizeof(vk::PhysicalDevice)>>(replacement);
+  std::copy(replacement_bytes.begin(), replacement_bytes.end(), bytes.begin());
+  return std::bit_cast<PhysicalDevice>(bytes);
 }
 
 void emit_runtime_marker(const char *marker) {
@@ -93,13 +110,11 @@ synthetic_capabilities(std::uint8_t uuid_first, bool anisotropy, bool shader_int
   return capabilities;
 }
 
-[[nodiscard]] PhysicalDeviceCandidate
-synthetic_candidate(std::uint8_t uuid_first, bool anisotropy = true, bool shader_int64 = false,
-                    std::size_t index = 0, PhysicalDevice device = {}) {
+[[nodiscard]] PhysicalDeviceCandidate synthetic_candidate(std::uint8_t uuid_first) {
   return PhysicalDeviceCandidate{
-      .device = std::move(device),
-      .capabilities = synthetic_capabilities(uuid_first, anisotropy, shader_int64),
-      .enumeration_index = index,
+      .device = {},
+      .capabilities = synthetic_capabilities(uuid_first, true, false),
+      .enumeration_index = 0,
   };
 }
 
@@ -288,6 +303,40 @@ synthetic_temporary_query(const graphics_detail::PhysicalDeviceQueryInput &) {
     }
   }
 
+  const PhysicalDeviceRequirements insufficient_queue_requirements{
+      .required_queue_families = {PhysicalDeviceQueueRequirement{
+          .flags = vk::QueueFlagBits::eGraphics,
+          .min_queue_count = 2,
+      }},
+  };
+  const auto insufficient_queue =
+      evaluatePhysicalDevice(candidate.capabilities, insufficient_queue_requirements);
+  passed &= check(insufficient_queue.has_value() && !insufficient_queue->matches,
+                  "one graphics queue incorrectly satisfied a two-queue requirement");
+  if (insufficient_queue && insufficient_queue->decisions.size() == 1) {
+    const auto &decision = insufficient_queue->decisions.front();
+    const auto *evidence = std::get_if<PhysicalDeviceQueueEvidence>(&decision.evidence);
+    passed &= check(decision.outcome == PhysicalDeviceRequirementOutcome::declined &&
+                        decision.reason == PhysicalDeviceRequirementReason::unsupported &&
+                        evidence != nullptr && evidence->requirement.min_queue_count == 2 &&
+                        evidence->matching_queue_indices.empty(),
+                    "insufficient graphics queue count did not retain declined evidence");
+  }
+
+  const PhysicalDeviceQueueRequirement zero_queue_requirement{
+      .flags = vk::QueueFlagBits::eGraphics,
+      .min_queue_count = 0,
+  };
+  const PhysicalDeviceRequirements zero_queue_requirements{
+      .required_queue_families = {zero_queue_requirement},
+  };
+  const auto zero_queue_count =
+      evaluatePhysicalDevice(candidate.capabilities, zero_queue_requirements);
+  const bool zero_queue_rejected =
+      !zero_queue_count &&
+      zero_queue_count.error().code() == make_error_code(PhysicalDeviceError::invalid_requirements);
+  passed &= check(zero_queue_rejected, "zero minimum queue count was not rejected");
+
   auto no_match_requirements = requirements;
   no_match_requirements.required_extensions = {"VK_EXT_missing"};
   const auto no_match_evaluation = evaluatePhysicalDevice(candidate, no_match_requirements);
@@ -371,6 +420,17 @@ synthetic_temporary_query(const graphics_detail::PhysicalDeviceQueryInput &) {
   passed &= check(extension_members_gated,
                   "extension-backed pNext availability was not gated independently");
 
+  const auto vulkan10_external_memory_without_properties2 =
+      graphics_detail::physical_device_query_availability(
+          graphics_detail::PhysicalDeviceQueryApiVersions{
+              .effective_instance_api = VK_API_VERSION_1_0,
+              .physical_device_api = VK_API_VERSION_1_0,
+          },
+          false, true, false);
+  passed &= check(!vulkan10_external_memory_without_properties2.properties2 &&
+                      !vulkan10_external_memory_without_properties2.id_properties,
+                  "Vulkan 1.0 external-memory ID properties bypassed the Properties2 gate");
+
   const auto vulkan11 = graphics_detail::physical_device_query_availability(
       graphics_detail::PhysicalDeviceQueryApiVersions{
           .effective_instance_api = VK_API_VERSION_1_1,
@@ -382,6 +442,19 @@ synthetic_temporary_query(const graphics_detail::PhysicalDeviceQueryInput &) {
                                       !vulkan11.features_12 && !vulkan11.features_13;
   passed &= check(vulkan11_members_gated,
                   "Vulkan 1.1 pNext availability was not gated by both API versions");
+
+  const auto vulkan11_instance_vulkan10_device_with_external_ids =
+      graphics_detail::physical_device_query_availability(
+          graphics_detail::PhysicalDeviceQueryApiVersions{
+              .effective_instance_api = VK_API_VERSION_1_1,
+              .physical_device_api = VK_API_VERSION_1_0,
+          },
+          false, true, false);
+  passed &= check(vulkan11_instance_vulkan10_device_with_external_ids.properties2 &&
+                      vulkan11_instance_vulkan10_device_with_external_ids.id_properties &&
+                      !vulkan11_instance_vulkan10_device_with_external_ids.driver_properties,
+                  "external-memory ID properties were not available for a Vulkan 1.1 Instance "
+                  "with a Vulkan 1.0 device");
 
   const auto vulkan12 = graphics_detail::physical_device_query_availability(
       graphics_detail::PhysicalDeviceQueryApiVersions{
@@ -434,6 +507,30 @@ synthetic_temporary_query(const graphics_detail::PhysicalDeviceQueryInput &) {
   passed &= check(unsorted_evaluation.has_value() && unsorted_evaluation->matches,
                   "unsorted public extension snapshots were not evaluated safely");
 
+  return passed;
+}
+
+[[nodiscard]] bool
+test_byte_copy_handle_substitution_is_rejected(const Instance &owner,
+                                               const PhysicalDeviceCandidate &candidate) {
+  const auto forged = replace_native_handle_bytes(candidate.device);
+  bool passed = true;
+  const bool forged_valid = forged.valid();
+  passed &= check(!forged_valid, "byte-copy handle substitution retained PhysicalDevice validity");
+  passed &= check(forged.nativeHandle() == vk::PhysicalDevice{},
+                  "byte-copy handle substitution exposed the substituted native handle");
+  passed &= check(!forged.correlatedWith(owner),
+                  "byte-copy handle substitution retained Instance correlation");
+
+  const PhysicalDeviceCandidate forged_candidate{
+      .device = forged,
+      .capabilities = candidate.capabilities,
+      .enumeration_index = candidate.enumeration_index,
+  };
+  const auto selection = selectPhysicalDevice(forged_candidate, PhysicalDeviceRequirements{});
+  const bool invalid_selection =
+      !selection && selection.error().code() == make_error_code(PhysicalDeviceError::invalid_view);
+  passed &= check(invalid_selection, "selection accepted a byte-copy handle substitution");
   return passed;
 }
 
@@ -501,95 +598,42 @@ synthetic_temporary_query(const graphics_detail::PhysicalDeviceQueryInput &) {
   return passed;
 }
 
-[[nodiscard]] bool
-test_synthetic_selection_is_explicit_and_deterministic(const PhysicalDevice &prototype) {
-  const auto first = synthetic_candidate(0x01u, true, true, 0, prototype);
-  const auto second = synthetic_candidate(0x02u, true, true, 1, prototype);
-  const std::array candidates{second, first};
+[[nodiscard]] bool test_synthetic_evaluation_is_explicit_and_deterministic() {
+  const auto first = synthetic_candidate(0x01u);
+  const auto second = synthetic_candidate(0x02u);
   const PhysicalDeviceRequirements requirements{};
 
   bool passed = true;
-  const auto ambiguous = selectPhysicalDevice(candidates, requirements);
-  const bool ambiguity_reported =
-      !ambiguous &&
-      ambiguous.error().code() == make_error_code(PhysicalDeviceError::ambiguous_match);
-  passed &= check(ambiguity_reported, "multiple candidates selected enumeration front");
-
-  PhysicalDeviceSelectionPolicy uuid_order;
-  uuid_order.uuid_order = {first.capabilities.device_uuid, second.capabilities.device_uuid};
-  const auto ordered = selectPhysicalDevice(candidates, requirements, uuid_order);
-  passed &= check(ordered.has_value(), "explicit UUID ordering failed to select a candidate");
-  if (ordered) {
-    passed &= check(ordered->candidate.capabilities.device_uuid == first.capabilities.device_uuid &&
-                        ordered->reason == PhysicalDeviceSelectionReason::uuid_order &&
-                        ordered->policy_index == std::optional<std::size_t>{0},
-                    "explicit UUID ordering did not select the first requested UUID");
+  const auto first_evaluation = evaluatePhysicalDevice(first, requirements);
+  const auto first_capability_evaluation = evaluatePhysicalDevice(first.capabilities, requirements);
+  passed &= check(first_evaluation.has_value() && first_capability_evaluation.has_value() &&
+                      first_evaluation->matches && first_capability_evaluation->matches,
+                  "synthetic capability evaluation did not accept explicit empty requirements");
+  if (first_evaluation && first_capability_evaluation) {
+    passed &= check(same_evaluation(*first_evaluation, *first_capability_evaluation),
+                    "candidate and capability evaluation diverged for a synthetic snapshot");
   }
 
-  PhysicalDeviceSelectionPolicy manual;
-  manual.explicit_uuid = second.capabilities.device_uuid;
-  const auto manually_selected = selectPhysicalDevice(candidates, requirements, manual);
-  passed &= check(manually_selected.has_value(), "manual UUID selection failed");
-  if (manually_selected) {
-    const bool manual_match =
-        manually_selected->candidate.capabilities.device_uuid == second.capabilities.device_uuid &&
-        manually_selected->reason == PhysicalDeviceSelectionReason::explicit_uuid &&
-        !manually_selected->policy_index;
-    passed &= check(manual_match, "manual UUID selection returned a different candidate");
+  const auto second_evaluation = evaluatePhysicalDevice(second, requirements);
+  passed &= check(first_evaluation && second_evaluation.has_value() && second_evaluation->matches &&
+                      second_evaluation->candidate_identity.uuid !=
+                          first_evaluation->candidate_identity.uuid,
+                  "synthetic evaluation did not remain a pure value operation");
+
+  const auto repeated = evaluatePhysicalDevice(first, requirements);
+  if (first_evaluation && repeated) {
+    passed &= check(same_evaluation(*first_evaluation, *repeated),
+                    "repeated synthetic evaluation was not deterministic");
   }
-
-  const auto direct = selectPhysicalDevice(first, requirements);
-  const bool direct_match =
-      direct.has_value() && direct->reason == PhysicalDeviceSelectionReason::sole_match;
-  passed &= check(direct_match, "single-candidate manual selection failed");
-
-  PhysicalDeviceSelectionPolicy conflicting_policy;
-  conflicting_policy.explicit_uuid = first.capabilities.device_uuid;
-  conflicting_policy.uuid_order = {first.capabilities.device_uuid};
-  const auto conflicting = selectPhysicalDevice(candidates, requirements, conflicting_policy);
-  const bool conflicting_policy_rejected =
-      !conflicting &&
-      conflicting.error().code() == make_error_code(PhysicalDeviceError::invalid_requirements);
-  passed &=
-      check(conflicting_policy_rejected, "explicit UUID and UUID ordering policies were combined");
-
-  PhysicalDeviceSelectionPolicy conflicting_requirement;
-  conflicting_requirement.explicit_uuid = first.capabilities.device_uuid;
-  const auto requirement_conflict = selectPhysicalDevice(
-      candidates,
-      PhysicalDeviceRequirements{.required_device_uuid = second.capabilities.device_uuid},
-      conflicting_requirement);
-  const bool conflicting_requirement_rejected =
-      !requirement_conflict && requirement_conflict.error().code() ==
-                                   make_error_code(PhysicalDeviceError::invalid_requirements);
-  passed &= check(conflicting_requirement_rejected,
-                  "explicit UUID selection conflicted with a required UUID");
-
-  const PhysicalDeviceCandidate invalid_view{
-      .device = PhysicalDevice{},
-      .capabilities = first.capabilities,
-      .enumeration_index = first.enumeration_index,
-  };
-  const auto invalid_selection = selectPhysicalDevice(invalid_view, requirements);
-  const bool invalid_view_rejected =
-      !invalid_selection &&
-      invalid_selection.error().code() == make_error_code(PhysicalDeviceError::invalid_view);
-  passed &= check(invalid_view_rejected, "selection accepted a default physical-device view");
-
-  const auto missing = selectPhysicalDevice(
-      candidates, PhysicalDeviceRequirements{.required_extensions = {"VK_EXT_missing"}});
-  const bool no_match_reported =
-      !missing && missing.error().code() == make_error_code(PhysicalDeviceError::no_match);
-  passed &= check(no_match_reported, "missing extension did not produce no-match");
   return passed;
 }
 
-[[nodiscard]] bool test_unavailable_uuid_is_never_a_match(const PhysicalDevice &prototype) {
+[[nodiscard]] bool test_unavailable_uuid_is_never_a_match() {
   const PhysicalDeviceUuid zero_uuid{};
-  auto unavailable = synthetic_candidate(0x00u, true, false, 0, prototype);
+  auto unavailable = synthetic_candidate(0x00u);
   unavailable.capabilities.id_properties_available = false;
   unavailable.capabilities.device_uuid = zero_uuid;
-  const auto available = synthetic_candidate(0x03u, true, false, 1, prototype);
+  const auto available = synthetic_candidate(0x03u);
 
   bool passed = true;
   const PhysicalDeviceRequirements uuid_requirement{.required_device_uuid = zero_uuid};
@@ -618,44 +662,180 @@ test_synthetic_selection_is_explicit_and_deterministic(const PhysicalDevice &pro
     passed &= check(clear_decline,
                     "unavailable UUID properties did not produce a clear declined decision");
   }
+  const PhysicalDeviceRequirements available_uuid_requirement{
+      .required_device_uuid = available.capabilities.device_uuid,
+  };
+  const auto available_evaluation = evaluatePhysicalDevice(available, available_uuid_requirement);
+  passed &= check(available_evaluation.has_value() && available_evaluation->matches,
+                  "available UUID properties did not satisfy a pure evaluation");
+  return passed;
+}
 
-  const auto manual = selectPhysicalDevice(unavailable, uuid_requirement);
-  const bool manual_no_match =
-      !manual && manual.error().code() == make_error_code(PhysicalDeviceError::no_match);
-  passed &= check(manual_no_match, "manual UUID selection accepted unavailable ID properties");
-
-  const std::array candidates{unavailable, available};
-  const auto no_match_code = make_error_code(PhysicalDeviceError::no_match);
-  PhysicalDeviceSelectionPolicy explicit_zero;
-  explicit_zero.explicit_uuid = zero_uuid;
-  const auto explicit_selection =
-      selectPhysicalDevice(candidates, PhysicalDeviceRequirements{}, explicit_zero);
-  passed &= check(!explicit_selection, "explicit zero UUID policy selected unavailable UUID");
-  if (!explicit_selection) {
-    passed &= check(explicit_selection.error().code() == no_match_code,
-                    "explicit zero UUID policy returned an unexpected error");
+[[nodiscard]] bool
+test_selection_requires_bound_capability_snapshot(const PhysicalDeviceInventory &inventory) {
+  if (!check(!inventory.empty(), "snapshot binding regression requires a queried candidate")) {
+    return false;
   }
 
-  PhysicalDeviceSelectionPolicy zero_then_available;
-  zero_then_available.uuid_order = {zero_uuid, available.capabilities.device_uuid};
-  const auto ordered_selection =
-      selectPhysicalDevice(candidates, PhysicalDeviceRequirements{}, zero_then_available);
-  const bool ordered_available =
-      ordered_selection.has_value() &&
-      ordered_selection->candidate.capabilities.id_properties_available &&
-      ordered_selection->candidate.capabilities.device_uuid == available.capabilities.device_uuid;
-  passed &= check(ordered_available,
-                  "UUID ordering did not skip unavailable zero UUID properties deterministically");
+  const auto &candidate = inventory.front();
+  bool passed = true;
+  const auto genuine_selection = selectPhysicalDevice(candidate, PhysicalDeviceRequirements{});
+  passed &= check(genuine_selection.has_value(),
+                  "genuine queried candidate was rejected by snapshot binding");
 
-  PhysicalDeviceSelectionPolicy only_zero;
-  only_zero.uuid_order = {zero_uuid};
-  const auto zero_selection =
-      selectPhysicalDevice(candidates, PhysicalDeviceRequirements{}, only_zero);
-  passed &= check(!zero_selection, "UUID ordering selected an unavailable zero UUID candidate");
-  if (!zero_selection) {
-    passed &= check(zero_selection.error().code() == no_match_code,
-                    "UUID ordering returned an unexpected error");
+  auto conformance_mutated = candidate;
+  auto &conformance_version = conformance_mutated.capabilities.driver_properties.conformanceVersion;
+  conformance_version.patch =
+      static_cast<decltype(conformance_version.patch)>(conformance_version.patch ^ 1u);
+  const auto conformance_selection =
+      selectPhysicalDevice(conformance_mutated, PhysicalDeviceRequirements{});
+  const bool conformance_mutation_rejected =
+      !conformance_selection &&
+      conformance_selection.error().code() == make_error_code(PhysicalDeviceError::invalid_view);
+  passed &= check(conformance_mutation_rejected,
+                  "selection accepted a candidate with mutated driver conformance version");
+
+  auto mutated = candidate;
+  mutated.capabilities.properties.deviceID ^= 1u;
+  const auto mutated_selection = selectPhysicalDevice(mutated, PhysicalDeviceRequirements{});
+  const auto invalid_view_error = make_error_code(PhysicalDeviceError::invalid_view);
+  const bool mutation_rejected =
+      !mutated_selection && mutated_selection.error().code() == invalid_view_error;
+  passed &= check(mutation_rejected,
+                  "selection evaluated a candidate with a mutated capability snapshot");
+
+  auto evidence_mutated = candidate;
+  evidence_mutated.capabilities.features_10.shaderInt64 =
+      evidence_mutated.capabilities.features_10.shaderInt64 == VK_TRUE ? VK_FALSE : VK_TRUE;
+  const auto evidence_selection =
+      selectPhysicalDevice(evidence_mutated, PhysicalDeviceRequirements{});
+  const bool evidence_rejected =
+      !evidence_selection && evidence_selection.error().code() == invalid_view_error;
+  passed &= check(evidence_rejected,
+                  "selection accepted a candidate with substituted capability evidence");
+
+  auto memory_unused_storage = candidate;
+  bool changed_unused_memory_storage = false;
+  // Padding bytes are not portably writable; vary unused array storage instead.
+  const auto memory_type_count =
+      memory_unused_storage.capabilities.memory_properties.memoryTypeCount;
+  if (memory_type_count < VK_MAX_MEMORY_TYPES) {
+    auto &unused_memory_type =
+        memory_unused_storage.capabilities.memory_properties.memoryTypes[memory_type_count];
+    unused_memory_type.propertyFlags = vk::MemoryPropertyFlagBits::eHostVisible;
+    unused_memory_type.heapIndex = VK_MAX_MEMORY_HEAPS - 1;
+    changed_unused_memory_storage = true;
   }
+  const auto memory_heap_count =
+      memory_unused_storage.capabilities.memory_properties.memoryHeapCount;
+  if (memory_heap_count < VK_MAX_MEMORY_HEAPS) {
+    memory_unused_storage.capabilities.memory_properties.memoryHeaps[memory_heap_count].size = 1;
+    memory_unused_storage.capabilities.memory_properties.memoryHeaps[memory_heap_count].flags =
+        vk::MemoryHeapFlagBits::eDeviceLocal;
+    changed_unused_memory_storage = true;
+  }
+  if (changed_unused_memory_storage) {
+    const auto unused_memory_selection =
+        selectPhysicalDevice(memory_unused_storage, PhysicalDeviceRequirements{});
+    passed &= check(unused_memory_selection.has_value(),
+                    "selection rejected a semantically equal snapshot with changed unused "
+                    "memory-property storage");
+  }
+
+  if (memory_unused_storage.capabilities.memory_budget && memory_heap_count < VK_MAX_MEMORY_HEAPS) {
+    auto &unused_budget = *memory_unused_storage.capabilities.memory_budget;
+    const auto tail_budget = unused_budget.heapBudget[memory_heap_count];
+    unused_budget.heapBudget[memory_heap_count] = tail_budget == 0 ? 1 : 0;
+    const auto unused_budget_selection =
+        selectPhysicalDevice(memory_unused_storage, PhysicalDeviceRequirements{});
+    passed &= check(unused_budget_selection.has_value(),
+                    "selection rejected a semantically equal snapshot with changed unused "
+                    "memory-budget tail storage");
+  }
+
+  auto used_memory_mutated = candidate;
+  bool changed_used_memory = false;
+  if (used_memory_mutated.capabilities.memory_properties.memoryTypeCount != 0) {
+    auto &memory_type = used_memory_mutated.capabilities.memory_properties.memoryTypes[0];
+    const auto original_flags = static_cast<VkMemoryPropertyFlags>(memory_type.propertyFlags);
+    memory_type.propertyFlags =
+        static_cast<vk::MemoryPropertyFlags>(original_flags ^ VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    changed_used_memory = true;
+  } else if (used_memory_mutated.capabilities.memory_properties.memoryHeapCount != 0) {
+    auto &memory_heap = used_memory_mutated.capabilities.memory_properties.memoryHeaps[0];
+    memory_heap.size = memory_heap.size == 0 ? 1 : memory_heap.size - 1;
+    changed_used_memory = true;
+  }
+  if (changed_used_memory) {
+    const auto used_memory_selection =
+        selectPhysicalDevice(used_memory_mutated, PhysicalDeviceRequirements{});
+    const bool used_memory_rejected =
+        !used_memory_selection && used_memory_selection.error().code() == invalid_view_error;
+    passed &= check(used_memory_rejected,
+                    "selection accepted a candidate with a mutated used memory-property member");
+  }
+
+  if (candidate.capabilities.memory_budget && memory_heap_count != 0) {
+    auto used_budget_mutated = candidate;
+    auto &used_budget = *used_budget_mutated.capabilities.memory_budget;
+    const auto used_budget_value = used_budget.heapBudget[0];
+    used_budget.heapBudget[0] = used_budget_value == 0 ? 1 : 0;
+    const auto used_budget_selection =
+        selectPhysicalDevice(used_budget_mutated, PhysicalDeviceRequirements{});
+    const bool used_budget_rejected =
+        !used_budget_selection && used_budget_selection.error().code() == invalid_view_error;
+    passed &= check(used_budget_rejected,
+                    "selection accepted a candidate with a mutated used memory-budget entry");
+  }
+
+  auto invalid_memory_count = candidate;
+  invalid_memory_count.capabilities.memory_properties.memoryTypeCount = VK_MAX_MEMORY_TYPES + 1;
+  const auto invalid_count_selection =
+      selectPhysicalDevice(invalid_memory_count, PhysicalDeviceRequirements{});
+  const bool invalid_count_rejected =
+      !invalid_count_selection && invalid_count_selection.error().code() == invalid_view_error;
+  passed &= check(invalid_count_rejected,
+                  "selection accepted a candidate with an out-of-bounds memory-type count");
+
+  auto invalid_memory_heap_count = candidate;
+  invalid_memory_heap_count.capabilities.memory_properties.memoryHeapCount =
+      VK_MAX_MEMORY_HEAPS + 1;
+  const auto invalid_heap_count_selection =
+      selectPhysicalDevice(invalid_memory_heap_count, PhysicalDeviceRequirements{});
+  const bool invalid_heap_count_rejected =
+      !invalid_heap_count_selection &&
+      invalid_heap_count_selection.error().code() == invalid_view_error;
+  passed &= check(invalid_heap_count_rejected,
+                  "selection accepted a candidate with an out-of-bounds memory-heap count");
+
+  if (inventory.size() > 1) {
+    auto cross_device = inventory.front();
+    cross_device.capabilities = inventory[1].capabilities;
+    const auto cross_device_selection =
+        selectPhysicalDevice(cross_device, PhysicalDeviceRequirements{});
+    const bool cross_device_rejected =
+        !cross_device_selection && cross_device_selection.error().code() == invalid_view_error;
+    passed &= check(cross_device_rejected,
+                    "selection accepted capabilities from another physical device");
+  }
+
+  const PhysicalDeviceCandidate invalid_view{
+      .device = PhysicalDevice{},
+      .capabilities = candidate.capabilities,
+      .enumeration_index = candidate.enumeration_index,
+  };
+  const auto invalid_selection = selectPhysicalDevice(invalid_view, PhysicalDeviceRequirements{});
+  const bool default_view_rejected =
+      !invalid_selection && invalid_selection.error().code() == invalid_view_error;
+  passed &= check(default_view_rejected, "selection accepted a default physical-device view");
+
+  const PhysicalDeviceRequirements missing_requirement{
+      .required_extensions = {"VK_EXT_missing"},
+  };
+  const auto missing = selectPhysicalDevice(candidate, missing_requirement);
+  const bool missing_rejected =
+      !missing && missing.error().code() == make_error_code(PhysicalDeviceError::no_match);
+  passed &= check(missing_rejected, "genuine missing extension did not produce no-match");
   return passed;
 }
 
@@ -691,8 +871,9 @@ test_synthetic_selection_is_explicit_and_deterministic(const PhysicalDevice &pro
   }
 
   const auto &candidate = inventory_result->candidates.front();
-  passed &= test_synthetic_selection_is_explicit_and_deterministic(candidate.device);
-  passed &= test_unavailable_uuid_is_never_a_match(candidate.device);
+  passed &= test_synthetic_evaluation_is_explicit_and_deterministic();
+  passed &= test_unavailable_uuid_is_never_a_match();
+  passed &= test_selection_requires_bound_capability_snapshot(*inventory_result);
   // nativeHandle() is borrowed: ownership never transfers, and callers must
   // never destroy the physical device through it.  Keep this observation only
   // while its parent Instance is in its original state.
@@ -705,6 +886,7 @@ test_synthetic_selection_is_explicit_and_deterministic(const PhysicalDevice &pro
   const auto &snapshot = candidate.capabilities;
   passed &= check(candidate.device.valid(),
                   "headless PhysicalDevice view did not contain a valid borrowed handle");
+  passed &= test_byte_copy_handle_substitution_is_rejected(owner, candidate);
   passed &= check(snapshot.properties2_available && snapshot.features2_available &&
                       snapshot.memory_properties2_available,
                   "headless query did not observe Vulkan 1.1+ capability chains");
@@ -752,6 +934,28 @@ test_synthetic_selection_is_explicit_and_deterministic(const PhysicalDevice &pro
       std::all_of(snapshot.queue_families.begin(), snapshot.queue_families.end(),
                   [](const auto &family) { return family.queueCount != 0; });
   passed &= check(queues_are_observed, "headless query did not observe queue families");
+  const auto graphics_queue = std::find_if(
+      snapshot.queue_families.begin(), snapshot.queue_families.end(), [](const auto &family) {
+        return (static_cast<VkQueueFlags>(family.queueFlags) &
+                static_cast<VkQueueFlags>(vk::QueueFlagBits::eGraphics)) != 0;
+      });
+  if (graphics_queue != snapshot.queue_families.end() &&
+      graphics_queue->queueCount < std::numeric_limits<std::uint32_t>::max()) {
+    const PhysicalDeviceRequirements insufficient_graphics_queue{
+        .required_queue_families = {PhysicalDeviceQueueRequirement{
+            .flags = vk::QueueFlagBits::eGraphics,
+            .min_queue_count = graphics_queue->queueCount + 1,
+        }},
+    };
+    const auto queue_evaluation = evaluatePhysicalDevice(candidate, insufficient_graphics_queue);
+    passed &= check(queue_evaluation.has_value() && !queue_evaluation->matches,
+                    "an insufficient graphics queue count was evaluated as a match");
+    const auto queue_selection = selectPhysicalDevice(candidate, insufficient_graphics_queue);
+    const bool queue_no_match =
+        !queue_selection &&
+        queue_selection.error().code() == make_error_code(PhysicalDeviceError::no_match);
+    passed &= check(queue_no_match, "insufficient graphics queue count did not produce no-match");
+  }
   const bool memory_is_observed = snapshot.memory_properties.memoryHeapCount != 0 &&
                                   snapshot.memory_properties.memoryHeaps[0].size != 0;
   passed &= check(memory_is_observed, "headless query did not observe device memory properties");
@@ -790,6 +994,87 @@ test_synthetic_selection_is_explicit_and_deterministic(const PhysicalDevice &pro
   return passed;
 }
 
+[[nodiscard]] bool test_move_assignment_invalidates_displaced_views() {
+  const auto capabilities_result = queryInstanceCapabilities();
+  if (!check(capabilities_result.has_value(),
+             "move-assignment regression could not query the Vulkan loader")) {
+    return false;
+  }
+
+  InstanceDescription description;
+  description.api_version = capabilities_result->loader_api_version;
+  description.application_name = "terreate-physical-device-move-assignment-test";
+  const auto plan = resolveInstance(description, *capabilities_result);
+  if (!check(plan.has_value(), "move-assignment regression could not resolve Instance")) {
+    return false;
+  }
+
+  auto destination_result = createInstance(*plan);
+  auto source_result = createInstance(*plan);
+  if (!check(destination_result.has_value() && source_result.has_value(),
+             "move-assignment regression could not create both Instances")) {
+    return false;
+  }
+
+  Instance destination = std::move(*destination_result);
+  Instance source = std::move(*source_result);
+  auto destination_inventory = queryPhysicalDevices(destination);
+  auto source_inventory = queryPhysicalDevices(source);
+  if (!check(destination_inventory.has_value() && source_inventory.has_value(),
+             "move-assignment regression could not query both physical-device inventories")) {
+    return false;
+  }
+  if (!check(!destination_inventory->empty() && !source_inventory->empty(),
+             "move-assignment regression requires one physical device per Instance")) {
+    return false;
+  }
+
+  const auto displaced_view = destination_inventory->front().device;
+  const auto source_view = source_inventory->front().device;
+  bool passed = true;
+  passed &= check(displaced_view.valid(), "destination view was invalid before move assignment");
+  passed &= check(source_view.valid(), "source view was invalid before move assignment");
+
+  const auto destination_selection =
+      selectPhysicalDevice(destination_inventory->front(), PhysicalDeviceRequirements{});
+  const auto source_selection =
+      selectPhysicalDevice(source_inventory->front(), PhysicalDeviceRequirements{});
+  passed &= check(destination_selection.has_value() && source_selection.has_value(),
+                  "genuine candidates from separate parents were not accepted");
+
+  auto cross_parent = destination_inventory->front();
+  cross_parent.capabilities = source_inventory->front().capabilities;
+  const auto cross_parent_selection =
+      selectPhysicalDevice(cross_parent, PhysicalDeviceRequirements{});
+  const bool cross_parent_rejected =
+      !cross_parent_selection &&
+      cross_parent_selection.error().code() == make_error_code(PhysicalDeviceError::invalid_view);
+  passed &= check(cross_parent_rejected,
+                  "selection accepted a capability snapshot from another Instance parent");
+
+  destination = std::move(source);
+
+  passed &= check(!displaced_view.valid(),
+                  "destination move assignment left a displaced PhysicalDevice view valid");
+  passed &= check(displaced_view.nativeHandle() == vk::PhysicalDevice{},
+                  "displaced PhysicalDevice view still exposed its native handle");
+  const auto invalid_selection =
+      selectPhysicalDevice(destination_inventory->front(), PhysicalDeviceRequirements{});
+  const bool invalid_view_rejected =
+      !invalid_selection &&
+      invalid_selection.error().code() == make_error_code(PhysicalDeviceError::invalid_view);
+  passed &= check(invalid_view_rejected,
+                  "selection accepted a PhysicalDevice view from the displaced destination");
+  passed &= check(source_view.valid() && source_view.correlatedWith(destination),
+                  "source PhysicalDevice view did not follow the moved Impl");
+
+  const auto moved_source_selection =
+      selectPhysicalDevice(source_inventory->front(), PhysicalDeviceRequirements{});
+  passed &= check(moved_source_selection.has_value(),
+                  "selection rejected the source PhysicalDevice view after its Impl moved");
+  return passed;
+}
+
 } // namespace
 
 int main() {
@@ -798,5 +1083,6 @@ int main() {
   passed &= test_extension_canonicalization_and_explicit_intent();
   passed &= test_query_gating_and_snapshot_boundaries();
   passed &= test_headless_query_and_instance_move_correlation();
+  passed &= test_move_assignment_invalidates_displaced_views();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
