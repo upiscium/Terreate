@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -225,27 +224,62 @@ void copy_properties2_chain(const Chain &chain, PhysicalDeviceCapabilities &capa
   }
 }
 
-template <bool IncludeId, bool IncludeDriver>
-void query_properties2_chain(const vk::PhysicalDevice &native,
-                             PhysicalDeviceCapabilities &capabilities) {
+template <detail::PhysicalDeviceQueryRoute Route, typename... Structures>
+[[nodiscard]] auto get_properties2(const vk::raii::PhysicalDevice &native) {
+  static_assert(Route == detail::PhysicalDeviceQueryRoute::core ||
+                Route == detail::PhysicalDeviceQueryRoute::khr);
+  if constexpr (sizeof...(Structures) == 0) {
+    if constexpr (Route == detail::PhysicalDeviceQueryRoute::core) {
+      return native.getProperties2();
+    } else {
+      return native.getProperties2KHR();
+    }
+  } else if constexpr (Route == detail::PhysicalDeviceQueryRoute::core) {
+    return native.template getProperties2<Structures...>();
+  } else {
+    return native.template getProperties2KHR<Structures...>();
+  }
+}
+
+template <detail::PhysicalDeviceQueryRoute Route, bool IncludeId, bool IncludeDriver>
+void query_properties2_chain_for_route(const vk::raii::PhysicalDevice &native,
+                                       PhysicalDeviceCapabilities &capabilities) {
   if constexpr (IncludeId && IncludeDriver) {
     const auto chain =
-        native.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceIDProperties,
-                              vk::PhysicalDeviceDriverProperties>();
+        get_properties2<Route, vk::PhysicalDeviceProperties2, vk::PhysicalDeviceIDProperties,
+                        vk::PhysicalDeviceDriverProperties>(native);
     copy_properties2_chain<true, true>(chain, capabilities);
   } else if constexpr (IncludeId) {
     const auto chain =
-        native.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceIDProperties>();
+        get_properties2<Route, vk::PhysicalDeviceProperties2, vk::PhysicalDeviceIDProperties>(
+            native);
     copy_properties2_chain<true, false>(chain, capabilities);
   } else if constexpr (IncludeDriver) {
     const auto chain =
-        native.getProperties2<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDriverProperties>();
+        get_properties2<Route, vk::PhysicalDeviceProperties2, vk::PhysicalDeviceDriverProperties>(
+            native);
     copy_properties2_chain<false, true>(chain, capabilities);
   } else {
-    auto properties2 = native.getProperties2();
+    auto properties2 = get_properties2<Route>(native);
     properties2.pNext = nullptr;
     capabilities.properties2 = properties2;
   }
+}
+
+template <bool IncludeId, bool IncludeDriver>
+void query_properties2_chain(const vk::raii::PhysicalDevice &native,
+                             detail::PhysicalDeviceQueryRoute route,
+                             PhysicalDeviceCapabilities &capabilities) {
+  detail::dispatch_physical_device_query(
+      route,
+      [&] {
+        query_properties2_chain_for_route<detail::PhysicalDeviceQueryRoute::core, IncludeId,
+                                          IncludeDriver>(native, capabilities);
+      },
+      [&] {
+        query_properties2_chain_for_route<detail::PhysicalDeviceQueryRoute::khr, IncludeId,
+                                          IncludeDriver>(native, capabilities);
+      });
 }
 
 template <bool Include11, bool Include12, bool Include13, typename Chain>
@@ -271,54 +305,107 @@ void copy_features2_chain(const Chain &chain, PhysicalDeviceCapabilities &capabi
   }
 }
 
-template <bool Include11, bool Include12, bool Include13>
+template <detail::PhysicalDeviceQueryRoute Route, typename... Structures>
+[[nodiscard]] auto get_features2(const vk::raii::PhysicalDevice &native) {
+  static_assert(Route == detail::PhysicalDeviceQueryRoute::core ||
+                Route == detail::PhysicalDeviceQueryRoute::khr);
+  if constexpr (sizeof...(Structures) == 0) {
+    if constexpr (Route == detail::PhysicalDeviceQueryRoute::core) {
+      return native.getFeatures2();
+    } else {
+      return native.getFeatures2KHR();
+    }
+  } else if constexpr (Route == detail::PhysicalDeviceQueryRoute::core) {
+    return native.template getFeatures2<Structures...>();
+  } else {
+    return native.template getFeatures2KHR<Structures...>();
+  }
+}
+
 // clang-format off
-void query_features2_chain(const vk::PhysicalDevice &native,
-                           PhysicalDeviceCapabilities &capabilities) {
+template <detail::PhysicalDeviceQueryRoute Route, bool Include11, bool Include12, bool Include13>
+void query_features2_chain_for_route(const vk::raii::PhysicalDevice &native,
+                                     PhysicalDeviceCapabilities &capabilities) {
   if constexpr (Include11 && Include12 && Include13) {
     const auto chain =
-        native.getFeatures2<
-            vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
-            vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features>();
+        get_features2<Route, vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
+                      vk::PhysicalDeviceVulkan12Features,
+                      vk::PhysicalDeviceVulkan13Features>(native);
     copy_features2_chain<true, true, true>(chain, capabilities);
   } else if constexpr (Include11 && Include12) {
     const auto chain =
-        native.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
-                            vk::PhysicalDeviceVulkan12Features>();
+        get_features2<Route, vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
+                      vk::PhysicalDeviceVulkan12Features>(native);
     copy_features2_chain<true, true, false>(chain, capabilities);
   } else if constexpr (Include11 && Include13) {
     const auto chain =
-        native.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
-                            vk::PhysicalDeviceVulkan13Features>();
+        get_features2<Route, vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features,
+                      vk::PhysicalDeviceVulkan13Features>(native);
     copy_features2_chain<true, false, true>(chain, capabilities);
   } else if constexpr (Include12 && Include13) {
     const auto chain =
-        native.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features,
-                            vk::PhysicalDeviceVulkan13Features>();
+        get_features2<Route, vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features,
+                      vk::PhysicalDeviceVulkan13Features>(native);
     copy_features2_chain<false, true, true>(chain, capabilities);
   } else if constexpr (Include11) {
     const auto chain =
-        native.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features>();
+        get_features2<Route, vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan11Features>(
+            native);
     copy_features2_chain<true, false, false>(chain, capabilities);
   } else if constexpr (Include12) {
     const auto chain =
-        native.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features>();
+        get_features2<Route, vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features>(
+            native);
     copy_features2_chain<false, true, false>(chain, capabilities);
   } else if constexpr (Include13) {
     const auto chain =
-        native.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features>();
+        get_features2<Route, vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features>(
+            native);
     copy_features2_chain<false, false, true>(chain, capabilities);
   } else {
-    auto features2 = native.getFeatures2();
+    auto features2 = get_features2<Route>(native);
     features2.pNext = nullptr;
     capabilities.features2 = features2;
   }
 }
+
+template <bool Include11, bool Include12, bool Include13>
+void query_features2_chain(const vk::raii::PhysicalDevice &native,
+                           detail::PhysicalDeviceQueryRoute route,
+                           PhysicalDeviceCapabilities &capabilities) {
+  detail::dispatch_physical_device_query(
+      route,
+      [&] {
+        query_features2_chain_for_route<detail::PhysicalDeviceQueryRoute::core, Include11,
+                                        Include12, Include13>(native, capabilities);
+      },
+      [&] {
+        query_features2_chain_for_route<detail::PhysicalDeviceQueryRoute::khr, Include11,
+                                        Include12, Include13>(native, capabilities);
+      });
+}
 // clang-format on
+
+template <detail::PhysicalDeviceQueryRoute Route, typename... Structures>
+[[nodiscard]] auto get_memory_properties2(const vk::raii::PhysicalDevice &native) {
+  static_assert(Route == detail::PhysicalDeviceQueryRoute::core ||
+                Route == detail::PhysicalDeviceQueryRoute::khr);
+  if constexpr (sizeof...(Structures) == 0) {
+    if constexpr (Route == detail::PhysicalDeviceQueryRoute::core) {
+      return native.getMemoryProperties2();
+    } else {
+      return native.getMemoryProperties2KHR();
+    }
+  } else if constexpr (Route == detail::PhysicalDeviceQueryRoute::core) {
+    return native.template getMemoryProperties2<Structures...>();
+  } else {
+    return native.template getMemoryProperties2KHR<Structures...>();
+  }
+}
 
 // clang-format off
 [[nodiscard]] PhysicalDeviceCapabilities snapshot_device(
-    const vk::PhysicalDevice &native, std::uint32_t effective_instance_api,
+    const vk::raii::PhysicalDevice &native, std::uint32_t effective_instance_api,
     bool properties2_extension, bool external_memory_extension, bool driver_properties_extension,
     const std::vector<std::string> &extensions)
 // clang-format on
@@ -353,31 +440,38 @@ void query_features2_chain(const vk::PhysicalDevice &native,
 
   if (availability.properties2) {
     if (availability.id_properties && availability.driver_properties) {
-      query_properties2_chain<true, true>(native, capabilities);
+      query_properties2_chain<true, true>(native, availability.properties2_route, capabilities);
     } else if (availability.id_properties) {
-      query_properties2_chain<true, false>(native, capabilities);
+      query_properties2_chain<true, false>(native, availability.properties2_route, capabilities);
     } else if (availability.driver_properties) {
-      query_properties2_chain<false, true>(native, capabilities);
+      query_properties2_chain<false, true>(native, availability.properties2_route, capabilities);
     } else {
-      query_properties2_chain<false, false>(native, capabilities);
+      query_properties2_chain<false, false>(native, availability.properties2_route, capabilities);
     }
 
     if (availability.features_11 && availability.features_12 && availability.features_13) {
-      query_features2_chain<true, true, true>(native, capabilities);
+      query_features2_chain<true, true, true>(native, availability.properties2_route, capabilities);
     } else if (availability.features_11 && availability.features_12) {
-      query_features2_chain<true, true, false>(native, capabilities);
+      query_features2_chain<true, true, false>(native, availability.properties2_route,
+                                               capabilities);
     } else if (availability.features_11 && availability.features_13) {
-      query_features2_chain<true, false, true>(native, capabilities);
+      query_features2_chain<true, false, true>(native, availability.properties2_route,
+                                               capabilities);
     } else if (availability.features_12 && availability.features_13) {
-      query_features2_chain<false, true, true>(native, capabilities);
+      query_features2_chain<false, true, true>(native, availability.properties2_route,
+                                               capabilities);
     } else if (availability.features_11) {
-      query_features2_chain<true, false, false>(native, capabilities);
+      query_features2_chain<true, false, false>(native, availability.properties2_route,
+                                                capabilities);
     } else if (availability.features_12) {
-      query_features2_chain<false, true, false>(native, capabilities);
+      query_features2_chain<false, true, false>(native, availability.properties2_route,
+                                                capabilities);
     } else if (availability.features_13) {
-      query_features2_chain<false, false, true>(native, capabilities);
+      query_features2_chain<false, false, true>(native, availability.properties2_route,
+                                                capabilities);
     } else {
-      query_features2_chain<false, false, false>(native, capabilities);
+      query_features2_chain<false, false, false>(native, availability.properties2_route,
+                                                 capabilities);
     }
   }
 
@@ -401,6 +495,27 @@ std::error_code make_error_code(PhysicalDeviceError error) noexcept {
   return {static_cast<int>(error), physical_device_error_category()};
 }
 
+PhysicalDevice::PhysicalDevice(vk::PhysicalDevice native_handle,
+                               const Instance::Impl *parent_identity) noexcept
+    : native_handle_(native_handle), parent_identity_(parent_identity) {}
+
+PhysicalDevice::operator bool() const noexcept { return valid(); }
+
+bool PhysicalDevice::valid() const noexcept {
+  // The parent identity is intentionally compare-only.  Dereferencing it
+  // would turn a displaced or destroyed borrow into a use-after-free.
+  return static_cast<VkPhysicalDevice>(native_handle_) != VK_NULL_HANDLE &&
+         parent_identity_ != nullptr;
+}
+
+vk::PhysicalDevice PhysicalDevice::nativeHandle() const noexcept {
+  return valid() ? native_handle_ : vk::PhysicalDevice{};
+}
+
+bool PhysicalDevice::correlatedWith(const Instance &instance) const noexcept {
+  return valid() && instance.valid() && parent_identity_ == instance.implementation_.get();
+}
+
 terreate::Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &instance) {
   try {
     const auto native_instance = instance.nativeHandle();
@@ -417,8 +532,8 @@ terreate::Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &i
     const bool external_memory_extension =
         instance_ext(*plan, VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME);
     PhysicalDeviceInventory inventory;
-    const auto native_devices = native_instance.enumeratePhysicalDevices();
-    inventory.candidates.reserve(native_devices.size());
+    const auto native_devices = instance.implementation_->instance.enumeratePhysicalDevices();
+    inventory.reserve(native_devices.size());
     for (std::size_t index = 0; index < native_devices.size(); ++index) {
       const auto &native = native_devices[index];
       std::vector<PhysicalDeviceExtensionProperty> extension_properties;
@@ -451,32 +566,39 @@ terreate::Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &i
 
       const bool memory_budget_supported =
           has_name(capabilities.extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
-      if (memory_budget_supported && capabilities.memory_properties2_available) {
-        const auto memory_chain =
-            native.getMemoryProperties2<vk::PhysicalDeviceMemoryProperties2,
-                                        vk::PhysicalDeviceMemoryBudgetPropertiesEXT>();
-        vk::PhysicalDeviceMemoryBudgetPropertiesEXT memory_budget =
-            memory_chain.get<vk::PhysicalDeviceMemoryBudgetPropertiesEXT>();
+      const auto query_availability = detail::physical_device_query_availability(
+          detail::PhysicalDeviceQueryApiVersions{
+              .effective_instance_api = plan->effectiveApiVersion(),
+              .physical_device_api = capabilities.api_version,
+          },
+          properties2_extension, external_memory_extension, driver_properties_extension);
+      if (memory_budget_supported && capabilities.memory_properties2_available &&
+          query_availability.memory_properties2) {
+        vk::PhysicalDeviceMemoryBudgetPropertiesEXT memory_budget{};
+        detail::dispatch_physical_device_query(
+            query_availability.properties2_route,
+            [&] {
+              const auto memory_chain =
+                  get_memory_properties2<detail::PhysicalDeviceQueryRoute::core,
+                                         vk::PhysicalDeviceMemoryProperties2,
+                                         vk::PhysicalDeviceMemoryBudgetPropertiesEXT>(native);
+              memory_budget = memory_chain.get<vk::PhysicalDeviceMemoryBudgetPropertiesEXT>();
+            },
+            [&] {
+              const auto memory_chain =
+                  get_memory_properties2<detail::PhysicalDeviceQueryRoute::khr,
+                                         vk::PhysicalDeviceMemoryProperties2,
+                                         vk::PhysicalDeviceMemoryBudgetPropertiesEXT>(native);
+              memory_budget = memory_chain.get<vk::PhysicalDeviceMemoryBudgetPropertiesEXT>();
+            });
         memory_budget.pNext = nullptr;
         capabilities.memory_budget = memory_budget;
       }
 
       const vk::PhysicalDevice native_handle{native};
-      auto device_token = std::make_unique<Instance::PhysicalDeviceToken>();
-      device_token->native_handle = native_handle;
-      device_token->parent_identity = instance.implementation_.get();
-      capabilities.query_identity = static_cast<const void *>(device_token.get());
-      device_token->capabilities = capabilities;
-      const auto *device_token_pointer = device_token.get();
-      device_token->next = std::move(instance.implementation_->physical_device_tokens);
-      instance.implementation_->physical_device_tokens = std::move(device_token);
-
-      inventory.candidates.push_back(PhysicalDeviceCandidate{
-          .device = PhysicalDevice{native_handle, device_token_pointer,
-                                   PhysicalDevice::query_authority()},
-          .capabilities = std::move(capabilities),
-          .enumeration_index = index,
-      });
+      inventory.append(
+          PhysicalDeviceCandidate{PhysicalDevice{native_handle, instance.implementation_.get()},
+                                  std::move(capabilities), index});
     }
     return inventory;
   } catch (const vk::SystemError &error) {
@@ -577,7 +699,146 @@ evaluatePhysicalDevice(const PhysicalDeviceCapabilities &capabilities,
 terreate::Result<PhysicalDeviceEvaluation>
 evaluatePhysicalDevice(const PhysicalDeviceCandidate &candidate,
                        const PhysicalDeviceRequirements &requirements) {
-  return evaluatePhysicalDevice(candidate.capabilities, requirements);
+  return evaluatePhysicalDevice(candidate.capabilities(), requirements);
+}
+
+terreate::Result<PhysicalDeviceSelection>
+selectPhysicalDevice(const PhysicalDeviceCandidate &candidate,
+                     const PhysicalDeviceRequirements &requirements) {
+  if (!candidate.device().valid()) {
+    return fail<PhysicalDeviceSelection>(
+        PhysicalDeviceError::invalid_view, "select Vulkan physical device",
+        "the manually supplied physical-device candidate has no valid borrowed native view");
+  }
+
+  const auto evaluation = evaluatePhysicalDevice(candidate, requirements);
+  if (!evaluation) {
+    return std::unexpected(evaluation.error());
+  }
+  if (!evaluation->matches) {
+    return fail<PhysicalDeviceSelection>(
+        PhysicalDeviceError::no_match, "select Vulkan physical device",
+        "the manually supplied physical-device candidate does not satisfy the requirements");
+  }
+  return PhysicalDeviceSelection{
+      .candidate = candidate,
+      .reason = PhysicalDeviceSelectionReason::explicit_candidate,
+      .policy_index = std::nullopt,
+  };
+}
+
+terreate::Result<PhysicalDeviceSelection>
+selectPhysicalDevice(std::span<const PhysicalDeviceCandidate> candidates,
+                     const PhysicalDeviceRequirements &requirements,
+                     const PhysicalDeviceSelectionPolicy &policy) {
+  if (const auto error = validate_physical_requirements(requirements)) {
+    return fail<PhysicalDeviceSelection>(PhysicalDeviceError::invalid_requirements,
+                                         "select Vulkan physical device", *error);
+  }
+  if (policy.explicit_uuid && !policy.uuid_order.empty()) {
+    return fail<PhysicalDeviceSelection>(
+        PhysicalDeviceError::invalid_requirements, "select Vulkan physical device",
+        "explicit UUID selection cannot be combined with UUID ordering");
+  }
+  if (policy.explicit_uuid && requirements.required_device_uuid &&
+      !same_uuid(*policy.explicit_uuid, *requirements.required_device_uuid)) {
+    return fail<PhysicalDeviceSelection>(
+        PhysicalDeviceError::invalid_requirements, "select Vulkan physical device",
+        "explicit UUID selection conflicts with required_device_uuid");
+  }
+  for (std::size_t left = 0; left < policy.uuid_order.size(); ++left) {
+    if (std::find(policy.uuid_order.begin() + static_cast<std::ptrdiff_t>(left + 1),
+                  policy.uuid_order.end(), policy.uuid_order[left]) != policy.uuid_order.end()) {
+      return fail<PhysicalDeviceSelection>(PhysicalDeviceError::invalid_requirements,
+                                           "select Vulkan physical device",
+                                           "uuid_order must not contain duplicate UUIDs");
+    }
+  }
+
+  std::vector<const PhysicalDeviceCandidate *> matches;
+  matches.reserve(candidates.size());
+  for (const auto &candidate : candidates) {
+    if (!candidate.device().valid()) {
+      return fail<PhysicalDeviceSelection>(
+          PhysicalDeviceError::invalid_view, "select Vulkan physical device",
+          "an enumerated physical-device candidate has no valid borrowed native view");
+    }
+    const auto evaluation = evaluatePhysicalDevice(candidate, requirements);
+    if (!evaluation) {
+      return std::unexpected(evaluation.error());
+    }
+    if (evaluation->matches) {
+      matches.push_back(&candidate);
+    }
+  }
+
+  if (matches.empty()) {
+    return fail<PhysicalDeviceSelection>(
+        PhysicalDeviceError::no_match, "select Vulkan physical device",
+        "no enumerated physical-device candidate satisfies the requirements");
+  }
+
+  if (policy.explicit_uuid) {
+    std::vector<const PhysicalDeviceCandidate *> uuid_matches;
+    for (const auto *candidate : matches) {
+      if (matches_available_uuid(candidate->capabilities(), *policy.explicit_uuid)) {
+        uuid_matches.push_back(candidate);
+      }
+    }
+    if (uuid_matches.empty()) {
+      return fail<PhysicalDeviceSelection>(
+          PhysicalDeviceError::no_match, "select Vulkan physical device",
+          "the explicitly selected device UUID is not a matching candidate");
+    }
+    if (uuid_matches.size() != 1) {
+      return fail<PhysicalDeviceSelection>(
+          PhysicalDeviceError::ambiguous_match, "select Vulkan physical device",
+          "the explicitly selected UUID identifies multiple matching candidates");
+    }
+    return PhysicalDeviceSelection{
+        .candidate = *uuid_matches.front(),
+        .reason = PhysicalDeviceSelectionReason::explicit_uuid,
+        .policy_index = std::nullopt,
+    };
+  }
+
+  if (!policy.uuid_order.empty()) {
+    for (std::size_t policy_index = 0; policy_index < policy.uuid_order.size(); ++policy_index) {
+      const auto &uuid = policy.uuid_order[policy_index];
+      std::vector<const PhysicalDeviceCandidate *> uuid_matches;
+      for (const auto *candidate : matches) {
+        if (matches_available_uuid(candidate->capabilities(), uuid)) {
+          uuid_matches.push_back(candidate);
+        }
+      }
+      if (uuid_matches.size() > 1) {
+        return fail<PhysicalDeviceSelection>(
+            PhysicalDeviceError::ambiguous_match, "select Vulkan physical device",
+            "the explicit UUID ordering contains a UUID shared by multiple candidates");
+      }
+      if (uuid_matches.size() == 1) {
+        return PhysicalDeviceSelection{
+            .candidate = *uuid_matches.front(),
+            .reason = PhysicalDeviceSelectionReason::uuid_order,
+            .policy_index = policy_index,
+        };
+      }
+    }
+    return fail<PhysicalDeviceSelection>(
+        PhysicalDeviceError::no_match, "select Vulkan physical device",
+        "the explicit UUID ordering contains no matching candidate");
+  }
+
+  if (matches.size() != 1) {
+    return fail<PhysicalDeviceSelection>(
+        PhysicalDeviceError::ambiguous_match, "select Vulkan physical device",
+        "multiple candidates matched and no explicit UUID selection policy was supplied");
+  }
+  return PhysicalDeviceSelection{
+      .candidate = *matches.front(),
+      .reason = PhysicalDeviceSelectionReason::sole_match,
+      .policy_index = std::nullopt,
+  };
 }
 
 } // namespace terreate::graphics

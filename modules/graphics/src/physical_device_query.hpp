@@ -10,12 +10,25 @@
 
 namespace terreate::graphics::detail {
 
+/// Properties2-family commands have two legal dispatch routes.  Vulkan 1.1
+/// promotes the commands to the core Instance API; Vulkan 1.0 can use the
+/// extension commands when VK_KHR_get_physical_device_properties2 was enabled.
+/// Keeping the route separate from the availability booleans prevents a
+/// Vulkan 1.0 extension-backed query from accidentally entering the core Hpp
+/// wrapper.
+enum class PhysicalDeviceQueryRoute : std::uint8_t {
+  unavailable,
+  core,
+  khr,
+};
+
 /// The pNext members used by the native observation path are valid only when
 /// both the parent Instance/device API versions and any enabling extension
 /// permit them.  Keeping this calculation separate makes the lower-version
 /// boundary explicit and directly testable without manufacturing native
 /// Vulkan handles.
 struct PhysicalDeviceQueryAvailability {
+  PhysicalDeviceQueryRoute properties2_route = PhysicalDeviceQueryRoute::unavailable;
   bool properties2 = false;
   bool id_properties = false;
   bool driver_properties = false;
@@ -30,6 +43,16 @@ struct PhysicalDeviceQueryApiVersions {
   std::uint32_t physical_device_api = VK_API_VERSION_1_0;
 };
 
+[[nodiscard]] constexpr inline PhysicalDeviceQueryRoute
+physical_device_query_route(PhysicalDeviceQueryApiVersions api_versions,
+                            bool properties2_extension) noexcept {
+  if (api_versions.effective_instance_api >= VK_API_VERSION_1_1) {
+    return PhysicalDeviceQueryRoute::core;
+  }
+  return properties2_extension ? PhysicalDeviceQueryRoute::khr
+                               : PhysicalDeviceQueryRoute::unavailable;
+}
+
 [[nodiscard]] constexpr inline PhysicalDeviceQueryAvailability
 physical_device_query_availability(PhysicalDeviceQueryApiVersions api_versions,
                                    bool properties2_extension, bool external_memory_extension,
@@ -42,7 +65,9 @@ physical_device_query_availability(PhysicalDeviceQueryApiVersions api_versions,
   const bool device_supports_13 = api_versions.physical_device_api >= VK_API_VERSION_1_3;
 
   PhysicalDeviceQueryAvailability availability;
-  const bool properties2_available = instance_supports_11 || properties2_extension;
+  availability.properties2_route = physical_device_query_route(api_versions, properties2_extension);
+  const bool properties2_available =
+      availability.properties2_route != PhysicalDeviceQueryRoute::unavailable;
   const bool core11_available = instance_supports_11 && device_supports_11;
   const bool core12_available = instance_supports_12 && device_supports_12;
   const bool core13_available = instance_supports_13 && device_supports_13;
@@ -75,9 +100,29 @@ physical_device_query_availability(PhysicalDeviceQueryApiVersions api_versions,
 
 static_assert(id_properties_boundary_is_supported());
 
+/// Invoke exactly the dispatch route selected by the availability query.  The
+/// unavailable route deliberately invokes neither callback; the helper is a
+/// small private seam so route selection can be regression-tested without
+/// manufacturing a native Vulkan physical-device handle.
+template <typename CoreQuery, typename KhrQuery>
+inline void dispatch_physical_device_query(PhysicalDeviceQueryRoute route, CoreQuery &&core_query,
+                                           KhrQuery &&khr_query) {
+  switch (route) {
+  case PhysicalDeviceQueryRoute::core:
+    std::forward<CoreQuery>(core_query)();
+    return;
+  case PhysicalDeviceQueryRoute::khr:
+    std::forward<KhrQuery>(khr_query)();
+    return;
+  case PhysicalDeviceQueryRoute::unavailable:
+    return;
+  }
+}
+
 /// The private test adapter receives only the native-query inputs.  It has no
 /// construction capability; production physical-device views are created by
-/// the source-local query bridge with the implementation-owned authority token.
+/// the source-local query bridge with a typed, non-owning `Instance::Impl`
+/// parent identity.
 struct PhysicalDeviceQueryInput {
   const Instance &instance;
   const vk::raii::Instance *native_instance = nullptr;

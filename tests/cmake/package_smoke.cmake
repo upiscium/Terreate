@@ -238,59 +238,6 @@ set_target_properties(forge_regression PROPERTIES
   endif()
 endfunction()
 
-function(terreate_expect_link_failure name source diagnostics)
-  set(_consumer "${_terreate_package_root}/all_components/${name}-consumer")
-  set(_build "${_terreate_package_root}/all_components/${name}-consumer-build")
-  file(REMOVE_RECURSE "${_consumer}" "${_build}")
-  file(MAKE_DIRECTORY "${_consumer}")
-  file(WRITE "${_consumer}/CMakeLists.txt" [=[
-cmake_minimum_required(VERSION 3.28)
-project(TerreateLinkForgeRegression LANGUAGES CXX)
-set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
-set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)
-find_package(Terreate REQUIRED COMPONENTS Graphics)
-add_executable(link_forge_regression main.cpp)
-target_link_libraries(link_forge_regression PRIVATE Terreate::Graphics)
-set_target_properties(link_forge_regression PROPERTIES
-  CXX_STANDARD 23
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF)
-]=])
-  file(WRITE "${_consumer}/main.cpp" "${source}")
-  set(_configure_command
-    "${CMAKE_COMMAND}" -S "${_consumer}" -B "${_build}"
-    "-DCMAKE_PREFIX_PATH:PATH=${all_components_PREFIX}")
-  terreate_append_generator_and_compiler(_configure_command)
-  execute_process(
-    COMMAND ${_configure_command}
-    RESULT_VARIABLE _configure_result
-    OUTPUT_VARIABLE _configure_output
-    ERROR_VARIABLE _configure_error)
-  if(NOT _configure_result EQUAL 0)
-    message(FATAL_ERROR
-      "${name} link regression configuration failed"
-      "${_configure_output}"
-      "${_configure_error}")
-  endif()
-  execute_process(
-    COMMAND "${CMAKE_COMMAND}" --build "${_build}"
-    RESULT_VARIABLE _build_result
-    OUTPUT_VARIABLE _build_output
-    ERROR_VARIABLE _build_error)
-  if(_build_result EQUAL 0)
-    message(FATAL_ERROR
-      "${name} link regression unexpectedly succeeded"
-      "${_build_output}")
-  endif()
-  string(TOLOWER "${_build_output} ${_build_error}" _diagnostics)
-  if(NOT _diagnostics MATCHES "${diagnostics}")
-    message(FATAL_ERROR
-      "${name} link regression failed for an unexpected reason"
-      "${_build_output}"
-      "${_build_error}")
-  endif()
-endfunction()
-
 terreate_package_configure_and_install(all_components ON ON)
 set(_all_prefix "${all_components_PREFIX}")
 
@@ -354,12 +301,9 @@ set(_graphics_consumer_source [=[
 #include <terreate/graphics/physical_device.hpp>
 #include <vulkan/vulkan_raii.hpp>
 
-#include <algorithm>
-#include <array>
-#include <bit>
 #include <cstddef>
-#include <cstdint>
 #include <type_traits>
+#include <utility>
 
 static_assert(std::is_copy_constructible_v<terreate::graphics::PhysicalDevice>);
 static_assert(std::is_trivially_copyable_v<terreate::graphics::PhysicalDevice>);
@@ -368,6 +312,31 @@ static_assert(!std::is_constructible_v<terreate::graphics::PhysicalDevice,
                                       vk::PhysicalDevice, const void *>);
 static_assert(!std::is_convertible_v<terreate::graphics::PhysicalDevice,
                                      vk::PhysicalDevice>);
+static_assert(std::is_copy_constructible_v<terreate::graphics::PhysicalDeviceCandidate>);
+static_assert(std::is_move_constructible_v<terreate::graphics::PhysicalDeviceCandidate>);
+static_assert(!std::is_copy_assignable_v<terreate::graphics::PhysicalDeviceCandidate>);
+static_assert(!std::is_move_assignable_v<terreate::graphics::PhysicalDeviceCandidate>);
+static_assert(!std::is_default_constructible_v<terreate::graphics::PhysicalDeviceCandidate>);
+static_assert(!std::is_constructible_v<terreate::graphics::PhysicalDeviceCandidate,
+                                       terreate::graphics::PhysicalDevice,
+                                       terreate::graphics::PhysicalDeviceCapabilities,
+                                       std::size_t>);
+static_assert(!std::is_constructible_v<terreate::graphics::PhysicalDeviceCandidate,
+                                       vk::PhysicalDevice,
+                                       terreate::graphics::PhysicalDeviceCapabilities,
+                                       std::size_t>);
+static_assert(
+    std::is_same_v<decltype(std::declval<terreate::graphics::PhysicalDeviceCandidate &>().device()),
+                   const terreate::graphics::PhysicalDevice &>);
+static_assert(std::is_same_v<
+              decltype(std::declval<terreate::graphics::PhysicalDeviceCandidate &>().capabilities()),
+              const terreate::graphics::PhysicalDeviceCapabilities &>);
+static_assert(!std::is_assignable_v<
+              decltype(std::declval<terreate::graphics::PhysicalDeviceCandidate &>().device()),
+              terreate::graphics::PhysicalDevice>);
+static_assert(!std::is_assignable_v<
+              decltype(std::declval<terreate::graphics::PhysicalDeviceCandidate &>().capabilities()),
+              terreate::graphics::PhysicalDeviceCapabilities>);
 
 int main() {
   const auto capabilities = terreate::graphics::queryInstanceCapabilities();
@@ -390,38 +359,112 @@ int main() {
   }
 
   const auto &candidate = devices->front();
-  if (!candidate.device.valid() || !candidate.device.correlatedWith(*instance)) {
+  if (!candidate.device().valid() || !candidate.device().correlatedWith(*instance)) {
     return 6;
   }
-  auto forged_bytes =
-      std::bit_cast<std::array<std::byte, sizeof(terreate::graphics::PhysicalDevice)>>(candidate.device);
-  const auto replacement_handle = std::bit_cast<VkPhysicalDevice>(std::uintptr_t{1});
-  const auto replacement = vk::PhysicalDevice{replacement_handle};
-  const auto replacement_bytes =
-      std::bit_cast<std::array<std::byte, sizeof(vk::PhysicalDevice)>>(replacement);
-  std::copy(replacement_bytes.begin(), replacement_bytes.end(), forged_bytes.begin());
-  const auto forged = std::bit_cast<terreate::graphics::PhysicalDevice>(forged_bytes);
-  if (forged.valid() || forged.nativeHandle() != vk::PhysicalDevice{} ||
-      forged.correlatedWith(*instance)) {
+  const auto copied_candidate = candidate;
+  if (copied_candidate.enumerationIndex() != candidate.enumerationIndex() ||
+      copied_candidate.capabilities().properties.deviceName[0] == '\0') {
     return 7;
   }
-
-  const terreate::graphics::PhysicalDeviceCandidate forged_candidate{
-      .device = forged,
-      .capabilities = candidate.capabilities,
-      .enumeration_index = candidate.enumeration_index,
-  };
   const auto selection = terreate::graphics::selectPhysicalDevice(
-      forged_candidate, terreate::graphics::PhysicalDeviceRequirements{});
-  return !selection && selection.error().code() ==
-                            terreate::graphics::make_error_code(
-                                terreate::graphics::PhysicalDeviceError::invalid_view)
-             ? 0
-             : 8;
+      candidate, terreate::graphics::PhysicalDeviceRequirements{});
+  return selection ? 0 : 8;
 }
 ]=])
 terreate_build_consumer(all_components_runtime "${_all_prefix}" Graphics
   "${_graphics_consumer_source}")
+
+set(_candidate_assignment_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+void reject_candidate_assignment(terreate::graphics::PhysicalDeviceCandidate &target,
+                                 const terreate::graphics::PhysicalDeviceCandidate &source) {
+  target = source;
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(candidate_assignment "${_candidate_assignment_source}"
+  "deleted|implicitly-deleted|read-only|const")
+
+set(_candidate_construction_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+terreate::graphics::PhysicalDeviceCandidate reject_candidate_construction() {
+  return {terreate::graphics::PhysicalDevice{},
+          terreate::graphics::PhysicalDeviceCapabilities{}, 0};
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(candidate_construction "${_candidate_construction_source}"
+  "private|inaccessible|no matching|constructible")
+
+set(_candidate_device_splice_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+void reject_device_splice(terreate::graphics::PhysicalDeviceCandidate &candidate,
+                          terreate::graphics::PhysicalDevice replacement) {
+  candidate.device() = replacement;
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(candidate_device_splice "${_candidate_device_splice_source}"
+  "read-only|const|discard|assignment")
+
+set(_candidate_capability_splice_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+void reject_capability_splice(terreate::graphics::PhysicalDeviceCandidate &candidate,
+                              terreate::graphics::PhysicalDeviceCapabilities replacement) {
+  candidate.capabilities() = replacement;
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(candidate_capability_splice "${_candidate_capability_splice_source}"
+  "read-only|const|discard|assignment")
+
+set(_candidate_capability_member_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+void reject_capability_member_mutation(
+    terreate::graphics::PhysicalDeviceCandidate &candidate) {
+  candidate.capabilities().properties.deviceID = 0;
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(candidate_capability_member_mutation
+  "${_candidate_capability_member_source}" "read-only|const|discard|assignment")
+
+set(_inventory_construction_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+terreate::graphics::PhysicalDeviceInventory reject_inventory_construction() {
+  return terreate::graphics::PhysicalDeviceInventory{
+      std::vector<terreate::graphics::PhysicalDeviceCandidate>{}};
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(inventory_construction "${_inventory_construction_source}"
+  "private|inaccessible|no matching|constructible")
+
+set(_inventory_mutation_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+void reject_inventory_mutation(terreate::graphics::PhysicalDeviceInventory &inventory,
+                               const terreate::graphics::PhysicalDeviceCandidate &candidate) {
+  inventory[0] = candidate;
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(inventory_mutation "${_inventory_mutation_source}"
+  "read-only|const|discard|assignment|deleted")
 
 set(_forged_raw_source [=[
 #include <terreate/graphics/instance.hpp>
@@ -439,158 +482,30 @@ int main() { return 0; }
 terreate_expect_compile_failure(forged_public_constructor "${_forged_raw_source}"
   "private|inaccessible|no matching|constructible")
 
-set(_forged_token_source [=[
+set(_physical_device_private_member_source [=[
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
 
 int main() {
   const terreate::graphics::PhysicalDevice device;
-  return device.instanceIdentity() == nullptr ? 0 : 1;
+  return device.parent_identity_ == nullptr ? 0 : 1;
 }
 ]=])
-terreate_expect_compile_failure(forged_public_token "${_forged_token_source}"
+terreate_expect_compile_failure(physical_device_private_member
+  "${_physical_device_private_member_source}"
   "no member|private|inaccessible")
 
-set(_forged_impl_source [=[
-#include <terreate/graphics/instance.hpp>
+set(_physical_device_mutation_source [=[
 #include <terreate/graphics/physical_device.hpp>
 
-int main() {
-  using forged_impl = terreate::graphics::Instance::Impl;
-  return sizeof(forged_impl);
+void reject_physical_device_mutation(terreate::graphics::PhysicalDevice &device) {
+  device.native_handle_ = {};
 }
+
+int main() { return 0; }
 ]=])
-terreate_expect_compile_failure(forged_instance_impl "${_forged_impl_source}"
-  "private|inaccessible|incomplete")
-
-set(_forged_authority_source [=[
-#include <terreate/graphics/instance.hpp>
-#include <terreate/graphics/physical_device.hpp>
-
-int main() {
-  using forged_authority = terreate::graphics::PhysicalDevice::QueryAuthority;
-  return sizeof(forged_authority);
-}
-]=])
-terreate_expect_compile_failure(forged_query_authority "${_forged_authority_source}"
-  "private|inaccessible|incomplete")
-
-set(_combined_authority_source [=[
-#include <terreate/graphics/instance.hpp>
-#include <terreate/graphics/physical_device.hpp>
-
-namespace terreate::graphics {
-
-// This fixture is intentionally a consumer-side replacement attempt.  It
-// combines the friend query seam with every private PhysicalDevice authority
-// member that could otherwise let a static archive avoid its production
-// validation object.
-struct PhysicalDevice::QueryAuthority {};
-
-const PhysicalDevice::QueryAuthority *PhysicalDevice::query_authority() noexcept {
-  static const QueryAuthority authority;
-  return &authority;
-}
-
-PhysicalDevice::PhysicalDevice(vk::PhysicalDevice,
-                               const Instance::PhysicalDeviceToken *,
-                               const QueryAuthority *) noexcept {}
-
-PhysicalDevice::operator bool() const noexcept { return true; }
-
-bool PhysicalDevice::valid() const noexcept { return true; }
-
-vk::PhysicalDevice PhysicalDevice::nativeHandle() const noexcept { return {}; }
-
-bool PhysicalDevice::correlatedWith(const Instance &) const noexcept { return true; }
-
-terreate::Result<PhysicalDeviceInventory>
-queryPhysicalDevices(const Instance &) {
-  return PhysicalDeviceInventory{};
-}
-
-} // namespace terreate::graphics
-
-int main() {
-  // These genuine Instance calls force the archive's instance.cpp object to
-  // be extracted.  Its authoritative PhysicalDevice definitions must then
-  // collide with the replacement definitions above.
-  const auto capabilities = terreate::graphics::queryInstanceCapabilities();
-  if (!capabilities) {
-    return 1;
-  }
-  terreate::graphics::InstanceDescription description;
-  description.api_version = capabilities->loader_api_version;
-  const auto plan = terreate::graphics::resolveInstance(description, *capabilities);
-  if (!plan) {
-    return 2;
-  }
-  const auto instance = terreate::graphics::createInstance(*plan);
-  if (!instance || !instance->valid() || instance->nativeHandle() == vk::Instance{}) {
-    return 3;
-  }
-  const auto devices = terreate::graphics::queryPhysicalDevices(*instance);
-  return devices.has_value() ? 4 : 5;
-}
-]=])
-terreate_expect_link_failure(combined_authority_replacement
-  "${_combined_authority_source}"
-  "multiple definition|duplicate symbol|first defined here")
-
-set(_selection_only_authority_source [=[
-#include <terreate/graphics/instance.hpp>
-#include <terreate/graphics/physical_device.hpp>
-
-namespace terreate::graphics {
-
-// This fixture is deliberately limited to the selection API.  It supplies
-// every private PhysicalDevice authority/validator definition that could let a
-// static consumer avoid the production Instance object, but never constructs a
-// genuine Instance.
-struct PhysicalDevice::QueryAuthority {};
-
-const PhysicalDevice::QueryAuthority *PhysicalDevice::query_authority() noexcept {
-  static const QueryAuthority authority;
-  return &authority;
-}
-
-PhysicalDevice::PhysicalDevice(vk::PhysicalDevice,
-                               const Instance::PhysicalDeviceToken *,
-                               const QueryAuthority *) noexcept {}
-
-PhysicalDevice::operator bool() const noexcept { return true; }
-
-bool PhysicalDevice::valid() const noexcept { return true; }
-
-vk::PhysicalDevice PhysicalDevice::nativeHandle() const noexcept { return {}; }
-
-bool PhysicalDevice::correlatedWith(const Instance &) const noexcept { return true; }
-
-bool PhysicalDevice::capabilitiesMatch(const PhysicalDeviceCapabilities &) const noexcept {
-  return true;
-}
-
-bool Instance::valid() const noexcept { return true; }
-
-vk::Instance Instance::nativeHandle() const noexcept { return {}; }
-
-const InstancePlan *Instance::plan() const noexcept { return nullptr; }
-
-} // namespace terreate::graphics
-
-int main() {
-  // The replacement validators make this synthetic candidate appear valid.
-  // Production selection must still pull the authoritative Instance object,
-  // so linking this consumer must fail on duplicate definitions above.
-  const terreate::graphics::PhysicalDeviceCandidate candidate{};
-  const auto selection = terreate::graphics::selectPhysicalDevice(
-      candidate, terreate::graphics::PhysicalDeviceRequirements{});
-  return selection.has_value() ? 0 : 1;
-}
-]=])
-terreate_expect_link_failure(selection_only_authority_replacement
-  "${_selection_only_authority_source}"
-  "multiple definition.*physicaldevice|duplicate symbol.*physicaldevice|physicaldevice.*multiple definition|physicaldevice.*duplicate symbol")
+terreate_expect_compile_failure(physical_device_mutation "${_physical_device_mutation_source}"
+  "no member|private|inaccessible|read-only|const")
 
 set(_all_component_config_consumer
   "${_terreate_package_root}/all_components/config-consumer")

@@ -37,16 +37,29 @@ using PhysicalDeviceUuid = std::array<std::uint8_t, VK_UUID_SIZE>;
 /// returned native handle is invalid after the parent Instance is destroyed.
 /// A source view follows its parent implementation through an Instance move;
 /// a view belonging to a destination implementation displaced by move
-/// assignment fails closed and must be reacquired from the current owner.
+/// assignment must be reacquired from the current owner.
 ///
 /// The representation is deliberately a small borrowed value: the native
-/// handle and a private, non-owning per-device token owned by the parent
-/// Instance implementation.  That token records the exact handle, parent
-/// identity, and pNext-free capability snapshot, so replacing only the copied
-/// handle or public capabilities fails closed.  Only the production query path
-/// can create a valid value.  Copies and moves copy or transfer borrowed
-/// metadata; they never acquire native ownership, allocate, or retain ownership
-/// of the parent Instance.
+/// handle and a private, typed, non-owning pointer to the parent Instance
+/// implementation.  Only the production query path can create a value with a
+/// parent identity.  Copies and moves copy or transfer borrowed metadata; they
+/// never acquire native ownership, allocate, or retain ownership of the parent
+/// Instance.
+///
+/// Borrow observers have a live-parent precondition.  A source view follows
+/// its implementation through an Instance move because the unique_ptr moves
+/// without moving the implementation object.  A view whose parent was
+/// destroyed or displaced by move assignment must not be used again; the
+/// implementation deliberately never dereferences its identity pointer while
+/// inspecting a view.
+///
+/// These construction and forge-resistance properties describe conforming
+/// consumers that use the installed declarations.  Defining or replacing a
+/// Terreate-owned non-inline API or member symbol violates this API's ODR
+/// contract and is outside the supported API; the library does not defend
+/// against that deliberate program violation with archive extraction,
+/// co-location, interposition, or another linker technique.  A static archive
+/// is not a hostile-linker security boundary.
 class PhysicalDevice final {
 public:
   PhysicalDevice() noexcept = default;
@@ -59,42 +72,24 @@ public:
   [[nodiscard]] explicit operator bool() const noexcept;
   [[nodiscard]] bool valid() const noexcept;
 
-  /// Return a borrowed native handle.  Ownership never transfers to the
-  /// caller, and callers must never destroy the Vulkan physical device through
-  /// this handle.  The returned handle is empty when this view is invalid and
-  /// is invalid after the parent Instance is destroyed or its implementation
-  /// is displaced; reacquire it from the current owner.
+  /// Return a borrowed native handle.  The parent Instance must be live while
+  /// this method is called and while the returned handle is used.  Ownership
+  /// never transfers to the caller, and callers must never destroy the Vulkan
+  /// physical device through this handle.
   [[nodiscard]] vk::PhysicalDevice nativeHandle() const noexcept;
 
-  /// Compare the private per-device token against the current Instance
-  /// implementation.  A source view follows its moved implementation, while
-  /// a view belonging to a displaced destination implementation fails closed.
+  /// Compare the private parent identity against a live Instance.  No state is
+  /// read through the borrowed identity pointer.
   [[nodiscard]] bool correlatedWith(const Instance &instance) const noexcept;
 
 private:
-  struct QueryAuthority;
-
-  [[nodiscard]] bool
-  capabilitiesMatch(const PhysicalDeviceCapabilities &capabilities) const noexcept;
-
-  PhysicalDevice(vk::PhysicalDevice native_handle,
-                 const Instance::PhysicalDeviceToken *device_token,
-                 const QueryAuthority *query_authority) noexcept;
-
-  [[nodiscard]] static const QueryAuthority *query_authority() noexcept;
+  PhysicalDevice(vk::PhysicalDevice native_handle, const Instance::Impl *parent_identity) noexcept;
 
   vk::PhysicalDevice native_handle_{};
-  const Instance::PhysicalDeviceToken *device_token_ = nullptr;
+  const Instance::Impl *parent_identity_ = nullptr;
 
   friend auto queryPhysicalDevices(const Instance &instance)
       -> terreate::Result<PhysicalDeviceInventory>;
-  friend auto selectPhysicalDevice(const PhysicalDeviceCandidate &candidate,
-                                   const PhysicalDeviceRequirements &requirements)
-      -> terreate::Result<PhysicalDeviceSelection>;
-  friend auto selectPhysicalDevice(std::span<const PhysicalDeviceCandidate> candidates,
-                                   const PhysicalDeviceRequirements &requirements,
-                                   const PhysicalDeviceSelectionPolicy &policy)
-      -> terreate::Result<PhysicalDeviceSelection>;
 };
 
 /// A copied device-extension property.  `name` is owned and the collection in
@@ -164,51 +159,91 @@ struct PhysicalDeviceCapabilities {
   /// VK_EXT_memory_budget was not reported or the memory-properties2 query
   /// was not available for the parent instance API.
   std::optional<vk::PhysicalDeviceMemoryBudgetPropertiesEXT> memory_budget{};
-
-  /// Opaque query provenance.  Native query results carry the address of the
-  /// parent-owned per-device token; synthetic snapshots intentionally leave it
-  /// null.  Pure evaluation ignores this marker, while selection uses it to
-  /// prevent a value copied from another view or parent from being substituted
-  /// before evaluation.
-  const void *query_identity = nullptr;
 };
 
 /// A query result item: the borrowed native view is correlated with the
 /// eagerly-owned capability snapshot and carries the original enumeration
 /// position only as provenance.  Selection never uses that position as a
 /// hidden score or fallback policy.
-struct PhysicalDeviceCandidate {
-  PhysicalDevice device{};
-  PhysicalDeviceCapabilities capabilities{};
-  std::size_t enumeration_index = 0;
+///
+/// Candidate construction is private to the native query path.  Its three
+/// bound subobjects are physically immutable after construction, including on
+/// a copied candidate: copying or moving constructs another bound value, while
+/// assignment is deliberately unavailable.  The observers are read-only;
+/// casting away const from an observer and writing through it is invalid and
+/// has undefined behavior.  A different device or capability snapshot must
+/// be obtained by issuing another query, not spliced into this candidate.  This
+/// is an installed-declaration/API boundary for conforming consumers; it is not
+/// a promise to prevent an ODR-violating replacement of a Terreate-owned
+/// non-inline symbol.
+class PhysicalDeviceCandidate final {
+public:
+  PhysicalDeviceCandidate(const PhysicalDeviceCandidate &) = default;
+  PhysicalDeviceCandidate &operator=(const PhysicalDeviceCandidate &) = delete;
+  PhysicalDeviceCandidate(PhysicalDeviceCandidate &&) = default;
+  PhysicalDeviceCandidate &operator=(PhysicalDeviceCandidate &&) = delete;
+  ~PhysicalDeviceCandidate() = default;
+
+  [[nodiscard]] const PhysicalDevice &device() const noexcept { return device_; }
+  [[nodiscard]] const PhysicalDeviceCapabilities &capabilities() const noexcept {
+    return capabilities_;
+  }
+  [[nodiscard]] std::size_t enumerationIndex() const noexcept { return enumeration_index_; }
+
+private:
+  PhysicalDeviceCandidate(PhysicalDevice device, PhysicalDeviceCapabilities capabilities,
+                          std::size_t enumeration_index)
+      : device_(device), capabilities_(std::move(capabilities)),
+        enumeration_index_(enumeration_index) {}
+
+  const PhysicalDevice device_;
+  const PhysicalDeviceCapabilities capabilities_;
+  const std::size_t enumeration_index_;
+
+  friend auto queryPhysicalDevices(const Instance &instance)
+      -> terreate::Result<PhysicalDeviceInventory>;
 };
 
 /// A successful enumeration, including the valid empty-inventory case.  The
-/// vector-like observers keep the result useful in range-for and synthetic
-/// tests without exposing a native ownership type.
-struct PhysicalDeviceInventory {
-  std::vector<PhysicalDeviceCandidate> candidates{};
+/// public default constructor denotes that empty result; it does not expose a
+/// way to inject candidates.  Only the library query path can append a bound
+/// candidate.  The vector-like observers keep the result useful in range-for
+/// and synthetic tests without exposing a native ownership type.
+class PhysicalDeviceInventory final {
+public:
+  PhysicalDeviceInventory() = default;
+  PhysicalDeviceInventory(const PhysicalDeviceInventory &) = default;
+  PhysicalDeviceInventory &operator=(const PhysicalDeviceInventory &) = delete;
+  PhysicalDeviceInventory(PhysicalDeviceInventory &&) noexcept = default;
+  PhysicalDeviceInventory &operator=(PhysicalDeviceInventory &&) noexcept = delete;
+  ~PhysicalDeviceInventory() = default;
 
-  [[nodiscard]] bool empty() const noexcept { return candidates.empty(); }
-  [[nodiscard]] std::size_t size() const noexcept { return candidates.size(); }
-  [[nodiscard]] PhysicalDeviceCandidate &operator[](std::size_t index) noexcept {
-    return candidates[index];
-  }
+  [[nodiscard]] bool empty() const noexcept { return candidates_.empty(); }
+  [[nodiscard]] std::size_t size() const noexcept { return candidates_.size(); }
   [[nodiscard]] const PhysicalDeviceCandidate &operator[](std::size_t index) const noexcept {
-    return candidates[index];
+    return candidates_[index];
   }
-  [[nodiscard]] PhysicalDeviceCandidate &front() noexcept { return candidates.front(); }
-  [[nodiscard]] const PhysicalDeviceCandidate &front() const noexcept { return candidates.front(); }
-  [[nodiscard]] PhysicalDeviceCandidate &back() noexcept { return candidates.back(); }
-  [[nodiscard]] const PhysicalDeviceCandidate &back() const noexcept { return candidates.back(); }
-  [[nodiscard]] PhysicalDeviceCandidate &at(std::size_t index) { return candidates.at(index); }
+  [[nodiscard]] const PhysicalDeviceCandidate &front() const noexcept {
+    return candidates_.front();
+  }
+  [[nodiscard]] const PhysicalDeviceCandidate &back() const noexcept { return candidates_.back(); }
   [[nodiscard]] const PhysicalDeviceCandidate &at(std::size_t index) const {
-    return candidates.at(index);
+    return candidates_.at(index);
   }
-  [[nodiscard]] auto begin() noexcept { return candidates.begin(); }
-  [[nodiscard]] auto end() noexcept { return candidates.end(); }
-  [[nodiscard]] auto begin() const noexcept { return candidates.begin(); }
-  [[nodiscard]] auto end() const noexcept { return candidates.end(); }
+  [[nodiscard]] std::span<const PhysicalDeviceCandidate> candidates() const noexcept {
+    return candidates_;
+  }
+  [[nodiscard]] auto begin() const noexcept { return candidates_.begin(); }
+  [[nodiscard]] auto end() const noexcept { return candidates_.end(); }
+
+private:
+  void reserve(std::size_t count) { candidates_.reserve(count); }
+  void append(PhysicalDeviceCandidate candidate) { candidates_.push_back(std::move(candidate)); }
+
+  std::vector<PhysicalDeviceCandidate> candidates_{};
+
+  friend auto queryPhysicalDevices(const Instance &instance)
+      -> terreate::Result<PhysicalDeviceInventory>;
 };
 
 enum class PhysicalDeviceRequirementOutcome : std::uint8_t {
@@ -322,9 +357,12 @@ enum class PhysicalDeviceSelectionReason : std::uint8_t {
 };
 
 struct PhysicalDeviceSelection {
-  PhysicalDeviceCandidate candidate{};
+  PhysicalDeviceCandidate candidate;
   PhysicalDeviceSelectionReason reason = PhysicalDeviceSelectionReason::sole_match;
   std::optional<std::size_t> policy_index{};
+
+  // Candidate's deleted assignments make selection replacement assignment
+  // unavailable while its generated copy/move constructors remain value-safe.
 };
 
 enum class PhysicalDeviceError : std::uint8_t {

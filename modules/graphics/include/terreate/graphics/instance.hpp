@@ -225,8 +225,9 @@ enum class InstanceError : std::uint8_t {
 /// produced only by a successful createInstance call.  Move construction and
 /// move assignment transfer the native ownership; a moved-from Instance has no
 /// handle or plan.  Borrowed values belonging to the source implementation
-/// follow that implementation to its new owner.  A destination implementation
-/// displaced by move assignment invalidates its existing borrowed values.
+/// follow that implementation to its new owner because the implementation is
+/// moved by unique_ptr.  A borrow whose parent is destroyed or displaced by
+/// move assignment must not be used again.
 class Instance {
 public:
   Instance() = delete;
@@ -256,15 +257,11 @@ public:
   [[nodiscard]] const InstancePlan *plan() const noexcept;
 
 private:
-  struct LifetimeToken;
-  struct PhysicalDeviceToken;
   struct Impl;
 
   explicit Instance(std::unique_ptr<Impl> implementation) noexcept;
 
   std::unique_ptr<Impl> implementation_{};
-  std::unique_ptr<LifetimeToken> retired_lifetime_tokens_{};
-  std::unique_ptr<PhysicalDeviceToken> retired_physical_device_tokens_{};
 
   friend auto createInstance(const InstancePlan &plan, terreate::DiagnosticSinkView sink)
       -> terreate::Result<Instance>;
