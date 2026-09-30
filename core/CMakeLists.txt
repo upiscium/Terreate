@@ -11,7 +11,10 @@ target_include_directories(terreate_core
 terreate_configure_target(terreate_core)
 
 set_target_properties(terreate_core PROPERTIES
-  EXPORT_NAME Core)
+  EXPORT_NAME Core
+  POSITION_INDEPENDENT_CODE ON
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES)
 
 # The alias is the same name in a source build and in the installed export.
 add_library(Terreate::Core ALIAS terreate_core)

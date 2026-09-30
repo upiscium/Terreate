@@ -2,7 +2,6 @@
 #define TERREATE_GRAPHICS_INSTANCE_HPP
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -13,12 +12,25 @@
 #include <terreate/core/result.hpp>
 #include <vulkan/vulkan_raii.hpp>
 
+#if defined(_WIN32) && defined(TERREATE_GRAPHICS_BUILDING_SHARED)
+#define TERREATE_GRAPHICS_EXPORT __declspec(dllexport)
+#elif defined(_WIN32)
+#define TERREATE_GRAPHICS_EXPORT __declspec(dllimport)
+#elif defined(__GNUC__) || defined(__clang__)
+#define TERREATE_GRAPHICS_EXPORT __attribute__((visibility("default")))
+#else
+#define TERREATE_GRAPHICS_EXPORT
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#define TERREATE_GRAPHICS_HIDDEN __attribute__((visibility("hidden")))
+#else
+#define TERREATE_GRAPHICS_HIDDEN
+#endif
+
 namespace terreate::graphics {
 
 class Instance;
-struct PhysicalDeviceInventory;
-[[nodiscard]] terreate::Result<PhysicalDeviceInventory>
-queryPhysicalDevices(const Instance &instance);
 
 /// Vulkan instance API versions are represented using Vulkan's packed version
 /// value.  A missing version in InstanceDescription is deliberately different
@@ -214,8 +226,10 @@ enum class InstanceError : std::uint8_t {
   loader_unavailable = 6,
 };
 
-[[nodiscard]] const std::error_category &instance_error_category() noexcept;
-[[nodiscard]] std::error_code make_error_code(InstanceError error) noexcept;
+[[nodiscard]] TERREATE_GRAPHICS_EXPORT const std::error_category &
+instance_error_category() noexcept;
+[[nodiscard]] TERREATE_GRAPHICS_EXPORT std::error_code
+make_error_code(InstanceError error) noexcept;
 
 /// A move-only owner of a Vulkan instance, its loader context, its optional
 /// Debug Utils messenger, and the effective plan retained for that instance.
@@ -231,42 +245,35 @@ public:
   Instance(const Instance &) = delete;
   Instance &operator=(const Instance &) = delete;
 
-  Instance(Instance &&other) noexcept;
-  Instance &operator=(Instance &&other) noexcept;
-  ~Instance();
+  TERREATE_GRAPHICS_EXPORT Instance(Instance &&other) noexcept;
+  TERREATE_GRAPHICS_EXPORT Instance &operator=(Instance &&other) noexcept;
+  TERREATE_GRAPHICS_EXPORT ~Instance();
 
-  [[nodiscard]] explicit operator bool() const noexcept;
-  [[nodiscard]] bool valid() const noexcept;
+  [[nodiscard]] TERREATE_GRAPHICS_EXPORT explicit operator bool() const noexcept;
+  [[nodiscard]] TERREATE_GRAPHICS_EXPORT bool valid() const noexcept;
 
-  /// Return a borrowed copy of the native handle.  This does not transfer
-  /// ownership or permit destruction through the returned value.  The handle
-  /// must not be used after this Instance is destroyed or participates in a
-  /// move; reacquire it from the current owning Instance instead.
-  [[nodiscard]] vk::Instance nativeHandle() const noexcept;
-
-  /// Return the stable, opaque identity of this Instance implementation.  It
-  /// is a correlation token only: callers must not dereference it.  The token
-  /// remains stable when ownership moves between Instance objects.
-  [[nodiscard]] const void *implementationIdentity() const noexcept { return impl_.get(); }
-  [[nodiscard]] const void *identityToken() const noexcept { return implementationIdentity(); }
+  /// Return a borrowed copy of the native handle.  Ownership never transfers
+  /// to the caller, and callers must never destroy the Vulkan instance through
+  /// this handle.  The returned handle is invalid after this Instance is
+  /// destroyed or participates in a move; reacquire it from the current
+  /// owning Instance instead.  This API relies on the caller to follow those
+  /// rules; the handle type cannot enforce them.
+  [[nodiscard]] TERREATE_GRAPHICS_EXPORT vk::Instance nativeHandle() const noexcept;
 
   /// Return a pointer to the effective configuration used for native creation.
   /// The plan is owned by this Instance and is not the caller's plan passed to
   /// createInstance.  The pointer is borrowed, is nullptr for a moved-from
   /// Instance, and must not be retained across destruction or a move of this
   /// Instance.
-  [[nodiscard]] const InstancePlan *plan() const noexcept;
+  [[nodiscard]] TERREATE_GRAPHICS_EXPORT const InstancePlan *plan() const noexcept;
 
 private:
-  struct Impl;
+  explicit Instance(void *implementation) noexcept;
 
-  explicit Instance(std::unique_ptr<Impl> impl) noexcept;
+  void *implementation_ = nullptr;
 
-  std::unique_ptr<Impl> impl_{};
-
-  friend terreate::Result<Instance> createInstance(const InstancePlan &plan,
-                                                   terreate::DiagnosticSinkView sink);
-  friend terreate::Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &instance);
+  friend auto createInstance(const InstancePlan &plan, terreate::DiagnosticSinkView sink)
+      -> terreate::Result<Instance>;
 };
 
 /// Query the loader's instance API version, instance extensions, and layers.
@@ -276,14 +283,15 @@ private:
 /// successful result owns its returned strings and may be retained by the
 /// caller independently of the loader context.  Vulkan has no portable loader
 /// identity query, so loader_identity is left unavailable.
-[[nodiscard]] terreate::Result<InstanceCapabilities> queryInstanceCapabilities();
+[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<InstanceCapabilities>
+queryInstanceCapabilities();
 
 /// Resolve explicit instance intent against a successful capability snapshot.
 /// The input values are observed only during this call, never normalised in
 /// place, and copied into the returned plan.  The plan is complete before
 /// native creation is attempted; neither input needs to remain alive after the
 /// call returns.
-[[nodiscard]] terreate::Result<InstancePlan>
+[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<InstancePlan>
 resolveInstance(const InstanceDescription &description, const InstanceCapabilities &capabilities);
 
 /// Apply a previously resolved plan by creating an owning Vulkan instance (and
@@ -293,12 +301,12 @@ resolveInstance(const InstanceDescription &description, const InstanceCapabiliti
 /// successful Instance retains its own copy.  The sink view is also copied into
 /// callback state, but its application-owned target is not; that target must
 /// outlive the returned Instance and all callbacks delivered through it.
-[[nodiscard]] auto createInstance(const InstancePlan &plan, terreate::DiagnosticSinkView sink = {})
+[[nodiscard]]
+TERREATE_GRAPHICS_EXPORT auto createInstance(const InstancePlan &plan,
+                                             terreate::DiagnosticSinkView sink = {})
     -> terreate::Result<Instance>;
 
 } // namespace terreate::graphics
-
-#include <terreate/graphics/physical_device.hpp>
 
 namespace std {
 template <> struct is_error_code_enum<terreate::graphics::InstanceError> : true_type {};

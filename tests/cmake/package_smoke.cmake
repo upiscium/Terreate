@@ -169,12 +169,142 @@ if(NOT _installed_source_root_position EQUAL -1)
   message(FATAL_ERROR
     "installed package config leaked the Terreate source root")
 endif()
+file(GLOB_RECURSE _installed_graphics_target_candidates
+  "${_all_prefix}/*/TerreateGraphicsTargets.cmake")
+if(NOT _installed_graphics_target_candidates)
+  message(FATAL_ERROR "installed Graphics target export is missing")
+endif()
+list(GET _installed_graphics_target_candidates 0 _installed_graphics_targets_file)
+file(READ "${_installed_graphics_targets_file}" _installed_graphics_targets_contents)
+string(FIND "${_installed_graphics_targets_contents}" "${_terreate_source_dir}"
+  _installed_graphics_source_root_position)
+if(NOT _installed_graphics_source_root_position EQUAL -1)
+  message(FATAL_ERROR
+    "installed Graphics export leaked the Terreate source root")
+endif()
+string(FIND "${_installed_graphics_targets_contents}" "$ENV{VULKAN_HEADERS_INCLUDE}"
+  _installed_graphics_hpp_root_position)
+if(NOT _installed_graphics_hpp_root_position EQUAL -1)
+  message(FATAL_ERROR
+    "installed Graphics export leaked the build-only Vulkan-Hpp root")
+endif()
 if(NOT EXISTS "${_all_prefix}/include/terreate/graphics/instance.hpp")
   message(FATAL_ERROR "Graphics install is missing its public instance header")
 endif()
 if(NOT EXISTS "${_all_prefix}/include/terreate/graphics/physical_device.hpp")
   message(FATAL_ERROR "Graphics install is missing its public physical-device header")
 endif()
+foreach(_public_graphics_header IN ITEMS
+    "${_all_prefix}/include/terreate/graphics/instance.hpp"
+    "${_all_prefix}/include/terreate/graphics/physical_device.hpp")
+  file(READ "${_public_graphics_header}" _public_graphics_header_contents)
+  if(_public_graphics_header_contents MATCHES
+       "PhysicalDeviceQueryAccess|namespace[ \t]+detail|friend[^\n]*(detail|Instance::Impl)")
+    message(FATAL_ERROR
+      "installed public Graphics header exposes a forgeable physical-device authority: "
+      "${_public_graphics_header}")
+  endif()
+endforeach()
+
+# Former access-hook macros must be inert: an installed consumer that defines
+# every old spelling and attempts the old bridge construction must fail before
+# it can produce a view.  The fixed production constructor requires the
+# implementation-owned authority ABI, so this two-argument bridge has no
+# matching or accessible authority path.
+set(_forged_macro_bridge_consumer
+  "${_terreate_package_root}/all_components/forged-macro-bridge-consumer")
+file(MAKE_DIRECTORY "${_forged_macro_bridge_consumer}")
+file(WRITE "${_forged_macro_bridge_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateForgedMacroBridgeConsumer LANGUAGES CXX)
+find_package(Terreate REQUIRED COMPONENTS Core)
+find_package(Vulkan REQUIRED)
+add_executable(forged_macro_bridge main.cpp)
+target_include_directories(forged_macro_bridge PRIVATE
+  "${TERREATE_PACKAGE_PREFIX}/include")
+target_link_libraries(forged_macro_bridge PRIVATE
+  Terreate::Core
+  Vulkan::Vulkan)
+set_target_properties(forged_macro_bridge PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+file(WRITE "${_forged_macro_bridge_consumer}/main.cpp" [=[
+#define TERREATE_GRAPHICS_INTERNAL_QUERY_ACCESS 1
+#define TERREATE_GRAPHICS_QUERY_ACCESS_KEYWORD friend
+#define TERREATE_GRAPHICS_QUERY_ACCESS_BRIDGE class PhysicalDeviceQueryBridge
+
+#include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
+
+#include <cstdint>
+
+namespace terreate::graphics {
+
+class PhysicalDeviceQueryBridge {
+public:
+  static PhysicalDevice forge(const Instance &instance) noexcept {
+    const auto native = vk::PhysicalDevice{
+        reinterpret_cast<VkPhysicalDevice>(static_cast<VkInstance>(instance.nativeHandle()))};
+    return PhysicalDevice{native, static_cast<const void *>(instance.plan())};
+  }
+};
+
+} // namespace terreate::graphics
+
+int main() { return 0; }
+]=])
+set(_forged_macro_bridge_build
+  "${_terreate_package_root}/all_components/forged-macro-bridge-consumer-build")
+set(_forged_macro_bridge_configure
+  "${CMAKE_COMMAND}"
+  -S "${_forged_macro_bridge_consumer}"
+  -B "${_forged_macro_bridge_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _forged_macro_bridge_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _forged_macro_bridge_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _forged_macro_bridge_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  "-DTERREATE_PACKAGE_PREFIX:PATH=${_all_prefix}")
+execute_process(
+  COMMAND ${_forged_macro_bridge_configure}
+  RESULT_VARIABLE _forged_macro_bridge_configure_result
+  OUTPUT_VARIABLE _forged_macro_bridge_configure_output
+  ERROR_VARIABLE _forged_macro_bridge_configure_error)
+if(NOT _forged_macro_bridge_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "former-macro bridge consumer configuration failed\n"
+    "${_forged_macro_bridge_configure_output}\n"
+    "${_forged_macro_bridge_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_forged_macro_bridge_build}"
+  RESULT_VARIABLE _forged_macro_bridge_build_result
+  OUTPUT_VARIABLE _forged_macro_bridge_build_output
+  ERROR_VARIABLE _forged_macro_bridge_build_error)
+if(_forged_macro_bridge_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "former TERREATE_GRAPHICS access macros unexpectedly forged a view\n"
+    "${_forged_macro_bridge_build_output}")
+endif()
+string(TOLOWER
+  "${_forged_macro_bridge_build_output}\n${_forged_macro_bridge_build_error}"
+  _forged_macro_bridge_diagnostics)
+if(NOT _forged_macro_bridge_diagnostics MATCHES
+     "no matching|inaccessible|private|protected|authority|constructible")
+  message(FATAL_ERROR
+    "former-macro bridge failed for an unexpected reason\n"
+    "${_forged_macro_bridge_build_output}\n"
+    "${_forged_macro_bridge_build_error}")
+endif()
+
 # C: Preserve the explicit Core+Graphics isolation contract: Core and Graphics
 # are imported, Platform is absent, and Vulkan is resolved for Graphics.
 set(_all_consumer "${_terreate_package_root}/all_components/consumer")
@@ -252,14 +382,16 @@ int main() {
              : 1;
 }
 ]=])
+# The normal installed consumer exercises the supported shared Graphics target.
+# Adversarial subclass/raw construction and symbol interposition are checked in
+# isolated consumers below so this package consumer remains a valid API smoke
+# test.
 file(WRITE "${_all_consumer}/main.cpp" [=[
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_raii.hpp>
-
-#include <cstdint>
 
 static_assert(VK_API_VERSION_1_3 != 0);
 static_assert(sizeof(vk::raii::Context) > 0);
@@ -282,7 +414,10 @@ int main() {
     return 1;
   }
   const auto devices = terreate::graphics::queryPhysicalDevices(*instance);
-  return devices.has_value() ? 0 : 1;
+  if (!devices) {
+    return 1;
+  }
+  return 0;
 }
 ]=])
 
@@ -330,6 +465,960 @@ if(NOT _consumer_run_result EQUAL 0)
   message(FATAL_ERROR
     "installed package consumer runtime failed\n"
     "${_consumer_run_output}\n${_consumer_run_error}")
+endif()
+
+# Inspect the installed artifact before exercising shared-DSO consumers.  The
+# package has exactly one selectable Graphics DSO and no Graphics archive or
+# private implementation target.
+file(GLOB_RECURSE _installed_graphics_dso_candidates
+  "${_all_prefix}/*/libterreate_graphics.so*")
+list(LENGTH _installed_graphics_dso_candidates _installed_graphics_dso_count)
+if(NOT _installed_graphics_dso_count EQUAL 1)
+  message(FATAL_ERROR
+    "installed package did not provide exactly one Graphics DSO: "
+    "${_installed_graphics_dso_candidates}")
+endif()
+list(GET _installed_graphics_dso_candidates 0 _installed_graphics_dso)
+file(GLOB_RECURSE _installed_graphics_archives
+  "${_all_prefix}/*/libterreate_graphics.a"
+  "${_all_prefix}/*/libterreate_graphics_private.*")
+if(_installed_graphics_archives)
+  message(FATAL_ERROR
+    "installed package exposed a selectable Graphics archive/private artifact: "
+    "${_installed_graphics_archives}")
+endif()
+file(GLOB_RECURSE _installed_graphics_target_exports
+  "${_all_prefix}/*/TerreateGraphicsTargets.cmake")
+foreach(_graphics_target_export IN LISTS _installed_graphics_target_exports)
+  file(READ "${_graphics_target_export}" _graphics_target_contents)
+  if(_graphics_target_contents MATCHES
+       "GraphicsPrivate|terreate_graphics_private|WHOLE_ARCHIVE|libterreate_graphics\.a")
+    message(FATAL_ERROR
+      "installed Graphics target export retained a private/archive selection path: "
+      "${_graphics_target_export}")
+  endif()
+endforeach()
+
+find_program(_terreate_readelf NAMES readelf llvm-readelf)
+if(NOT _terreate_readelf)
+  message(FATAL_ERROR "ELF DSO inspection requires readelf")
+endif()
+execute_process(
+  COMMAND "${_terreate_readelf}" --dyn-syms --wide --demangle "${_installed_graphics_dso}"
+  RESULT_VARIABLE _graphics_dynsym_result
+  OUTPUT_VARIABLE _graphics_dynsym_output
+  ERROR_VARIABLE _graphics_dynsym_error)
+if(NOT _graphics_dynsym_result EQUAL 0)
+  message(FATAL_ERROR
+    "installed Graphics DSO dynamic-symbol inspection failed\n"
+    "${_graphics_dynsym_error}")
+endif()
+foreach(_supported_graphics_symbol IN ITEMS
+    "queryPhysicalDevices"
+    "evaluatePhysicalDevice"
+    "selectPhysicalDevice"
+    "PhysicalDevice::valid"
+    "PhysicalDevice::nativeHandle"
+    "PhysicalDevice::correlatedWith"
+    "createInstance"
+    "queryInstanceCapabilities")
+  if(NOT _graphics_dynsym_output MATCHES "${_supported_graphics_symbol}")
+    message(FATAL_ERROR
+      "installed Graphics DSO omitted supported export ${_supported_graphics_symbol}")
+  endif()
+endforeach()
+foreach(_forbidden_graphics_symbol IN ITEMS
+    "PhysicalDeviceState"
+    "PhysicalDevice::QueryTag"
+    "PhysicalDevice::query_tag"
+    "validate_physical_device_runtime_authority"
+    "PhysicalDeviceQueryBridge"
+    "physical_device_query"
+    "instance_query")
+  if(_graphics_dynsym_output MATCHES "${_forbidden_graphics_symbol}")
+    message(FATAL_ERROR
+      "installed Graphics DSO exported private/test symbol ${_forbidden_graphics_symbol}")
+  endif()
+endforeach()
+string(REPLACE "\n" ";" _graphics_dynsym_lines "${_graphics_dynsym_output}")
+foreach(_graphics_dynsym_line IN LISTS _graphics_dynsym_lines)
+  if(_graphics_dynsym_line MATCHES "UND" AND
+     _graphics_dynsym_line MATCHES "terreate::graphics")
+    message(FATAL_ERROR
+      "installed Graphics DSO has an unresolved Graphics implementation symbol")
+  endif()
+endforeach()
+execute_process(
+  COMMAND "${_terreate_readelf}" --dynamic --wide "${_installed_graphics_dso}"
+  RESULT_VARIABLE _graphics_dynamic_result
+  OUTPUT_VARIABLE _graphics_dynamic_output
+  ERROR_VARIABLE _graphics_dynamic_error)
+if(NOT _graphics_dynamic_result EQUAL 0 OR
+   _graphics_dynamic_output MATCHES "TEXTREL")
+  message(FATAL_ERROR
+    "installed Graphics DSO is not a clean relocatable ELF artifact\n"
+    "${_graphics_dynamic_output}")
+endif()
+
+# A shared-DSO consumer may replace public query/observer definitions in its
+# executable.  The DSO's bound production calls must still reject the forged
+# default view during selection.
+set(_forged_query_runtime_consumer
+  "${_terreate_package_root}/all_components/forged-query-runtime-consumer")
+file(MAKE_DIRECTORY "${_forged_query_runtime_consumer}")
+file(WRITE "${_forged_query_runtime_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateForgedQueryRuntimeConsumer LANGUAGES CXX)
+find_package(Terreate REQUIRED COMPONENTS Core)
+find_package(Vulkan REQUIRED)
+if(NOT TARGET Terreate::Core OR NOT TARGET Vulkan::Vulkan)
+  message(FATAL_ERROR "shared Graphics DSO dependencies were not found")
+endif()
+add_executable(forged_query_runtime main.cpp)
+target_include_directories(forged_query_runtime PRIVATE
+  "${TERREATE_PACKAGE_PREFIX}/include")
+target_link_libraries(forged_query_runtime PRIVATE
+  "${TERREATE_GRAPHICS_DSO}"
+  Terreate::Core
+  Vulkan::Vulkan)
+set_target_properties(forged_query_runtime PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+file(WRITE "${_forged_query_runtime_consumer}/main.cpp" [=[
+#include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
+
+namespace terreate::graphics {
+
+Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &) {
+  PhysicalDeviceInventory inventory;
+  inventory.candidates.push_back(PhysicalDeviceCandidate{});
+  return inventory;
+}
+
+} // namespace terreate::graphics
+
+int main() {
+  const auto capabilities = terreate::graphics::queryInstanceCapabilities();
+  if (!capabilities) {
+    return 1;
+  }
+
+  terreate::graphics::InstanceDescription description;
+  description.api_version = capabilities->loader_api_version;
+  const auto plan = terreate::graphics::resolveInstance(description, *capabilities);
+  if (!plan) {
+    return 1;
+  }
+  const auto instance = terreate::graphics::createInstance(*plan);
+  if (!instance || !instance->valid()) {
+    return 1;
+  }
+
+  const auto forged = terreate::graphics::queryPhysicalDevices(*instance);
+  if (!forged || forged->size() != 1) {
+    return 1;
+  }
+  return forged->front().device.nativeHandle() == vk::PhysicalDevice{} ? 0 : 1;
+}
+]=])
+set(_forged_query_runtime_build
+  "${_terreate_package_root}/all_components/forged-query-runtime-consumer-build")
+set(_forged_query_runtime_configure
+  "${CMAKE_COMMAND}"
+  -S "${_forged_query_runtime_consumer}"
+  -B "${_forged_query_runtime_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _forged_query_runtime_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _forged_query_runtime_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _forged_query_runtime_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  "-DTERREATE_GRAPHICS_DSO:FILEPATH=${_installed_graphics_dso}"
+  "-DTERREATE_PACKAGE_PREFIX:PATH=${_all_prefix}")
+execute_process(
+  COMMAND ${_forged_query_runtime_configure}
+  RESULT_VARIABLE _forged_query_runtime_configure_result
+  OUTPUT_VARIABLE _forged_query_runtime_configure_output
+  ERROR_VARIABLE _forged_query_runtime_configure_error)
+if(NOT _forged_query_runtime_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "forged-query runtime consumer configuration failed\n"
+    "${_forged_query_runtime_configure_output}\n"
+    "${_forged_query_runtime_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_forged_query_runtime_build}"
+  RESULT_VARIABLE _forged_query_runtime_build_result
+  OUTPUT_VARIABLE _forged_query_runtime_build_output
+  ERROR_VARIABLE _forged_query_runtime_build_error)
+if(NOT _forged_query_runtime_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "forged-query runtime consumer build failed\n"
+    "${_forged_query_runtime_build_output}\n"
+    "${_forged_query_runtime_build_error}")
+endif()
+execute_process(
+  COMMAND "${_forged_query_runtime_build}/forged_query_runtime"
+  RESULT_VARIABLE _forged_query_runtime_result
+  OUTPUT_VARIABLE _forged_query_runtime_output
+  ERROR_VARIABLE _forged_query_runtime_error)
+if(NOT _forged_query_runtime_result EQUAL 0)
+  message(FATAL_ERROR
+    "forged-query runtime consumer unexpectedly produced a valid view\n"
+    "${_forged_query_runtime_output}\n${_forged_query_runtime_error}")
+endif()
+
+# A consumer must not recover the removed private implementation construction
+# authority.  This shared-DSO fixture deliberately attempts to define the
+# former nested type and replaces the query, but uses only the public
+# nativeHandle()/plan() observations.  Compilation must fail before it can
+# produce a correlated view.
+set(_forged_impl_consumer
+  "${_terreate_package_root}/all_components/forged-instance-impl-consumer")
+file(MAKE_DIRECTORY "${_forged_impl_consumer}")
+file(WRITE "${_forged_impl_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateForgedInstanceImplConsumer LANGUAGES CXX)
+find_package(Terreate REQUIRED COMPONENTS Core)
+find_package(Vulkan REQUIRED)
+add_executable(forged_instance_impl main.cpp)
+target_include_directories(forged_instance_impl PRIVATE
+  "${TERREATE_PACKAGE_PREFIX}/include")
+target_link_libraries(forged_instance_impl PRIVATE
+  "${TERREATE_GRAPHICS_DSO}"
+  Terreate::Core
+  Vulkan::Vulkan)
+set_target_properties(forged_instance_impl PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+file(WRITE "${_forged_impl_consumer}/main.cpp" [=[
+#include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
+
+namespace terreate::graphics {
+
+struct Instance::Impl {
+  static PhysicalDevice forge(const Instance &instance) noexcept {
+    const auto native = vk::PhysicalDevice{
+        reinterpret_cast<VkPhysicalDevice>(static_cast<VkInstance>(instance.nativeHandle()))};
+    return PhysicalDevice{native, static_cast<const void *>(instance.plan())};
+  }
+};
+
+Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &instance) {
+  PhysicalDeviceInventory inventory;
+  inventory.candidates.push_back(
+      PhysicalDeviceCandidate{.device = Instance::Impl::forge(instance)});
+  return inventory;
+}
+
+} // namespace terreate::graphics
+
+int main() { return 0; }
+]=])
+set(_forged_impl_build
+  "${_terreate_package_root}/all_components/forged-instance-impl-consumer-build")
+set(_forged_impl_configure
+  "${CMAKE_COMMAND}"
+  -S "${_forged_impl_consumer}"
+  -B "${_forged_impl_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _forged_impl_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _forged_impl_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _forged_impl_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  "-DTERREATE_GRAPHICS_DSO:FILEPATH=${_installed_graphics_dso}"
+  "-DTERREATE_PACKAGE_PREFIX:PATH=${_all_prefix}")
+execute_process(
+  COMMAND ${_forged_impl_configure}
+  RESULT_VARIABLE _forged_impl_configure_result
+  OUTPUT_VARIABLE _forged_impl_configure_output
+  ERROR_VARIABLE _forged_impl_configure_error)
+if(NOT _forged_impl_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "forged Instance::Impl consumer configuration failed\n"
+    "${_forged_impl_configure_output}\n${_forged_impl_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_forged_impl_build}"
+  RESULT_VARIABLE _forged_impl_build_result
+  OUTPUT_VARIABLE _forged_impl_build_output
+  ERROR_VARIABLE _forged_impl_build_error)
+if(_forged_impl_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "forged Instance::Impl authority unexpectedly compiled and linked\n"
+    "${_forged_impl_build_output}\n${_forged_impl_build_error}")
+endif()
+string(TOLOWER
+  "${_forged_impl_build_output}\n${_forged_impl_build_error}"
+  _forged_impl_diagnostics)
+if(NOT _forged_impl_diagnostics MATCHES
+     "does not name a class|not declared|no matching|private|inaccessible")
+  message(FATAL_ERROR
+    "forged Instance::Impl consumer failed for an unexpected reason\n"
+    "${_forged_impl_build_output}\n${_forged_impl_build_error}")
+endif()
+
+# The former nested QueryAuthority was itself an installed declaration.  A
+# consumer must not be able to recreate that enclosing-private authority and
+# replace the query with a view made from public plan/native observations.
+set(_forged_query_authority_consumer
+  "${_terreate_package_root}/all_components/forged-query-authority-consumer")
+file(MAKE_DIRECTORY "${_forged_query_authority_consumer}")
+file(WRITE "${_forged_query_authority_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateForgedQueryAuthorityConsumer LANGUAGES CXX)
+find_package(Terreate REQUIRED COMPONENTS Core)
+find_package(Vulkan REQUIRED)
+add_executable(forged_query_authority main.cpp)
+target_include_directories(forged_query_authority PRIVATE
+  "${TERREATE_PACKAGE_PREFIX}/include")
+target_link_libraries(forged_query_authority PRIVATE
+  "${TERREATE_GRAPHICS_DSO}"
+  Terreate::Core
+  Vulkan::Vulkan)
+set_target_properties(forged_query_authority PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+file(WRITE "${_forged_query_authority_consumer}/main.cpp" [=[
+#include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
+
+namespace terreate::graphics {
+
+struct PhysicalDevice::QueryAuthority {
+  static PhysicalDevice forge(const Instance &instance) noexcept {
+    const auto native = vk::PhysicalDevice{
+        reinterpret_cast<VkPhysicalDevice>(static_cast<VkInstance>(instance.nativeHandle()))};
+    return PhysicalDevice{native, static_cast<const void *>(instance.plan())};
+  }
+};
+
+Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &instance) {
+  PhysicalDeviceInventory inventory;
+  inventory.candidates.push_back(
+      PhysicalDeviceCandidate{.device = PhysicalDevice::QueryAuthority::forge(instance)});
+  return inventory;
+}
+
+} // namespace terreate::graphics
+
+int main() { return 0; }
+]=])
+set(_forged_query_authority_build
+  "${_terreate_package_root}/all_components/forged-query-authority-consumer-build")
+set(_forged_query_authority_configure
+  "${CMAKE_COMMAND}"
+  -S "${_forged_query_authority_consumer}"
+  -B "${_forged_query_authority_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _forged_query_authority_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _forged_query_authority_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _forged_query_authority_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  "-DTERREATE_GRAPHICS_DSO:FILEPATH=${_installed_graphics_dso}"
+  "-DTERREATE_PACKAGE_PREFIX:PATH=${_all_prefix}")
+execute_process(
+  COMMAND ${_forged_query_authority_configure}
+  RESULT_VARIABLE _forged_query_authority_configure_result
+  OUTPUT_VARIABLE _forged_query_authority_configure_output
+  ERROR_VARIABLE _forged_query_authority_configure_error)
+if(NOT _forged_query_authority_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "forged QueryAuthority consumer configuration failed\n"
+    "${_forged_query_authority_configure_output}\n${_forged_query_authority_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_forged_query_authority_build}"
+  RESULT_VARIABLE _forged_query_authority_build_result
+  OUTPUT_VARIABLE _forged_query_authority_build_output
+  ERROR_VARIABLE _forged_query_authority_build_error)
+if(_forged_query_authority_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "consumer-defined QueryAuthority unexpectedly compiled against the installed API\n"
+    "${_forged_query_authority_build_output}\n"
+    "${_forged_query_authority_build_error}")
+endif()
+string(TOLOWER
+  "${_forged_query_authority_build_output}\n${_forged_query_authority_build_error}"
+  _forged_query_authority_diagnostics)
+if(NOT _forged_query_authority_diagnostics MATCHES
+     "queryauthority|does not name a class|not a member|private|inaccessible")
+  message(FATAL_ERROR
+    "consumer-defined QueryAuthority failed for an unexpected reason\n"
+    "${_forged_query_authority_build_output}\n${_forged_query_authority_build_error}")
+endif()
+
+# Defining the query together with every public observer must not make a
+# consumer-created view selectable.  The executable observes its replacements,
+# while the DSO's bound production selection still rejects the default view.
+set(_forged_query_correlated_consumer
+  "${_terreate_package_root}/all_components/forged-query-correlated-consumer")
+file(MAKE_DIRECTORY "${_forged_query_correlated_consumer}")
+file(WRITE "${_forged_query_correlated_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateForgedQueryCorrelatedConsumer LANGUAGES CXX)
+find_package(Terreate REQUIRED COMPONENTS Core)
+find_package(Vulkan REQUIRED)
+add_executable(forged_query_correlated main.cpp)
+target_include_directories(forged_query_correlated PRIVATE
+  "${TERREATE_PACKAGE_PREFIX}/include")
+target_link_libraries(forged_query_correlated PRIVATE
+  "${TERREATE_GRAPHICS_DSO}"
+  Terreate::Core
+  Vulkan::Vulkan
+  "${CMAKE_DL_LIBS}")
+set_target_properties(forged_query_correlated PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF
+  ENABLE_EXPORTS ON)
+target_compile_definitions(forged_query_correlated PRIVATE
+  "TERREATE_GRAPHICS_DSO_PATH=\"${TERREATE_GRAPHICS_DSO}\"")
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_link_options(forged_query_correlated PRIVATE
+    "-Wl,--export-dynamic")
+endif()
+]=])
+file(WRITE "${_forged_query_correlated_consumer}/main.cpp" [=[
+#include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
+
+#include <cstdint>
+#include <dlfcn.h>
+#include <memory>
+
+namespace terreate::graphics {
+
+struct PhysicalDevice::QueryTag {};
+
+struct ForgedPhysicalDeviceState final {
+  vk::PhysicalDevice native_handle{};
+  vk::Instance parent_instance{};
+  const void *authority = nullptr;
+};
+
+std::uint32_t consumer_query_calls = 0;
+std::uint32_t consumer_query_tag_calls = 0;
+std::uint32_t consumer_constructor_calls = 0;
+std::uint32_t consumer_physical_valid_calls = 0;
+std::uint32_t consumer_physical_native_handle_calls = 0;
+std::uint32_t consumer_physical_correlated_calls = 0;
+std::uint32_t consumer_instance_valid_calls = 0;
+std::uint32_t consumer_instance_native_handle_calls = 0;
+std::uint32_t consumer_instance_plan_calls = 0;
+
+TERREATE_GRAPHICS_EXPORT const PhysicalDevice::QueryTag *PhysicalDevice::query_tag() noexcept {
+  static const QueryTag tag;
+  ++consumer_query_tag_calls;
+  return &tag;
+}
+
+TERREATE_GRAPHICS_EXPORT PhysicalDevice::PhysicalDevice(
+    vk::PhysicalDevice native_handle, vk::Instance parent_instance,
+    const QueryTag *query_tag_value) noexcept {
+  ++consumer_constructor_calls;
+  if (query_tag_value != query_tag()) {
+    return;
+  }
+  auto state = std::make_shared<ForgedPhysicalDeviceState>();
+  state->native_handle = native_handle;
+  state->parent_instance = parent_instance;
+  state->authority = query_tag_value;
+  state_ = std::shared_ptr<const void>{std::move(state)};
+}
+
+TERREATE_GRAPHICS_EXPORT Result<PhysicalDeviceInventory>
+queryPhysicalDevices(const Instance &) {
+  ++consumer_query_calls;
+  PhysicalDeviceInventory inventory;
+  inventory.candidates.push_back(PhysicalDeviceCandidate{
+      .device = PhysicalDevice{
+          vk::PhysicalDevice{reinterpret_cast<VkPhysicalDevice>(static_cast<std::uintptr_t>(1))},
+          vk::Instance{reinterpret_cast<VkInstance>(static_cast<std::uintptr_t>(1))},
+          PhysicalDevice::query_tag()}});
+  return inventory;
+}
+
+TERREATE_GRAPHICS_EXPORT bool Instance::valid() const noexcept {
+  ++consumer_instance_valid_calls;
+  return true;
+}
+
+TERREATE_GRAPHICS_EXPORT vk::Instance Instance::nativeHandle() const noexcept {
+  ++consumer_instance_native_handle_calls;
+  return vk::Instance{reinterpret_cast<VkInstance>(static_cast<std::uintptr_t>(1))};
+}
+
+TERREATE_GRAPHICS_EXPORT const InstancePlan *Instance::plan() const noexcept {
+  ++consumer_instance_plan_calls;
+  return nullptr;
+}
+
+TERREATE_GRAPHICS_EXPORT bool PhysicalDevice::valid() const noexcept {
+  ++consumer_physical_valid_calls;
+  return true;
+}
+
+TERREATE_GRAPHICS_EXPORT vk::PhysicalDevice PhysicalDevice::nativeHandle() const noexcept {
+  ++consumer_physical_native_handle_calls;
+  return vk::PhysicalDevice{
+      reinterpret_cast<VkPhysicalDevice>(static_cast<std::uintptr_t>(1))};
+}
+
+TERREATE_GRAPHICS_EXPORT bool PhysicalDevice::correlatedWith(const Instance &) const noexcept {
+  ++consumer_physical_correlated_calls;
+  return true;
+}
+
+} // namespace terreate::graphics
+
+using namespace terreate::graphics;
+
+int main() {
+  const auto capabilities = terreate::graphics::queryInstanceCapabilities();
+  if (!capabilities) {
+    return 2;
+  }
+  terreate::graphics::InstanceDescription description;
+  description.api_version = capabilities->loader_api_version;
+  const auto plan = terreate::graphics::resolveInstance(description, *capabilities);
+  if (!plan) {
+    return 3;
+  }
+  const auto instance = terreate::graphics::createInstance(*plan);
+  if (!instance) {
+    return 4;
+  }
+
+  // Resolve the production query from the installed DSO itself.  Calling the
+  // handle returned by dlsym avoids accidentally testing the executable's
+  // replacement query and makes the Bsymbolic boundary observable.
+  void *graphics_handle = dlopen(TERREATE_GRAPHICS_DSO_PATH, RTLD_NOW | RTLD_LOCAL);
+  if (graphics_handle == nullptr) {
+    return 5;
+  }
+  constexpr const char *production_query_name =
+      "_ZN8terreate8graphics20queryPhysicalDevicesERKNS0_8InstanceE";
+  (void)dlerror();
+  void *production_query_symbol = dlsym(graphics_handle, production_query_name);
+  if (production_query_symbol == nullptr || dlerror() != nullptr) {
+    return 6;
+  }
+  using ProductionQuery = terreate::Result<terreate::graphics::PhysicalDeviceInventory> (*)(
+      const terreate::graphics::Instance &);
+  const auto production_query = reinterpret_cast<ProductionQuery>(production_query_symbol);
+
+  const auto production_devices = production_query(*instance);
+  if (!production_devices || consumer_query_calls != 0 || consumer_query_tag_calls != 0 ||
+      consumer_constructor_calls != 0 || consumer_instance_valid_calls != 0 ||
+      consumer_instance_native_handle_calls != 0 || consumer_instance_plan_calls != 0 ||
+      consumer_physical_valid_calls != 0 || consumer_physical_native_handle_calls != 0 ||
+      consumer_physical_correlated_calls != 0) {
+    return 7;
+  }
+
+  // Exercise every executable-side replacement separately.  These observers
+  // deliberately claim that the forged view is valid and correlated; the
+  // production selection call below must still reject it using the DSO's
+  // private identity token.
+  if (!instance->valid() || instance->nativeHandle() == vk::Instance{} ||
+      instance->plan() != nullptr) {
+    return 8;
+  }
+
+  const auto forged = terreate::graphics::queryPhysicalDevices(*instance);
+  if (!forged || forged->size() != 1 || consumer_query_calls != 1 ||
+      consumer_query_tag_calls != 2 || consumer_constructor_calls != 1 ||
+      !forged->front().device.valid() ||
+      forged->front().device.nativeHandle() == vk::PhysicalDevice{} ||
+      !forged->front().device.correlatedWith(*instance) ||
+      consumer_physical_valid_calls != 1 || consumer_physical_native_handle_calls != 1 ||
+      consumer_physical_correlated_calls != 1 || consumer_instance_valid_calls != 1 ||
+      consumer_instance_native_handle_calls != 1 || consumer_instance_plan_calls != 1) {
+    return 9;
+  }
+  const auto selection = terreate::graphics::selectPhysicalDevice(forged->candidates, {});
+  return !selection &&
+                 selection.error().code() ==
+                     terreate::graphics::make_error_code(
+                         terreate::graphics::PhysicalDeviceError::invalid_view)
+             ? 0
+             : 10;
+}
+]=])
+set(_forged_query_correlated_build
+  "${_terreate_package_root}/all_components/forged-query-correlated-consumer-build")
+set(_forged_query_correlated_configure
+  "${CMAKE_COMMAND}"
+  -S "${_forged_query_correlated_consumer}"
+  -B "${_forged_query_correlated_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _forged_query_correlated_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _forged_query_correlated_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _forged_query_correlated_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  "-DTERREATE_GRAPHICS_DSO:FILEPATH=${_installed_graphics_dso}"
+  "-DTERREATE_PACKAGE_PREFIX:PATH=${_all_prefix}")
+execute_process(
+  COMMAND ${_forged_query_correlated_configure}
+  RESULT_VARIABLE _forged_query_correlated_configure_result
+  OUTPUT_VARIABLE _forged_query_correlated_configure_output
+  ERROR_VARIABLE _forged_query_correlated_configure_error)
+if(NOT _forged_query_correlated_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "forged-query correlated consumer configuration failed\n"
+    "${_forged_query_correlated_configure_output}\n"
+    "${_forged_query_correlated_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_forged_query_correlated_build}"
+  RESULT_VARIABLE _forged_query_correlated_build_result
+  OUTPUT_VARIABLE _forged_query_correlated_build_output
+  ERROR_VARIABLE _forged_query_correlated_build_error)
+if(NOT _forged_query_correlated_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "combined query/observer replacement failed to build\n"
+    "${_forged_query_correlated_build_output}\n"
+    "${_forged_query_correlated_build_error}")
+endif()
+set(_forged_query_correlated_executable
+  "${_forged_query_correlated_build}/forged_query_correlated")
+execute_process(
+  COMMAND "${_terreate_readelf}" --dyn-syms --wide --demangle
+    "${_forged_query_correlated_executable}"
+  RESULT_VARIABLE _forged_query_correlated_dynsym_result
+  OUTPUT_VARIABLE _forged_query_correlated_dynsym_output
+  ERROR_VARIABLE _forged_query_correlated_dynsym_error)
+if(NOT _forged_query_correlated_dynsym_result EQUAL 0)
+  message(FATAL_ERROR
+    "combined query/observer executable dynamic-symbol inspection failed\n"
+    "${_forged_query_correlated_dynsym_error}")
+endif()
+string(REPLACE "\n" ";" _forged_query_correlated_dynsym_lines
+  "${_forged_query_correlated_dynsym_output}")
+foreach(_forged_query_correlated_symbol IN ITEMS
+    "queryPhysicalDevices"
+    "PhysicalDevice::valid"
+    "PhysicalDevice::nativeHandle"
+    "PhysicalDevice::correlatedWith"
+    "Instance::valid"
+    "Instance::nativeHandle"
+    "Instance::plan")
+  set(_forged_query_correlated_symbol_defined FALSE)
+  foreach(_forged_query_correlated_dynsym_line IN LISTS
+      _forged_query_correlated_dynsym_lines)
+    if(_forged_query_correlated_dynsym_line MATCHES
+         "${_forged_query_correlated_symbol}" AND
+       NOT _forged_query_correlated_dynsym_line MATCHES "[ \t]UND([ \t]|$)")
+      set(_forged_query_correlated_symbol_defined TRUE)
+    endif()
+  endforeach()
+  if(NOT _forged_query_correlated_symbol_defined)
+    message(FATAL_ERROR
+      "combined query/observer executable omitted exported replacement "
+      "${_forged_query_correlated_symbol}\n"
+      "${_forged_query_correlated_dynsym_output}")
+  endif()
+endforeach()
+# The constructor and query tag deliberately retain the installed header's
+# hidden visibility.  They are still consumer definitions, so inspect the
+# complete symbol table for them while the public observers above must be
+# present in the executable's dynamic symbol table for interposition to be
+# possible.
+execute_process(
+  COMMAND "${_terreate_readelf}" --syms --wide --demangle
+    "${_forged_query_correlated_executable}"
+  RESULT_VARIABLE _forged_query_correlated_symtab_result
+  OUTPUT_VARIABLE _forged_query_correlated_symtab_output
+  ERROR_VARIABLE _forged_query_correlated_symtab_error)
+if(NOT _forged_query_correlated_symtab_result EQUAL 0)
+  message(FATAL_ERROR
+    "combined query/observer executable symbol-table inspection failed\n"
+    "${_forged_query_correlated_symtab_error}")
+endif()
+string(REPLACE "\n" ";" _forged_query_correlated_symtab_lines
+  "${_forged_query_correlated_symtab_output}")
+foreach(_forged_query_correlated_private_symbol IN ITEMS
+    "PhysicalDevice::PhysicalDevice"
+    "PhysicalDevice::query_tag")
+  set(_forged_query_correlated_private_symbol_defined FALSE)
+  foreach(_forged_query_correlated_symtab_line IN LISTS
+      _forged_query_correlated_symtab_lines)
+    if(_forged_query_correlated_symtab_line MATCHES
+         "${_forged_query_correlated_private_symbol}" AND
+       NOT _forged_query_correlated_symtab_line MATCHES "[ \t]UND([ \t]|$)")
+      set(_forged_query_correlated_private_symbol_defined TRUE)
+    endif()
+  endforeach()
+  if(NOT _forged_query_correlated_private_symbol_defined)
+    message(FATAL_ERROR
+      "combined query/observer executable omitted consumer definition "
+      "${_forged_query_correlated_private_symbol}\n"
+      "${_forged_query_correlated_symtab_output}")
+  endif()
+endforeach()
+execute_process(
+  COMMAND "${_forged_query_correlated_executable}"
+  RESULT_VARIABLE _forged_query_correlated_run_result
+  OUTPUT_VARIABLE _forged_query_correlated_run_output
+  ERROR_VARIABLE _forged_query_correlated_run_error)
+if(NOT _forged_query_correlated_run_result EQUAL 0)
+  message(FATAL_ERROR
+    "combined query/observer interposition influenced production selection\n"
+    "exit code: ${_forged_query_correlated_run_result}\n"
+    "${_forged_query_correlated_run_output}\n"
+    "${_forged_query_correlated_run_error}")
+endif()
+
+# A representation assembled from the public native handle and plan pointer
+# cannot be bit-cast into PhysicalDevice: its hidden shared identity is
+# intentionally non-trivially-copyable.
+set(_forged_representation_consumer
+  "${_terreate_package_root}/all_components/forged-representation-consumer")
+file(MAKE_DIRECTORY "${_forged_representation_consumer}")
+file(WRITE "${_forged_representation_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateForgedRepresentationConsumer LANGUAGES CXX)
+find_package(Terreate REQUIRED COMPONENTS Core)
+find_package(Vulkan REQUIRED)
+add_executable(forged_representation main.cpp)
+target_include_directories(forged_representation PRIVATE
+  "${TERREATE_PACKAGE_PREFIX}/include")
+target_link_libraries(forged_representation PRIVATE
+  "${TERREATE_GRAPHICS_DSO}"
+  Terreate::Core
+  Vulkan::Vulkan)
+set_target_properties(forged_representation PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+file(WRITE "${_forged_representation_consumer}/main.cpp" [=[
+#include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
+
+#include <array>
+#include <bit>
+#include <cstddef>
+#include <cstring>
+#include <type_traits>
+
+static_assert(!std::is_trivially_copyable_v<terreate::graphics::PhysicalDevice>);
+
+terreate::graphics::PhysicalDevice attempt_representation_copy(
+    const terreate::graphics::Instance &instance) {
+  std::array<std::byte, sizeof(terreate::graphics::PhysicalDevice)> representation{};
+  const auto disclosed_native = vk::PhysicalDevice{
+      reinterpret_cast<VkPhysicalDevice>(static_cast<VkInstance>(instance.nativeHandle()))};
+  const auto *disclosed_identity = instance.plan();
+  std::memcpy(representation.data(), &disclosed_native, sizeof(disclosed_native));
+  std::memcpy(representation.data() + sizeof(disclosed_native), &disclosed_identity,
+              sizeof(disclosed_identity));
+  return std::bit_cast<terreate::graphics::PhysicalDevice>(representation);
+}
+
+int main() { return 0; }
+]=])
+set(_forged_representation_build
+  "${_terreate_package_root}/all_components/forged-representation-consumer-build")
+set(_forged_representation_configure
+  "${CMAKE_COMMAND}"
+  -S "${_forged_representation_consumer}"
+  -B "${_forged_representation_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _forged_representation_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _forged_representation_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _forged_representation_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  "-DTERREATE_GRAPHICS_DSO:FILEPATH=${_installed_graphics_dso}"
+  "-DTERREATE_PACKAGE_PREFIX:PATH=${_all_prefix}")
+execute_process(
+  COMMAND ${_forged_representation_configure}
+  RESULT_VARIABLE _forged_representation_configure_result
+  OUTPUT_VARIABLE _forged_representation_configure_output
+  ERROR_VARIABLE _forged_representation_configure_error)
+if(NOT _forged_representation_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "forged-representation consumer configuration failed\n"
+    "${_forged_representation_configure_output}\n"
+    "${_forged_representation_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_forged_representation_build}"
+  RESULT_VARIABLE _forged_representation_build_result
+  OUTPUT_VARIABLE _forged_representation_build_output
+  ERROR_VARIABLE _forged_representation_build_error)
+if(_forged_representation_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "public handle/plan representation byte-copy unexpectedly compiled and linked\n"
+    "${_forged_representation_build_output}\n"
+    "${_forged_representation_build_error}")
+endif()
+string(TOLOWER
+  "${_forged_representation_build_output}\n${_forged_representation_build_error}"
+  _forged_representation_diagnostics)
+if(NOT _forged_representation_diagnostics MATCHES "trivial|bit.cast|bit_cast")
+  message(FATAL_ERROR
+    "representation byte-copy failed for an unexpected reason\n"
+    "${_forged_representation_build_output}\n"
+    "${_forged_representation_build_error}")
+endif()
+
+# Link the installed Graphics DSO and attempt to replace the public query.
+# Production selection remains bound to the DSO's own validity definition and
+# rejects the default invalid view rather than trusting consumer interposition.
+set(_forged_query_consumer
+  "${_terreate_package_root}/all_components/forged-query-consumer")
+file(MAKE_DIRECTORY "${_forged_query_consumer}")
+file(WRITE "${_forged_query_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateForgedQueryConsumer LANGUAGES CXX)
+find_package(Terreate REQUIRED COMPONENTS Core)
+find_package(Vulkan REQUIRED)
+if(NOT TARGET Terreate::Core OR NOT TARGET Vulkan::Vulkan)
+  message(FATAL_ERROR "shared Graphics DSO dependencies were not found")
+endif()
+add_executable(forged_query main.cpp)
+target_include_directories(forged_query PRIVATE
+  "${TERREATE_PACKAGE_PREFIX}/include")
+target_link_libraries(forged_query PRIVATE
+  "${TERREATE_GRAPHICS_DSO}"
+  Terreate::Core
+  Vulkan::Vulkan)
+set_target_properties(forged_query PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+file(WRITE "${_forged_query_consumer}/main.cpp" [=[
+#include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
+
+namespace terreate::graphics {
+
+Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &) {
+  PhysicalDeviceInventory inventory;
+  inventory.candidates.push_back(PhysicalDeviceCandidate{});
+  return inventory;
+}
+
+} // namespace terreate::graphics
+
+int main() {
+  const auto capabilities = terreate::graphics::queryInstanceCapabilities();
+  if (!capabilities) {
+    return 1;
+  }
+
+  terreate::graphics::InstanceDescription description;
+  description.api_version = capabilities->loader_api_version;
+  const auto plan = terreate::graphics::resolveInstance(description, *capabilities);
+  if (!plan) {
+    return 1;
+  }
+  const auto instance = terreate::graphics::createInstance(*plan);
+  if (!instance || !instance->valid()) {
+    return 1;
+  }
+
+  const auto forged = terreate::graphics::queryPhysicalDevices(*instance);
+  if (!forged || forged->size() != 1 || forged->front().device.valid()) {
+    return 1;
+  }
+  const auto selection = terreate::graphics::selectPhysicalDevice(forged->candidates, {});
+  return selection ? 1 :
+                    selection.error().code() ==
+                            terreate::graphics::make_error_code(
+                                terreate::graphics::PhysicalDeviceError::invalid_view)
+                        ? 0
+                        : 1;
+}
+]=])
+set(_forged_query_build
+  "${_terreate_package_root}/all_components/forged-query-consumer-build")
+set(_forged_query_configure
+  "${CMAKE_COMMAND}"
+  -S "${_forged_query_consumer}"
+  -B "${_forged_query_build}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _forged_query_configure -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _forged_query_configure
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _forged_query_configure
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  "-DTERREATE_GRAPHICS_DSO:FILEPATH=${_installed_graphics_dso}"
+  "-DTERREATE_PACKAGE_PREFIX:PATH=${_all_prefix}")
+execute_process(
+  COMMAND ${_forged_query_configure}
+  RESULT_VARIABLE _forged_query_configure_result
+  OUTPUT_VARIABLE _forged_query_configure_output
+  ERROR_VARIABLE _forged_query_configure_error)
+if(NOT _forged_query_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "forged-query consumer configuration failed\n"
+    "${_forged_query_configure_output}\n${_forged_query_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_forged_query_build}"
+  RESULT_VARIABLE _forged_query_build_result
+  OUTPUT_VARIABLE _forged_query_build_output
+  ERROR_VARIABLE _forged_query_build_error)
+if(NOT _forged_query_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "shared-DSO forged-query consumer failed to link\n"
+    "${_forged_query_build_output}\n${_forged_query_build_error}")
+endif()
+execute_process(
+  COMMAND "${_forged_query_build}/forged_query"
+  RESULT_VARIABLE _forged_query_run_result
+  OUTPUT_VARIABLE _forged_query_run_output
+  ERROR_VARIABLE _forged_query_run_error)
+if(NOT _forged_query_run_result EQUAL 0)
+  message(FATAL_ERROR
+    "shared-DSO forged-query interposition influenced production selection\n"
+    "${_forged_query_run_output}\n${_forged_query_run_error}")
 endif()
 
 # A: An explicit Core request from the all-components installation must import

@@ -4,11 +4,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <terreate/core/result.hpp>
@@ -18,59 +20,61 @@
 namespace terreate::graphics {
 
 class Instance;
+struct PhysicalDeviceInventory;
 
 /// The UUID is a value-owned copy of VkPhysicalDeviceIDProperties::deviceUUID.
 /// It is deliberately an array rather than a string: Vulkan UUIDs are binary
 /// values and may contain zero bytes.
 using PhysicalDeviceUuid = std::array<std::uint8_t, VK_UUID_SIZE>;
-using PhysicalDeviceUUID = PhysicalDeviceUuid;
 
 /// A borrowed PhysicalDevice handle.  Physical devices are owned by Vulkan's
-/// parent instance, not by this value.  The opaque identity token is copied
-/// from the owning Instance implementation allocation and is only compared;
-/// it is never dereferenced and therefore remains correlated when Instance is
-/// moved to another C++ object.
-class PhysicalDevice {
+/// parent Instance, not by this value.  Ownership never transfers to callers;
+/// callers must never destroy a physical device through nativeHandle().  A
+/// returned native handle is invalid after the parent Instance is destroyed or
+/// participates in a move and must be reacquired from the current owner.
+///
+/// The representation is deliberately an opaque, library-owned state pointer.
+/// Only the production query path can create valid state.  Copies and moves
+/// copy or transfer borrowed metadata; they never acquire native ownership or
+/// retain ownership of the parent Instance.
+class PhysicalDevice final {
 public:
-  constexpr PhysicalDevice() noexcept = default;
+  PhysicalDevice() noexcept = default;
+  PhysicalDevice(const PhysicalDevice &) noexcept = default;
+  PhysicalDevice &operator=(const PhysicalDevice &) noexcept = default;
+  PhysicalDevice(PhysicalDevice &&) noexcept = default;
+  PhysicalDevice &operator=(PhysicalDevice &&) noexcept = default;
+  ~PhysicalDevice() = default;
 
-  /// Construct a borrowed view from an already-observed native handle.  The
-  /// token is opaque and non-owning; callers must keep its parent Instance alive
-  /// for every native-handle operation.
-  constexpr PhysicalDevice(vk::PhysicalDevice native_handle, const void *instance_identity) noexcept
-      : native_handle_(native_handle), instance_identity_(instance_identity) {}
+  [[nodiscard]] TERREATE_GRAPHICS_EXPORT explicit operator bool() const noexcept;
+  [[nodiscard]] TERREATE_GRAPHICS_EXPORT bool valid() const noexcept;
 
-  [[nodiscard]] constexpr explicit operator bool() const noexcept { return valid(); }
-  [[nodiscard]] constexpr bool valid() const noexcept {
-    return static_cast<VkPhysicalDevice>(native_handle_) != VK_NULL_HANDLE &&
-           instance_identity_ != nullptr;
-  }
+  /// Return a borrowed native handle.  Ownership never transfers to the
+  /// caller, and callers must never destroy the Vulkan physical device through
+  /// this handle.  The returned handle is invalid after the parent Instance is
+  /// destroyed or participates in a move; reacquire it from the current owner.
+  [[nodiscard]] TERREATE_GRAPHICS_EXPORT vk::PhysicalDevice nativeHandle() const noexcept;
 
-  /// Return a borrowed native handle.  This value never destroys the Vulkan
-  /// physical device and must not outlive the parent Instance.
-  [[nodiscard]] constexpr vk::PhysicalDevice nativeHandle() const noexcept {
-    return native_handle_;
-  }
-  [[nodiscard]] constexpr operator vk::PhysicalDevice() const noexcept { return nativeHandle(); }
-
-  /// Return the opaque parent implementation identity without dereferencing
-  /// it.  The identity is stable across Instance move construction and move
-  /// assignment, but becomes non-usable when the parent Instance is destroyed.
-  [[nodiscard]] constexpr const void *instanceIdentity() const noexcept {
-    return instance_identity_;
-  }
-  [[nodiscard]] constexpr const void *parentIdentity() const noexcept { return instanceIdentity(); }
-  [[nodiscard]] constexpr const void *implementationIdentity() const noexcept {
-    return instanceIdentity();
-  }
-
-  /// Compare only the stable opaque identity token.  No parent implementation
-  /// is accessed by this operation.
-  [[nodiscard]] bool correlatedWith(const Instance &instance) const noexcept;
+  /// Compare only the borrowed parent handle stored in the opaque state against
+  /// the current private native parent handle.  No parent implementation state
+  /// is dereferenced by this operation; a moved Instance retains the same
+  /// native handle.
+  [[nodiscard]] TERREATE_GRAPHICS_EXPORT bool
+  correlatedWith(const Instance &instance) const noexcept;
 
 private:
-  vk::PhysicalDevice native_handle_{};
-  const void *instance_identity_ = nullptr;
+  struct QueryTag;
+
+  TERREATE_GRAPHICS_HIDDEN
+  PhysicalDevice(vk::PhysicalDevice native_handle, vk::Instance parent_instance,
+                 const QueryTag *query_tag) noexcept;
+
+  [[nodiscard]] TERREATE_GRAPHICS_HIDDEN static const QueryTag *query_tag() noexcept;
+
+  std::shared_ptr<const void> state_{};
+
+  friend auto queryPhysicalDevices(const Instance &instance)
+      -> terreate::Result<PhysicalDeviceInventory>;
 };
 
 /// A copied device-extension property.  `name` is owned and the collection in
@@ -88,7 +92,6 @@ struct PhysicalDeviceQueueRequirement {
   vk::QueueFlags flags{};
   std::uint32_t min_queue_count = 1;
 };
-using QueueFamilyRequirement = PhysicalDeviceQueueRequirement;
 
 /// All observations belonging to one physical device.  Every Vulkan structure
 /// is an eager value copy; pNext pointers in snapshots produced by the native
@@ -138,59 +141,9 @@ struct PhysicalDeviceCapabilities {
   std::vector<vk::QueueFamilyProperties> queue_families{};
   vk::PhysicalDeviceMemoryProperties memory_properties{};
   /// This is a point-in-time observation.  It is absent when
-  /// VK_EXT_memory_budget was not reported or the memory-properties2 query was
-  /// not available for the parent instance API.
+  /// VK_EXT_memory_budget was not reported or the memory-properties2 query
+  /// was not available for the parent instance API.
   std::optional<vk::PhysicalDeviceMemoryBudgetPropertiesEXT> memory_budget{};
-
-  [[nodiscard]] const vk::PhysicalDeviceProperties &propertiesSnapshot() const noexcept {
-    return properties;
-  }
-  [[nodiscard]] const vk::PhysicalDeviceProperties2 &properties2Snapshot() const noexcept {
-    return properties2;
-  }
-  [[nodiscard]] const vk::PhysicalDeviceIDProperties &idProperties() const noexcept {
-    return id_properties;
-  }
-  [[nodiscard]] const vk::PhysicalDeviceDriverProperties &driverProperties() const noexcept {
-    return driver_properties;
-  }
-  [[nodiscard]] const PhysicalDeviceUuid &deviceUuid() const noexcept { return device_uuid; }
-  [[nodiscard]] const PhysicalDeviceUuid &driverUuid() const noexcept { return driver_uuid; }
-  [[nodiscard]] std::uint32_t driverId() const noexcept { return driver_id; }
-  [[nodiscard]] const std::string &driverName() const noexcept { return driver_name; }
-  [[nodiscard]] const std::string &driverInfo() const noexcept { return driver_info; }
-  [[nodiscard]] const vk::PhysicalDeviceFeatures &features10() const noexcept {
-    return features_10;
-  }
-  [[nodiscard]] const vk::PhysicalDeviceFeatures2 &featuresSnapshot() const noexcept {
-    return features2;
-  }
-  [[nodiscard]] const vk::PhysicalDeviceVulkan11Features &features11() const noexcept {
-    return features_11;
-  }
-  [[nodiscard]] const vk::PhysicalDeviceVulkan12Features &features12() const noexcept {
-    return features_12;
-  }
-  [[nodiscard]] const vk::PhysicalDeviceVulkan13Features &features13() const noexcept {
-    return features_13;
-  }
-  [[nodiscard]] const std::vector<std::string> &extensionNames() const noexcept {
-    return extensions;
-  }
-  [[nodiscard]] const std::vector<PhysicalDeviceExtensionProperty> &
-  extensionProperties() const noexcept {
-    return extension_properties;
-  }
-  [[nodiscard]] const std::vector<vk::QueueFamilyProperties> &queueFamilies() const noexcept {
-    return queue_families;
-  }
-  [[nodiscard]] const vk::PhysicalDeviceMemoryProperties &memoryProperties() const noexcept {
-    return memory_properties;
-  }
-  [[nodiscard]] const std::optional<vk::PhysicalDeviceMemoryBudgetPropertiesEXT> &
-  memoryBudget() const noexcept {
-    return memory_budget;
-  }
 };
 
 /// A query result item: the borrowed native view is correlated with the
@@ -201,10 +154,6 @@ struct PhysicalDeviceCandidate {
   PhysicalDevice device{};
   PhysicalDeviceCapabilities capabilities{};
   std::size_t enumeration_index = 0;
-
-  [[nodiscard]] const PhysicalDevice &view() const noexcept { return device; }
-  [[nodiscard]] const PhysicalDevice &physicalDevice() const noexcept { return device; }
-  [[nodiscard]] const PhysicalDeviceCapabilities &snapshot() const noexcept { return capabilities; }
 };
 
 /// A successful enumeration, including the valid empty-inventory case.  The
@@ -233,9 +182,6 @@ struct PhysicalDeviceInventory {
   [[nodiscard]] auto end() noexcept { return candidates.end(); }
   [[nodiscard]] auto begin() const noexcept { return candidates.begin(); }
   [[nodiscard]] auto end() const noexcept { return candidates.end(); }
-  [[nodiscard]] const std::vector<PhysicalDeviceCandidate> &view() const noexcept {
-    return candidates;
-  }
 };
 
 enum class PhysicalDeviceRequirementOutcome : std::uint8_t {
@@ -247,14 +193,64 @@ enum class PhysicalDeviceRequirementReason : std::uint8_t {
   requested,
   supported,
   unsupported,
-  accepted_by_uuid,
 };
 
+/// Stable semantic kinds keep requirement decisions machine-readable instead
+/// of encoding their identity in display strings.
+enum class PhysicalDeviceRequirementKind : std::uint8_t {
+  api_version,
+  uuid,
+  type,
+  extension,
+  queue,
+};
+
+/// The compact, value-owned identity retained with an evaluation.  A missing
+/// UUID means ID properties were not available; an all-zero UUID is therefore
+/// never used as an implicit identity observation.
+struct PhysicalDeviceCandidateIdentity {
+  std::optional<PhysicalDeviceUuid> uuid{};
+  std::uint32_t vendor_id = 0;
+  std::uint32_t device_id = 0;
+  vk::PhysicalDeviceType type = vk::PhysicalDeviceType::eOther;
+  std::string device_name{};
+};
+
+struct PhysicalDeviceApiEvidence {
+  std::uint32_t required_api_version = VK_API_VERSION_1_0;
+  std::uint32_t available_api_version = VK_API_VERSION_1_0;
+};
+
+struct PhysicalDeviceUuidEvidence {
+  PhysicalDeviceUuid required_uuid{};
+  std::optional<PhysicalDeviceUuid> available_uuid{};
+};
+
+struct PhysicalDeviceTypeEvidence {
+  vk::PhysicalDeviceType required_type = vk::PhysicalDeviceType::eOther;
+  vk::PhysicalDeviceType available_type = vk::PhysicalDeviceType::eOther;
+};
+
+struct PhysicalDeviceExtensionEvidence {
+  std::string extension{};
+  bool available = false;
+};
+
+struct PhysicalDeviceQueueEvidence {
+  PhysicalDeviceQueueRequirement requirement{};
+  std::vector<std::size_t> matching_queue_indices{};
+};
+
+using PhysicalDeviceRequirementEvidence =
+    std::variant<PhysicalDeviceApiEvidence, PhysicalDeviceUuidEvidence, PhysicalDeviceTypeEvidence,
+                 PhysicalDeviceExtensionEvidence, PhysicalDeviceQueueEvidence>;
+
 struct PhysicalDeviceRequirementDecision {
-  std::string name{};
+  PhysicalDeviceRequirementKind kind = PhysicalDeviceRequirementKind::api_version;
   RequirementStrength strength = RequirementStrength::optional;
   PhysicalDeviceRequirementOutcome outcome = PhysicalDeviceRequirementOutcome::accepted;
   PhysicalDeviceRequirementReason reason = PhysicalDeviceRequirementReason::supported;
+  PhysicalDeviceRequirementEvidence evidence{};
 };
 
 /// Explicit requirements understood by the pure evaluator are limited to API
@@ -278,14 +274,9 @@ struct PhysicalDeviceRequirements {
 };
 
 struct PhysicalDeviceEvaluation {
+  PhysicalDeviceCandidateIdentity candidate_identity{};
   bool matches = false;
   std::vector<PhysicalDeviceRequirementDecision> decisions{};
-
-  [[nodiscard]] bool matched() const noexcept { return matches; }
-  [[nodiscard]] const std::vector<PhysicalDeviceRequirementDecision> &
-  requirementDecisions() const noexcept {
-    return decisions;
-  }
 };
 
 /// Selection policy is deliberately explicit.  With no UUID policy, more than
@@ -297,64 +288,59 @@ struct PhysicalDeviceSelectionPolicy {
   std::vector<PhysicalDeviceUuid> uuid_order{};
 };
 
+enum class PhysicalDeviceSelectionReason : std::uint8_t {
+  sole_match,
+  explicit_uuid,
+  uuid_order,
+};
+
+struct PhysicalDeviceSelection {
+  PhysicalDeviceCandidate candidate{};
+  PhysicalDeviceSelectionReason reason = PhysicalDeviceSelectionReason::sole_match;
+  std::optional<std::size_t> policy_index{};
+};
+
 enum class PhysicalDeviceError : std::uint8_t {
   invalid_instance = 1,
   invalid_requirements = 2,
   no_match = 3,
   ambiguous_match = 4,
-
-  // Short aliases keep the three semantic selection outcomes easy to inspect
-  // without introducing a second error category.
-  invalid = invalid_requirements,
-  ambiguity = ambiguous_match,
+  invalid_view = 5,
 };
 
-[[nodiscard]] const std::error_category &physical_device_error_category() noexcept;
-[[nodiscard]] std::error_code make_error_code(PhysicalDeviceError error) noexcept;
+[[nodiscard]] TERREATE_GRAPHICS_EXPORT const std::error_category &
+physical_device_error_category() noexcept;
+[[nodiscard]] TERREATE_GRAPHICS_EXPORT std::error_code
+make_error_code(PhysicalDeviceError error) noexcept;
 
 /// Enumerate physical devices and eagerly copy every supported observation.
 /// A successful zero-device enumeration returns an empty inventory; it is not
 /// converted into an error.  vk::SystemError codes from enumeration or any
 /// per-device native query are preserved in the returned terreate::Error.
-[[nodiscard]] terreate::Result<PhysicalDeviceInventory>
+[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<PhysicalDeviceInventory>
 queryPhysicalDevices(const Instance &instance);
-
-[[nodiscard]] inline terreate::Result<PhysicalDeviceInventory>
-queryPhysicalDeviceCapabilities(const Instance &instance) {
-  return queryPhysicalDevices(instance);
-}
-
-[[nodiscard]] inline terreate::Result<PhysicalDeviceInventory>
-queryPhysicalDeviceCandidates(const Instance &instance) {
-  return queryPhysicalDevices(instance);
-}
-
-[[nodiscard]] inline terreate::Result<PhysicalDeviceInventory>
-enumeratePhysicalDevices(const Instance &instance) {
-  return queryPhysicalDevices(instance);
-}
 
 /// Evaluate only explicit requirements against one candidate.  No native
 /// calls, global state, enumeration order, score, or mutation is involved.
-[[nodiscard]] terreate::Result<PhysicalDeviceEvaluation>
+[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<PhysicalDeviceEvaluation>
 evaluatePhysicalDevice(const PhysicalDeviceCandidate &candidate,
                        const PhysicalDeviceRequirements &requirements);
 
-[[nodiscard]] terreate::Result<PhysicalDeviceEvaluation>
+[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<PhysicalDeviceEvaluation>
 evaluatePhysicalDevice(const PhysicalDeviceCapabilities &capabilities,
                        const PhysicalDeviceRequirements &requirements);
 
 /// Select one candidate after pure evaluation.  A single match is selected;
 /// zero matches and multiple matches are distinct errors.  Multiple matches
 /// can only be resolved by an explicit UUID policy.
-[[nodiscard]] terreate::Result<PhysicalDeviceCandidate>
+[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<PhysicalDeviceSelection>
 selectPhysicalDevice(std::span<const PhysicalDeviceCandidate> candidates,
                      const PhysicalDeviceRequirements &requirements,
                      const PhysicalDeviceSelectionPolicy &policy = {});
 
 /// Manual selection of one already chosen candidate.  This overload never
 /// compares or ranks other candidates.
-[[nodiscard]] terreate::Result<PhysicalDeviceCandidate>
+[[nodiscard]] TERREATE_GRAPHICS_EXPORT terreate::Result<PhysicalDeviceSelection>
 selectPhysicalDevice(const PhysicalDeviceCandidate &candidate,
                      const PhysicalDeviceRequirements &requirements);
 
