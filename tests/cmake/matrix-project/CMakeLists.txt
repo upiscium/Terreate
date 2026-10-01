@@ -96,6 +96,7 @@ if(_component STREQUAL "Graphics")
   set(_consumer_source [=[
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
+#include <terreate/graphics/device.hpp>
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_raii.hpp>
@@ -104,6 +105,7 @@ if(_component STREQUAL "Graphics")
 
 static_assert(VK_API_VERSION_1_3 != 0);
 static_assert(sizeof(vk::raii::Context) > 0);
+static_assert(sizeof(vk::raii::Device) > 0);
 
 int main() {
   const auto capabilities = terreate::graphics::queryInstanceCapabilities();

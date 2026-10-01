@@ -17,6 +17,8 @@ namespace terreate::graphics {
 
 class Instance;
 class PhysicalDevice;
+class Device;
+class DevicePlan;
 struct PhysicalDeviceInventory;
 
 [[nodiscard]] terreate::Result<PhysicalDeviceInventory>
@@ -268,6 +270,8 @@ private:
   friend class PhysicalDevice;
   friend auto queryPhysicalDevices(const Instance &instance)
       -> terreate::Result<PhysicalDeviceInventory>;
+  friend class Device;
+  friend auto createDevice(const Instance &, const DevicePlan &) -> terreate::Result<Device>;
 };
 
 /// Query the loader's instance API version, instance extensions, and layers.
