@@ -133,12 +133,14 @@ if(NOT "${_terreate_vulkan_explicit_include_dir}" STREQUAL "")
 endif()
 
 # Graphics is intentionally independent of Platform.  Vulkan is the first
-# Graphics-owned native dependency; Window/GLFW, Surface, PhysicalDevice,
-# Device, and VMA remain outside this component.
+# Graphics-owned native dependency; Window/GLFW, Surface presentation, logical
+# Device creation, and VMA/resources remain outside this component.  The
+# PhysicalDevice API below is observation-only and owns no native device.
 add_library(terreate_graphics STATIC
   src/graphics.cpp
   src/graphics_diagnostics.cpp
-  src/instance.cpp)
+  src/instance.cpp
+  src/physical_device.cpp)
 target_include_directories(terreate_graphics
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -150,15 +152,6 @@ target_link_libraries(terreate_graphics
     Terreate::Core
     Vulkan::Vulkan)
 
-# Builds must compile against the explicitly pinned Vulkan-Hpp include directory
-# established by the root project (or its dev-shell environment when Graphics is
-# added as a source subdirectory).  Publish that path only to source consumers:
-# BUILD_INTERFACE keeps the development-only path out of installed exports,
-# while the public Vulkan target remains the installed consumer dependency.
-if(NOT "${_terreate_vulkan_hpp_include_dir}" STREQUAL "")
-  target_include_directories(terreate_graphics SYSTEM PUBLIC
-    "$<BUILD_INTERFACE:${_terreate_vulkan_hpp_include_dir}>")
-endif()
 terreate_configure_target(terreate_graphics)
 
 set_target_properties(terreate_graphics PROPERTIES
@@ -170,6 +163,16 @@ install(TARGETS terreate_graphics
   ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
   RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+# Builds must compile against the explicitly pinned Vulkan-Hpp include directory
+# established by the root project (or its dev-shell environment when Graphics is
+# added as a source subdirectory).  Publish that path only to source consumers:
+# BUILD_INTERFACE keeps the development-only path out of installed exports,
+# while the public Vulkan target remains the installed consumer dependency.
+if(NOT "${_terreate_vulkan_hpp_include_dir}" STREQUAL "")
+  target_include_directories(terreate_graphics SYSTEM PUBLIC
+    "$<BUILD_INTERFACE:${_terreate_vulkan_hpp_include_dir}>")
+endif()
 
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/"
   DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"

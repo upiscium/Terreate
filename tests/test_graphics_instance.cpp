@@ -175,15 +175,20 @@ void emit_runtime_marker(const char *marker) {
 }
 
 [[nodiscard]] bool test_vulkan_10_version_fallback() {
-  const auto fallback = graphics_detail::query_instance_api_version(nullptr);
-  const auto queried =
-      graphics_detail::query_instance_api_version(&fake_enumerate_instance_version);
+  try {
+    const auto fallback = graphics_detail::query_instance_api_version(nullptr);
+    const auto queried =
+        graphics_detail::query_instance_api_version(&fake_enumerate_instance_version);
 
-  bool passed = true;
-  passed &= check(fallback == VK_API_VERSION_1_0,
-                  "missing vkEnumerateInstanceVersion did not use Vulkan 1.0 fallback");
-  passed &= check(queried == VK_API_VERSION_1_2, "available version query was not called");
-  return passed;
+    bool passed = true;
+    passed &= check(fallback == VK_API_VERSION_1_0,
+                    "missing vkEnumerateInstanceVersion did not use Vulkan 1.0 fallback");
+    passed &= check(queried == VK_API_VERSION_1_2, "available version query was not called");
+    return passed;
+  } catch (const std::exception &error) {
+    std::fprintf(stderr, "unexpected Vulkan version query exception: %s\n", error.what());
+    return false;
+  }
 }
 
 [[nodiscard]] bool check_message_type_mapping(VkDebugUtilsMessageTypeFlagsEXT message_types,
@@ -732,6 +737,9 @@ struct Recorder {
     return false;
   }
   passed &= check(first_result->valid(), "created Instance was not valid");
+  // nativeHandle() is a borrowed observation only: ownership never transfers,
+  // and this test never destroys the Vulkan instance through the returned
+  // handle.
   passed &= check(first_result->nativeHandle() != vk::Instance{},
                   "created Instance did not expose a native handle");
   const bool plan_retained = first_result->plan() != nullptr;
@@ -787,6 +795,8 @@ struct Recorder {
     return false;
   }
 
+  // Reacquire the borrowed handle from the current owner after the move.  It
+  // is used only for observation and callback submission, never destruction.
   const auto raw_instance = static_cast<VkInstance>(assigned->nativeHandle());
   const auto submit = reinterpret_cast<PFN_vkSubmitDebugUtilsMessageEXT>(
       vkGetInstanceProcAddr(raw_instance, "vkSubmitDebugUtilsMessageEXT"));

@@ -1,6 +1,7 @@
 #include <terreate/graphics/instance.hpp>
 
 #include "graphics_diagnostics.hpp"
+#include "instance_impl.hpp"
 #include "instance_query.hpp"
 
 #include <algorithm>
@@ -9,7 +10,6 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -321,10 +321,6 @@ callback_severity(VkDebugUtilsMessageSeverityFlagBitsEXT severity) noexcept {
   }
 }
 
-struct CallbackState {
-  terreate::DiagnosticSinkView sink{};
-};
-
 VKAPI_ATTR VkBool32 VKAPI_CALL instance_debug_callback(
     vk::DebugUtilsMessageSeverityFlagBitsEXT message_severity,
     vk::DebugUtilsMessageTypeFlagsEXT message_types,
@@ -399,45 +395,6 @@ std::error_code make_error_code(InstanceError error) noexcept {
   return {static_cast<int>(error), instance_error_category()};
 }
 
-detail::NativeDiagnosticCategoryMappingResult
-detail::map_vulkan_message_types(VkDebugUtilsMessageTypeFlagsEXT message_types) noexcept {
-  constexpr VkDebugUtilsMessageTypeFlagsEXT general = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
-  constexpr VkDebugUtilsMessageTypeFlagsEXT validation =
-      VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
-  constexpr VkDebugUtilsMessageTypeFlagsEXT performance =
-      VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-
-  constexpr VkDebugUtilsMessageTypeFlagsEXT known_message_type_mask =
-#ifdef VK_EXT_device_address_binding
-      general | validation | performance |
-      VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
-#else
-      general | validation | performance;
-#endif
-
-  const auto native_message_types = static_cast<VkDebugUtilsMessageTypeFlagsEXT>(message_types);
-  if (native_message_types == 0 || (native_message_types & ~known_message_type_mask) != 0) {
-    return std::unexpected(NativeDiagnosticMessageTypeError::unsupported);
-  }
-
-  NativeDiagnosticCategoryMapping mapping{};
-  if ((native_message_types & general) != 0) {
-    mapping.categories[mapping.count++] = NativeDiagnosticCategory::general;
-  }
-  if ((native_message_types & validation) != 0) {
-    mapping.categories[mapping.count++] = NativeDiagnosticCategory::validation;
-  }
-  if ((native_message_types & performance) != 0) {
-    mapping.categories[mapping.count++] = NativeDiagnosticCategory::performance;
-  }
-#ifdef VK_EXT_device_address_binding
-  if ((native_message_types & VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT) != 0) {
-    mapping.categories[mapping.count++] = NativeDiagnosticCategory::device_address_binding;
-  }
-#endif
-  return mapping;
-}
-
 namespace {
 
 [[nodiscard]] std::unique_ptr<vk::raii::Context> make_instance_context() {
@@ -459,41 +416,6 @@ namespace {
 }
 
 } // namespace
-
-std::uint32_t
-detail::query_instance_api_version(detail::InstanceVersionFunction enumerate_instance_version) {
-  if (enumerate_instance_version == nullptr) {
-    return VK_API_VERSION_1_0;
-  }
-
-  std::uint32_t api_version = VK_API_VERSION_1_0;
-  const auto result = enumerate_instance_version(&api_version);
-  if (result != VK_SUCCESS) {
-    throw vk::SystemError{static_cast<vk::Result>(result)};
-  }
-  return api_version;
-}
-
-Result<std::unique_ptr<vk::raii::Context>>
-detail::create_instance_context(detail::InstanceContextFactory context_factory) {
-  try {
-    auto context = context_factory();
-    if (context == nullptr) {
-      return std::unexpected(semantic_error(InstanceError::loader_unavailable,
-                                            "create Vulkan instance",
-                                            "Vulkan loader context was not constructed"));
-    }
-    return context;
-  } catch (const vk::SystemError &error) {
-    return std::unexpected(terreate::Error{error.code(), "create Vulkan instance", error.what()});
-  } catch (const std::runtime_error &error) {
-    // vk::raii::Context reports an unavailable Vulkan loader as a
-    // std::runtime_error.  Keep this catch limited to context construction so
-    // later allocation, logic, and native operations retain their behavior.
-    return std::unexpected(
-        semantic_error(InstanceError::loader_unavailable, "create Vulkan instance", error.what()));
-  }
-}
 
 namespace {
 
@@ -526,39 +448,6 @@ query_instance_capabilities_from_context(const vk::raii::Context *context) {
 }
 
 } // namespace
-
-Result<InstanceCapabilities> detail::query_instance_capabilities_from_adapter(
-    detail::InstanceCapabilityAdapter capability_adapter, const vk::raii::Context *context) {
-  try {
-    return capability_adapter(context);
-  } catch (const vk::SystemError &error) {
-    return std::unexpected(
-        terreate::Error{error.code(), "query Vulkan instance capabilities", error.what()});
-  }
-}
-
-Result<InstanceCapabilities>
-detail::query_instance_capabilities(detail::InstanceContextFactory context_factory,
-                                    detail::InstanceCapabilityAdapter capability_adapter) {
-  std::unique_ptr<vk::raii::Context> context;
-  try {
-    context = context_factory();
-  } catch (const vk::SystemError &error) {
-    return std::unexpected(
-        terreate::Error{error.code(), "query Vulkan instance capabilities", error.what()});
-  } catch (const std::runtime_error &error) {
-    return std::unexpected(semantic_error(InstanceError::loader_unavailable,
-                                          "query Vulkan instance capabilities", error.what()));
-  }
-
-  if (context == nullptr) {
-    return std::unexpected(semantic_error(InstanceError::loader_unavailable,
-                                          "query Vulkan instance capabilities",
-                                          "Vulkan loader context was not constructed"));
-  }
-
-  return detail::query_instance_capabilities_from_adapter(capability_adapter, context.get());
-}
 
 Result<InstanceCapabilities> queryInstanceCapabilities() {
   return detail::query_instance_capabilities(&make_instance_context,
@@ -735,43 +624,29 @@ Result<InstancePlan> resolveInstance(const InstanceDescription &description,
                       debug_utils_derived};
 }
 
-struct Instance::Impl {
-  std::unique_ptr<vk::raii::Context> context;
-  std::unique_ptr<CallbackState> callback;
-  vk::raii::Instance instance;
-  std::optional<vk::raii::DebugUtilsMessengerEXT> messenger;
-  InstancePlan plan;
+Instance::Impl::Impl(std::unique_ptr<vk::raii::Context> context_owner,
+                     std::unique_ptr<CallbackState> callback_owner,
+                     vk::raii::Instance instance_owner,
+                     std::optional<vk::raii::DebugUtilsMessengerEXT> messenger_owner,
+                     const InstancePlan &instance_plan)
+    : context(std::move(context_owner)), callback(std::move(callback_owner)),
+      instance(std::move(instance_owner)), messenger(std::move(messenger_owner)),
+      plan(instance_plan) {}
 
-  Impl(std::unique_ptr<vk::raii::Context> context_owner,
-       std::unique_ptr<CallbackState> callback_owner, vk::raii::Instance instance_owner,
-       std::optional<vk::raii::DebugUtilsMessengerEXT> messenger_owner,
-       const InstancePlan &instance_plan)
-      : context(std::move(context_owner)), callback(std::move(callback_owner)),
-        instance(std::move(instance_owner)), messenger(std::move(messenger_owner)),
-        plan(instance_plan) {}
+Instance::Impl::~Impl() noexcept = default;
 
-  void destroy() noexcept {
-    // pUserData points into callback.  Destroy the messenger while that state
-    // is still alive, then destroy the child instance, callback state, and its
-    // parent Context.  This same path is used when unique_ptr move-assignment
-    // releases an existing implementation.
-    messenger.reset();
-    instance.clear();
-    callback.reset();
-    context.reset();
-  }
+Instance::Instance(std::unique_ptr<Impl> implementation) noexcept
+    : implementation_(std::move(implementation)) {}
 
-  ~Impl() noexcept { destroy(); }
-};
-
-Instance::Instance(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
-
-Instance::Instance(Instance &&other) noexcept : impl_(std::move(other.impl_)) {}
+Instance::Instance(Instance &&other) noexcept : implementation_(std::move(other.implementation_)) {}
 
 Instance &Instance::operator=(Instance &&other) noexcept {
-  if (this != &other) {
-    impl_ = std::move(other.impl_);
+  if (this == &other) {
+    return *this;
   }
+
+  implementation_ = std::move(other.implementation_);
+
   return *this;
 }
 
@@ -780,18 +655,19 @@ Instance::~Instance() = default;
 Instance::operator bool() const noexcept { return valid(); }
 
 bool Instance::valid() const noexcept {
-  return impl_ != nullptr && static_cast<bool>(*impl_->instance);
+  return implementation_ != nullptr &&
+         static_cast<VkInstance>(*implementation_->instance) != VK_NULL_HANDLE;
 }
 
 vk::Instance Instance::nativeHandle() const noexcept {
-  if (impl_ == nullptr) {
+  if (implementation_ == nullptr) {
     return {};
   }
-  return *impl_->instance;
+  return *implementation_->instance;
 }
 
 const InstancePlan *Instance::plan() const noexcept {
-  return impl_ == nullptr ? nullptr : &impl_->plan;
+  return implementation_ == nullptr ? nullptr : &implementation_->plan;
 }
 
 Result<Instance> createInstance(const InstancePlan &plan, terreate::DiagnosticSinkView sink) {

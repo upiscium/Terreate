@@ -11,12 +11,22 @@ endif()
 get_filename_component(_terreate_source_dir "${TERREATE_SOURCE_DIR}" ABSOLUTE)
 get_filename_component(_terreate_package_binary_root
   "${TERREATE_PACKAGE_BINARY_ROOT}" ABSOLUTE)
-# The caller supplies a parent for generated state.  Recreate only this fixed
-# child so an accidental non-empty parent cannot be deleted.
-set(_terreate_package_root
-  "${_terreate_package_binary_root}/generated")
+set(_terreate_package_root "${_terreate_package_binary_root}/generated")
 file(REMOVE_RECURSE "${_terreate_package_root}")
 file(MAKE_DIRECTORY "${_terreate_package_root}")
+
+function(terreate_append_generator_and_compiler command_variable)
+  if(DEFINED TERREATE_CMAKE_GENERATOR AND
+     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+    list(APPEND ${command_variable} -G "${TERREATE_CMAKE_GENERATOR}")
+  endif()
+  if(DEFINED TERREATE_CXX_COMPILER AND
+     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+    list(APPEND ${command_variable}
+      "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+  endif()
+  set(${command_variable} "${${command_variable}}" PARENT_SCOPE)
+endfunction()
 
 function(terreate_assert_install_boundary prefix name)
   foreach(_public_header IN ITEMS
@@ -29,8 +39,7 @@ function(terreate_assert_install_boundary prefix name)
     endif()
   endforeach()
 
-  file(GLOB_RECURSE _installed_paths LIST_DIRECTORIES true
-    "${prefix}/*")
+  file(GLOB_RECURSE _installed_paths LIST_DIRECTORIES true "${prefix}/*")
   foreach(_installed_path IN LISTS _installed_paths)
     file(RELATIVE_PATH _installed_relative "${prefix}" "${_installed_path}")
     if("${_installed_relative}" MATCHES "(^|/)(private|detail)(/|$)")
@@ -40,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-          "^include/terreate/(core/(diagnostics|error|result)|graphics/instance)\\.hpp$")
+           "^include/terreate/(core/(diagnostics|error|result)|graphics/(instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -75,15 +84,7 @@ function(terreate_package_configure_and_install name platform graphics)
     "${CMAKE_COMMAND}"
     -S "${_terreate_source_dir}/tests/cmake/package-project"
     -B "${_fixture_build}")
-  if(DEFINED TERREATE_CMAKE_GENERATOR AND
-     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-    list(APPEND _configure_command -G "${TERREATE_CMAKE_GENERATOR}")
-  endif()
-  if(DEFINED TERREATE_CXX_COMPILER AND
-     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-    list(APPEND _configure_command
-      "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-  endif()
+  terreate_append_generator_and_compiler(_configure_command)
   list(APPEND _configure_command
     "-DTERREATE_SOURCE_DIR:PATH=${_terreate_source_dir}"
     "-DCMAKE_INSTALL_PREFIX:PATH=${_prefix}"
@@ -125,2013 +126,620 @@ function(terreate_package_configure_and_install name platform graphics)
   endif()
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
-
   set(${name}_PREFIX "${_prefix}" PARENT_SCOPE)
   set(${name}_BUILD_CONFIG_DIR
     "${_fixture_build}/terreate" PARENT_SCOPE)
 endfunction()
 
+function(terreate_build_consumer name prefix component source)
+  set(_consumer "${_terreate_package_root}/${name}/consumer")
+  set(_build "${_terreate_package_root}/${name}/consumer-build")
+  file(REMOVE_RECURSE "${_consumer}" "${_build}")
+  file(MAKE_DIRECTORY "${_consumer}")
+  file(WRITE "${_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreatePackageConsumer LANGUAGES CXX)
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
+set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)
+find_package(Terreate REQUIRED COMPONENTS ]=] "${component}" [=[)
+add_executable(package_consumer main.cpp)
+target_link_libraries(package_consumer PRIVATE Terreate::]=] "${component}" [=[)
+set_target_properties(package_consumer PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+  file(WRITE "${_consumer}/main.cpp" "${source}")
+
+  set(_configure_command
+    "${CMAKE_COMMAND}" -S "${_consumer}" -B "${_build}"
+    "-DCMAKE_PREFIX_PATH:PATH=${prefix}")
+  terreate_append_generator_and_compiler(_configure_command)
+  execute_process(
+    COMMAND ${_configure_command}
+    RESULT_VARIABLE _configure_result
+    OUTPUT_VARIABLE _configure_output
+    ERROR_VARIABLE _configure_error)
+  if(NOT _configure_result EQUAL 0)
+    message(FATAL_ERROR
+      "${name} consumer configuration failed\n"
+      "${_configure_output}\n${_configure_error}")
+  endif()
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${_build}"
+    RESULT_VARIABLE _build_result
+    OUTPUT_VARIABLE _build_output
+    ERROR_VARIABLE _build_error)
+  if(NOT _build_result EQUAL 0)
+    message(FATAL_ERROR
+      "${name} consumer build failed\n"
+      "${_build_output}\n${_build_error}")
+  endif()
+  execute_process(
+    COMMAND "${_build}/package_consumer"
+    RESULT_VARIABLE _run_result
+    OUTPUT_VARIABLE _run_output
+    ERROR_VARIABLE _run_error)
+  if(NOT _run_result EQUAL 0)
+    message(FATAL_ERROR
+      "${name} consumer failed at runtime\n"
+      "${_run_output}\n${_run_error}")
+  endif()
+endfunction()
+
+function(terreate_expect_compile_failure name source diagnostics)
+  set(_consumer "${_terreate_package_root}/all_components/${name}-consumer")
+  set(_build "${_terreate_package_root}/all_components/${name}-consumer-build")
+  file(REMOVE_RECURSE "${_consumer}" "${_build}")
+  file(MAKE_DIRECTORY "${_consumer}")
+  file(WRITE "${_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateForgeRegression LANGUAGES CXX)
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
+set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)
+find_package(Terreate REQUIRED COMPONENTS Graphics)
+add_executable(forge_regression main.cpp)
+target_link_libraries(forge_regression PRIVATE Terreate::Graphics)
+set_target_properties(forge_regression PROPERTIES
+  CXX_STANDARD 23
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+]=])
+  file(WRITE "${_consumer}/main.cpp" "${source}")
+  set(_configure_command
+    "${CMAKE_COMMAND}" -S "${_consumer}" -B "${_build}"
+    "-DCMAKE_PREFIX_PATH:PATH=${all_components_PREFIX}")
+  terreate_append_generator_and_compiler(_configure_command)
+  execute_process(
+    COMMAND ${_configure_command}
+    RESULT_VARIABLE _configure_result
+    OUTPUT_VARIABLE _configure_output
+    ERROR_VARIABLE _configure_error)
+  if(NOT _configure_result EQUAL 0)
+    message(FATAL_ERROR
+      "${name} forge regression configuration failed\n"
+      "${_configure_output}\n${_configure_error}")
+  endif()
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${_build}"
+    RESULT_VARIABLE _build_result
+    OUTPUT_VARIABLE _build_output
+    ERROR_VARIABLE _build_error)
+  if(_build_result EQUAL 0)
+    message(FATAL_ERROR
+      "${name} forge regression unexpectedly compiled\n"
+      "${_build_output}")
+  endif()
+  string(TOLOWER "${_build_output}\n${_build_error}" _diagnostics)
+  if(NOT _diagnostics MATCHES "${diagnostics}")
+    message(FATAL_ERROR
+      "${name} forge regression failed for an unexpected reason\n"
+      "${_build_output}\n${_build_error}")
+  endif()
+endfunction()
+
 terreate_package_configure_and_install(all_components ON ON)
 set(_all_prefix "${all_components_PREFIX}")
+
 if(NOT DEFINED ENV{VULKAN_HEADERS_INCLUDE} OR
    "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "")
   message(FATAL_ERROR
-    "build-tree package regression requires an explicit Vulkan-Hpp root")
+    "static Graphics package regression requires an explicit Vulkan-Hpp root")
 endif()
-set(_build_config_file
-  "${all_components_BUILD_CONFIG_DIR}/TerreateConfig.cmake")
-if(NOT EXISTS "${_build_config_file}")
-  message(FATAL_ERROR "build-tree package config is missing")
-endif()
-file(READ "${_build_config_file}" _build_config_contents)
-string(FIND "${_build_config_contents}" "$ENV{VULKAN_HEADERS_INCLUDE}"
-  _build_hpp_root_position)
-if(_build_hpp_root_position EQUAL -1)
+
+file(GLOB_RECURSE _installed_graphics_archives
+  "${_all_prefix}/*/libterreate_graphics.a")
+list(LENGTH _installed_graphics_archives _installed_graphics_archive_count)
+if(NOT _installed_graphics_archive_count EQUAL 1)
   message(FATAL_ERROR
-    "build-tree package config omitted the explicit Vulkan-Hpp root")
+    "installed package did not provide exactly one Graphics archive: "
+    "${_installed_graphics_archives}")
 endif()
+file(GLOB_RECURSE _installed_graphics_shared
+  "${_all_prefix}/*/libterreate_graphics.so*"
+  "${_all_prefix}/*/libterreate_graphics.dylib"
+  "${_all_prefix}/*/terreate_graphics.dll")
+if(_installed_graphics_shared)
+  message(FATAL_ERROR
+    "installed static Graphics package exposed a shared artifact: "
+    "${_installed_graphics_shared}")
+endif()
+
+set(_installed_config_candidates)
 file(GLOB_RECURSE _installed_config_candidates
   "${_all_prefix}/*/TerreateConfig.cmake")
 if(NOT _installed_config_candidates)
   message(FATAL_ERROR "installed package config is missing")
 endif()
-list(GET _installed_config_candidates 0 _installed_config_file)
-file(READ "${_installed_config_file}" _installed_config_contents)
-string(FIND "${_installed_config_contents}" "$ENV{VULKAN_HEADERS_INCLUDE}"
-  _installed_hpp_root_position)
-if(NOT _installed_hpp_root_position EQUAL -1)
+list(GET _installed_config_candidates 0 _installed_config)
+file(READ "${_installed_config}" _installed_config_contents)
+if(_installed_config_contents MATCHES "VULKAN_HEADERS_INCLUDE" OR
+   _installed_config_contents MATCHES "${_terreate_source_dir}")
   message(FATAL_ERROR
-    "installed package config leaked the build-tree Vulkan-Hpp root")
+    "installed package config leaked a build-only Vulkan/source path")
 endif()
-string(FIND "${_installed_config_contents}" "${_terreate_source_dir}"
-  _installed_source_root_position)
-if(NOT _installed_source_root_position EQUAL -1)
-  message(FATAL_ERROR
-    "installed package config leaked the Terreate source root")
+file(GLOB_RECURSE _installed_graphics_targets
+  "${_all_prefix}/*/TerreateGraphicsTargets.cmake")
+if(NOT _installed_graphics_targets)
+  message(FATAL_ERROR "installed Graphics target export is missing")
 endif()
-if(NOT EXISTS "${_all_prefix}/include/terreate/graphics/instance.hpp")
-  message(FATAL_ERROR "Graphics install is missing its public instance header")
-endif()
-# C: Preserve the explicit Core+Graphics isolation contract: Core and Graphics
-# are imported, Platform is absent, and Vulkan is resolved for Graphics.
-set(_all_consumer "${_terreate_package_root}/all_components/consumer")
-file(MAKE_DIRECTORY "${_all_consumer}")
-file(WRITE "${_all_consumer}/CMakeLists.txt" [=[
-cmake_minimum_required(VERSION 3.28)
-project(TerreatePackageConsumer LANGUAGES CXX)
-find_package(Terreate REQUIRED COMPONENTS Core Graphics OPTIONAL_COMPONENTS Future)
-if(NOT DEFINED Terreate_Future_FOUND OR Terreate_Future_FOUND)
-  message(FATAL_ERROR
-    "optional unknown component did not set Terreate_Future_FOUND=FALSE")
-endif()
-foreach(_component IN ITEMS Core Graphics)
-  if(NOT TARGET Terreate::${_component})
+list(GET _installed_graphics_targets 0 _installed_graphics_target)
+file(READ "${_installed_graphics_target}" _installed_graphics_target_contents)
+foreach(_forbidden_graphics_marker IN ITEMS
+    "SHARED_LIBRARY" ".so" "Bsymbolic" "z,defs" "exclude-libs")
+  string(FIND "${_installed_graphics_target_contents}"
+    "${_forbidden_graphics_marker}" _forbidden_graphics_offset)
+  if(NOT _forbidden_graphics_offset EQUAL -1)
     message(FATAL_ERROR
-      "explicit Core+Graphics package request did not import Terreate::${_component}")
+      "installed Graphics export retained a DSO-only selection boundary: "
+      "${_forbidden_graphics_marker}")
   endif()
 endforeach()
-if(TARGET Terreate::Platform)
-  message(FATAL_ERROR
-    "explicit Core+Graphics package request imported unrequested Platform")
-endif()
-if(NOT Vulkan_FOUND OR NOT TARGET Vulkan::Vulkan)
-  message(FATAL_ERROR
-    "all-components installed package did not discover Vulkan::Vulkan")
-endif()
-get_target_property(_installed_graphics_links Terreate::Graphics
-  INTERFACE_LINK_LIBRARIES)
-if(NOT "${_installed_graphics_links}" MATCHES "Core")
-  message(FATAL_ERROR
-    "installed Graphics target lost its public Core dependency: "
-    "${_installed_graphics_links}")
-endif()
-if(NOT "${_installed_graphics_links}" MATCHES "Vulkan::Vulkan")
-  message(FATAL_ERROR
-    "installed Graphics target lost its public Vulkan dependency: "
-    "${_installed_graphics_links}")
-endif()
-if("${_installed_graphics_links}" MATCHES "Platform")
-  message(FATAL_ERROR
-    "installed Graphics target acquired an invalid Platform dependency: "
-    "${_installed_graphics_links}")
-endif()
-if(NOT DEFINED Terreate_NOT_FOUND_MESSAGE OR
-   NOT "${Terreate_NOT_FOUND_MESSAGE}" MATCHES
-      "does not provide requested component")
-  message(FATAL_ERROR
-    "optional unknown component did not set Terreate_NOT_FOUND_MESSAGE")
-endif()
-add_executable(core_package_consumer core_main.cpp)
-target_link_libraries(core_package_consumer PRIVATE Terreate::Core)
-add_executable(package_consumer main.cpp)
-target_link_libraries(package_consumer PRIVATE Terreate::Graphics)
-set_target_properties(core_package_consumer package_consumer PROPERTIES
-  CXX_STANDARD 23
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF)
-]=])
-file(WRITE "${_all_consumer}/core_main.cpp" [=[
-#include <terreate/core/diagnostics.hpp>
-#include <terreate/core/result.hpp>
 
-#include <system_error>
-
-int main() {
-  terreate::Result<int> result = 7;
-  terreate::DiagnosticEvent event{
-      .categories = {"package-specific"},
-      .message = "package smoke"};
-  terreate::DiagnosticSinkView sink;
-  sink.emit(event);
-  return terreate::unwrap(result) == 7 && event.message == "package smoke" &&
-                 event.categories.size() == 1 && event.categories.front() == "package-specific"
-             ? 0
-             : 1;
-}
-]=])
-file(WRITE "${_all_consumer}/main.cpp" [=[
+set(_graphics_consumer_source [=[
 #include <terreate/graphics/instance.hpp>
-#include <vulkan/vulkan.hpp>
-#include <vulkan/vulkan_core.h>
+#include <terreate/graphics/physical_device.hpp>
 #include <vulkan/vulkan_raii.hpp>
 
-#include <cstdint>
+#include <cstddef>
+#include <type_traits>
+#include <utility>
 
-static_assert(VK_API_VERSION_1_3 != 0);
-static_assert(sizeof(vk::raii::Context) > 0);
+static_assert(std::is_copy_constructible_v<terreate::graphics::PhysicalDevice>);
+static_assert(std::is_trivially_copyable_v<terreate::graphics::PhysicalDevice>);
+static_assert(sizeof(terreate::graphics::PhysicalDevice) <= 2 * sizeof(void *));
+static_assert(!std::is_constructible_v<terreate::graphics::PhysicalDevice,
+                                      vk::PhysicalDevice, const void *>);
+static_assert(!std::is_convertible_v<terreate::graphics::PhysicalDevice,
+                                     vk::PhysicalDevice>);
+static_assert(std::is_copy_constructible_v<terreate::graphics::PhysicalDeviceCandidate>);
+static_assert(std::is_move_constructible_v<terreate::graphics::PhysicalDeviceCandidate>);
+static_assert(!std::is_copy_assignable_v<terreate::graphics::PhysicalDeviceCandidate>);
+static_assert(!std::is_move_assignable_v<terreate::graphics::PhysicalDeviceCandidate>);
+static_assert(!std::is_default_constructible_v<terreate::graphics::PhysicalDeviceCandidate>);
+static_assert(!std::is_constructible_v<terreate::graphics::PhysicalDeviceCandidate,
+                                       terreate::graphics::PhysicalDevice,
+                                       terreate::graphics::PhysicalDeviceCapabilities,
+                                       std::size_t>);
+static_assert(!std::is_constructible_v<terreate::graphics::PhysicalDeviceCandidate,
+                                       vk::PhysicalDevice,
+                                       terreate::graphics::PhysicalDeviceCapabilities,
+                                       std::size_t>);
+static_assert(
+    std::is_same_v<decltype(std::declval<terreate::graphics::PhysicalDeviceCandidate &>().device()),
+                   const terreate::graphics::PhysicalDevice &>);
+static_assert(std::is_same_v<
+              decltype(std::declval<terreate::graphics::PhysicalDeviceCandidate &>().capabilities()),
+              const terreate::graphics::PhysicalDeviceCapabilities &>);
+static_assert(!std::is_assignable_v<
+              decltype(std::declval<terreate::graphics::PhysicalDeviceCandidate &>().device()),
+              terreate::graphics::PhysicalDevice>);
+static_assert(!std::is_assignable_v<
+              decltype(std::declval<terreate::graphics::PhysicalDeviceCandidate &>().capabilities()),
+              terreate::graphics::PhysicalDeviceCapabilities>);
 
 int main() {
   const auto capabilities = terreate::graphics::queryInstanceCapabilities();
   if (!capabilities) {
     return 1;
   }
-
   terreate::graphics::InstanceDescription description;
   description.api_version = capabilities->loader_api_version;
   const auto plan = terreate::graphics::resolveInstance(description, *capabilities);
   if (!plan) {
-    return 1;
+    return 2;
+  }
+  const auto instance = terreate::graphics::createInstance(*plan);
+  if (!instance || !instance->valid()) {
+    return 3;
+  }
+  const auto devices = terreate::graphics::queryPhysicalDevices(*instance);
+  if (!devices || devices->empty()) {
+    return devices.has_value() ? 5 : 4;
   }
 
-  const auto instance = terreate::graphics::createInstance(*plan);
-  return instance && instance->valid() ? 0 : 1;
+  const auto &candidate = devices->front();
+  if (!candidate.device().valid() || !candidate.device().correlatedWith(*instance)) {
+    return 6;
+  }
+  const auto copied_candidate = candidate;
+  if (copied_candidate.enumerationIndex() != candidate.enumerationIndex() ||
+      copied_candidate.capabilities().properties.deviceName[0] == '\0') {
+    return 7;
+  }
+  const auto selection = terreate::graphics::selectPhysicalDevice(
+      candidate, terreate::graphics::PhysicalDeviceRequirements{});
+  return selection ? 0 : 8;
 }
 ]=])
+terreate_build_consumer(all_components_runtime "${_all_prefix}" Graphics
+  "${_graphics_consumer_source}")
 
-set(_all_consumer_build "${_terreate_package_root}/all_components/consumer-build")
-set(_consumer_configure
-  "${CMAKE_COMMAND}"
-  -S "${_all_consumer}"
-  -B "${_all_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _consumer_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _consumer_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _consumer_configure "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}")
-execute_process(
-  COMMAND ${_consumer_configure}
-  RESULT_VARIABLE _consumer_configure_result
-  OUTPUT_VARIABLE _consumer_configure_output
-  ERROR_VARIABLE _consumer_configure_error)
-if(NOT _consumer_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed package consumer configuration failed\n"
-    "${_consumer_configure_output}\n${_consumer_configure_error}")
-endif()
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${_all_consumer_build}"
-  RESULT_VARIABLE _consumer_build_result
-  OUTPUT_VARIABLE _consumer_build_output
-  ERROR_VARIABLE _consumer_build_error)
-if(NOT _consumer_build_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed package consumer build failed\n"
-    "${_consumer_build_output}\n${_consumer_build_error}")
-endif()
-execute_process(
-  COMMAND "${_all_consumer_build}/package_consumer"
-  RESULT_VARIABLE _consumer_run_result
-  OUTPUT_VARIABLE _consumer_run_output
-  ERROR_VARIABLE _consumer_run_error)
-if(NOT _consumer_run_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed package consumer runtime failed\n"
-    "${_consumer_run_output}\n${_consumer_run_error}")
-endif()
+set(_candidate_assignment_source [=[
+#include <terreate/graphics/physical_device.hpp>
 
-# A: An explicit Core request from the all-components installation must import
-# only Core, even when Vulkan discovery is deliberately unavailable.
-set(_all_core_consumer
-  "${_terreate_package_root}/all_components/core-consumer")
-file(MAKE_DIRECTORY "${_all_core_consumer}")
-file(WRITE "${_all_core_consumer}/CMakeLists.txt" [=[
-cmake_minimum_required(VERSION 3.28)
-project(TerreateAllComponentsCoreConsumer LANGUAGES CXX)
-set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
-find_package(Terreate REQUIRED COMPONENTS Core)
-if(NOT Terreate_FOUND OR NOT Terreate_Core_FOUND OR
-   NOT TARGET Terreate::Core)
-  message(FATAL_ERROR
-    "all-components Core request did not import Terreate::Core")
-endif()
-if(TARGET Terreate::Platform OR TARGET Terreate::Graphics OR
-   TARGET Vulkan::Vulkan OR Vulkan_FOUND)
-  message(FATAL_ERROR
-    "all-components Core request imported an optional or Vulkan target")
-endif()
-get_target_property(_core_links Terreate::Core INTERFACE_LINK_LIBRARIES)
-if("${_core_links}" MATCHES "Platform|Graphics|Vulkan")
-  message(FATAL_ERROR
-    "all-components Core target has an invalid dependency closure: "
-    "${_core_links}")
-endif()
-add_executable(all_components_core_consumer main.cpp)
-target_link_libraries(all_components_core_consumer PRIVATE Terreate::Core)
-set_target_properties(all_components_core_consumer PROPERTIES
-  CXX_STANDARD 23
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF)
-]=])
-file(WRITE "${_all_core_consumer}/main.cpp" [=[
-#include <terreate/core/result.hpp>
-
-int main() {
-  terreate::Result<int> result = 47;
-  return terreate::unwrap(result) == 47 ? 0 : 1;
+void reject_candidate_assignment(terreate::graphics::PhysicalDeviceCandidate &target,
+                                 const terreate::graphics::PhysicalDeviceCandidate &source) {
+  target = source;
 }
-]=])
 
-set(_all_core_consumer_build
-  "${_terreate_package_root}/all_components/core-consumer-build")
-file(REMOVE_RECURSE "${_all_core_consumer_build}")
-set(_all_core_configure
-  "${CMAKE_COMMAND}"
-  -S "${_all_core_consumer}"
-  -B "${_all_core_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _all_core_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _all_core_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _all_core_configure
-  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-  -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE)
-execute_process(
-  COMMAND ${_all_core_configure}
-  RESULT_VARIABLE _all_core_configure_result
-  OUTPUT_VARIABLE _all_core_configure_output
-  ERROR_VARIABLE _all_core_configure_error)
-if(NOT _all_core_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "all-components Core consumer configuration failed\n"
-    "${_all_core_configure_output}\n${_all_core_configure_error}")
-endif()
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${_all_core_consumer_build}"
-  RESULT_VARIABLE _all_core_build_result
-  OUTPUT_VARIABLE _all_core_build_output
-  ERROR_VARIABLE _all_core_build_error)
-if(NOT _all_core_build_result EQUAL 0)
-  message(FATAL_ERROR
-    "all-components Core consumer build failed\n"
-    "${_all_core_build_output}\n${_all_core_build_error}")
-endif()
-
-# B: An explicit Platform request from the all-components installation must
-# import Core and Platform, but neither Graphics nor Vulkan.
-set(_all_platform_consumer
-  "${_terreate_package_root}/all_components/platform-consumer")
-file(MAKE_DIRECTORY "${_all_platform_consumer}")
-file(WRITE "${_all_platform_consumer}/CMakeLists.txt" [=[
-cmake_minimum_required(VERSION 3.28)
-project(TerreateAllComponentsPlatformConsumer LANGUAGES CXX)
-set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
-find_package(Terreate REQUIRED COMPONENTS Platform)
-if(NOT Terreate_FOUND OR NOT Terreate_Core_FOUND OR
-   NOT Terreate_Platform_FOUND OR NOT TARGET Terreate::Core OR
-   NOT TARGET Terreate::Platform)
-  message(FATAL_ERROR
-    "all-components Platform request did not import Core and Platform")
-endif()
-if(TARGET Terreate::Graphics OR TARGET Vulkan::Vulkan OR Vulkan_FOUND)
-  message(FATAL_ERROR
-    "all-components Platform request imported Graphics or Vulkan")
-endif()
-get_target_property(_platform_links Terreate::Platform
-  INTERFACE_LINK_LIBRARIES)
-if(NOT "${_platform_links}" MATCHES "Core" OR
-   "${_platform_links}" MATCHES "Graphics|Vulkan")
-  message(FATAL_ERROR
-    "all-components Platform target has an invalid dependency closure: "
-    "${_platform_links}")
-endif()
-add_executable(all_components_platform_consumer main.cpp)
-target_link_libraries(all_components_platform_consumer PRIVATE
-  Terreate::Platform)
-set_target_properties(all_components_platform_consumer PROPERTIES
-  CXX_STANDARD 23
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF)
-]=])
-file(WRITE "${_all_platform_consumer}/main.cpp" [=[
 int main() { return 0; }
 ]=])
+terreate_expect_compile_failure(candidate_assignment "${_candidate_assignment_source}"
+  "deleted|implicitly-deleted|read-only|const")
 
-set(_all_platform_consumer_build
-  "${_terreate_package_root}/all_components/platform-consumer-build")
-file(REMOVE_RECURSE "${_all_platform_consumer_build}")
-set(_all_platform_configure
-  "${CMAKE_COMMAND}"
-  -S "${_all_platform_consumer}"
-  -B "${_all_platform_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _all_platform_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _all_platform_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _all_platform_configure
-  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-  -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE)
-execute_process(
-  COMMAND ${_all_platform_configure}
-  RESULT_VARIABLE _all_platform_configure_result
-  OUTPUT_VARIABLE _all_platform_configure_output
-  ERROR_VARIABLE _all_platform_configure_error)
-if(NOT _all_platform_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "all-components Platform consumer configuration failed\n"
-    "${_all_platform_configure_output}\n${_all_platform_configure_error}")
-endif()
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${_all_platform_consumer_build}"
-  RESULT_VARIABLE _all_platform_build_result
-  OUTPUT_VARIABLE _all_platform_build_output
-  ERROR_VARIABLE _all_platform_build_error)
-if(NOT _all_platform_build_result EQUAL 0)
-  message(FATAL_ERROR
-    "all-components Platform consumer build failed\n"
-    "${_all_platform_build_output}\n${_all_platform_build_error}")
-endif()
+set(_candidate_construction_source [=[
+#include <terreate/graphics/physical_device.hpp>
 
-# The build-tree package must remain usable when Vulkan::Vulkan contributes
-# only the loader.  Its explicit Vulkan-Hpp BUILD_INTERFACE root is the only
-# header path available to this consumer.
-set(_build_tree_loader_vulkan_root
-  "${_terreate_package_root}/build-tree-loader-vulkan")
-set(_build_tree_loader_vulkan_config_dir
-  "${_build_tree_loader_vulkan_root}/lib/cmake/Vulkan")
-find_library(_build_tree_loader_vulkan_library NAMES vulkan)
-if(NOT _build_tree_loader_vulkan_library)
-  message(FATAL_ERROR
-    "build-tree loader-only Vulkan fixture could not locate a Vulkan loader")
-endif()
-file(MAKE_DIRECTORY "${_build_tree_loader_vulkan_config_dir}")
-file(WRITE "${_build_tree_loader_vulkan_config_dir}/VulkanConfig.cmake"
-  "set(Vulkan_VERSION 1.3.0)\n"
-  "set(Vulkan_FOUND TRUE)\n"
-  "add_library(Vulkan::Vulkan UNKNOWN IMPORTED)\n"
-  "set_target_properties(Vulkan::Vulkan PROPERTIES\n"
-  "  IMPORTED_LOCATION \"${_build_tree_loader_vulkan_library}\")\n")
-file(WRITE
-  "${_build_tree_loader_vulkan_config_dir}/VulkanConfigVersion.cmake"
-  "set(PACKAGE_VERSION \"1.3.0\")\n"
-  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
-  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
-  "endif()\n")
+terreate::graphics::PhysicalDeviceCandidate reject_candidate_construction() {
+  return {terreate::graphics::PhysicalDevice{},
+          terreate::graphics::PhysicalDeviceCapabilities{}, 0};
+}
 
-# The build-tree package config has a different public-header root from the
-# installed config.  Consume it through Terreate_DIR so this check cannot fall
-# back to the installed package while compiling the public Graphics header.
-set(_build_tree_consumer
-  "${_terreate_package_root}/all_components/build-tree-consumer")
-file(MAKE_DIRECTORY "${_build_tree_consumer}")
-file(WRITE "${_build_tree_consumer}/CMakeLists.txt" [=[
-cmake_minimum_required(VERSION 3.28)
-project(TerreateBuildTreeConsumer LANGUAGES CXX)
-set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
-set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)
-find_package(Terreate REQUIRED COMPONENTS Graphics)
-if(NOT TARGET Terreate::Core OR NOT TARGET Terreate::Graphics)
-  message(FATAL_ERROR
-    "build-tree package did not import the Graphics dependency closure")
-endif()
-if(TARGET Terreate::Platform)
-  message(FATAL_ERROR
-    "build-tree Graphics request imported unrequested Platform")
-endif()
-get_target_property(_build_tree_graphics_includes Terreate::Graphics
-  INTERFACE_INCLUDE_DIRECTORIES)
-list(FIND _build_tree_graphics_includes "$ENV{VULKAN_HEADERS_INCLUDE}"
-  _build_tree_hpp_include_index)
-if(_build_tree_hpp_include_index EQUAL -1)
-  message(FATAL_ERROR
-    "build-tree Graphics target omitted its explicit Vulkan-Hpp BUILD_INTERFACE")
-endif()
-if(TARGET Vulkan::Headers)
-  message(FATAL_ERROR
-    "loader-only build-tree Vulkan fixture unexpectedly provided Vulkan::Headers")
-endif()
-add_executable(build_tree_consumer main.cpp)
-target_link_libraries(build_tree_consumer PRIVATE Terreate::Graphics)
-set_target_properties(build_tree_consumer PROPERTIES
-  CXX_STANDARD 23
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF)
+int main() { return 0; }
 ]=])
-file(WRITE "${_build_tree_consumer}/main.cpp" [=[
+terreate_expect_compile_failure(candidate_construction "${_candidate_construction_source}"
+  "private|inaccessible|no matching|constructible")
+
+set(_candidate_device_splice_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+void reject_device_splice(terreate::graphics::PhysicalDeviceCandidate &candidate,
+                          terreate::graphics::PhysicalDevice replacement) {
+  candidate.device() = replacement;
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(candidate_device_splice "${_candidate_device_splice_source}"
+  "read-only|const|discard|assignment")
+
+set(_candidate_capability_splice_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+void reject_capability_splice(terreate::graphics::PhysicalDeviceCandidate &candidate,
+                              terreate::graphics::PhysicalDeviceCapabilities replacement) {
+  candidate.capabilities() = replacement;
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(candidate_capability_splice "${_candidate_capability_splice_source}"
+  "read-only|const|discard|assignment")
+
+set(_candidate_capability_member_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+void reject_capability_member_mutation(
+    terreate::graphics::PhysicalDeviceCandidate &candidate) {
+  candidate.capabilities().properties.deviceID = 0;
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(candidate_capability_member_mutation
+  "${_candidate_capability_member_source}" "read-only|const|discard|assignment")
+
+set(_inventory_construction_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+terreate::graphics::PhysicalDeviceInventory reject_inventory_construction() {
+  return terreate::graphics::PhysicalDeviceInventory{
+      std::vector<terreate::graphics::PhysicalDeviceCandidate>{}};
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(inventory_construction "${_inventory_construction_source}"
+  "private|inaccessible|no matching|constructible")
+
+set(_inventory_mutation_source [=[
+#include <terreate/graphics/physical_device.hpp>
+
+void reject_inventory_mutation(terreate::graphics::PhysicalDeviceInventory &inventory,
+                               const terreate::graphics::PhysicalDeviceCandidate &candidate) {
+  inventory[0] = candidate;
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(inventory_mutation "${_inventory_mutation_source}"
+  "read-only|const|discard|assignment|deleted")
+
+set(_forged_raw_source [=[
 #include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
+
+terreate::graphics::PhysicalDevice forge(
+    const terreate::graphics::Instance &instance) {
+  const auto native = vk::PhysicalDevice{};
+  return terreate::graphics::PhysicalDevice{
+      native, static_cast<const void *>(instance.plan())};
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(forged_public_constructor "${_forged_raw_source}"
+  "private|inaccessible|no matching|constructible")
+
+set(_physical_device_private_member_source [=[
+#include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
 
 int main() {
-  terreate::graphics::InstanceDescription description;
-  return description.debug_utils == terreate::graphics::DebugUtilsMode::disabled
-             ? 0
-             : 1;
+  const terreate::graphics::PhysicalDevice device;
+  return device.parent_identity_ == nullptr ? 0 : 1;
 }
 ]=])
+terreate_expect_compile_failure(physical_device_private_member
+  "${_physical_device_private_member_source}"
+  "no member|private|inaccessible")
 
-set(_build_tree_consumer_build
-  "${_terreate_package_root}/all_components/build-tree-consumer-build")
-file(REMOVE_RECURSE "${_build_tree_consumer_build}")
-set(_build_tree_configure
-  "${CMAKE_COMMAND}"
-  -S "${_build_tree_consumer}"
-  -B "${_build_tree_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _build_tree_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _build_tree_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _build_tree_configure
-  "-DTerreate_DIR:PATH=${all_components_BUILD_CONFIG_DIR}"
-  "-DVulkan_DIR:PATH=${_build_tree_loader_vulkan_config_dir}"
-  -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE
-  -DCMAKE_FIND_PACKAGE_NO_MODULE=TRUE)
-execute_process(
-  COMMAND ${_build_tree_configure}
-  RESULT_VARIABLE _build_tree_configure_result
-  OUTPUT_VARIABLE _build_tree_configure_output
-  ERROR_VARIABLE _build_tree_configure_error)
-if(NOT _build_tree_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "build-tree package consumer configuration failed\n"
-    "${_build_tree_configure_output}\n${_build_tree_configure_error}")
-endif()
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${_build_tree_consumer_build}"
-  RESULT_VARIABLE _build_tree_build_result
-  OUTPUT_VARIABLE _build_tree_build_output
-  ERROR_VARIABLE _build_tree_build_error)
-if(NOT _build_tree_build_result EQUAL 0)
-  message(FATAL_ERROR
-    "build-tree package consumer build failed\n"
-    "${_build_tree_build_output}\n${_build_tree_build_error}")
-endif()
+set(_physical_device_mutation_source [=[
+#include <terreate/graphics/physical_device.hpp>
 
-# With no explicit component list, an all-components installation imports all
-# built targets and their exact dependency closure.  Keep this assertion
-# separate from the explicit Core+Graphics request above so importing
-# unrequested Platform cannot hide a package-config regression.
-set(_all_default_consumer
-  "${_terreate_package_root}/all_components/default-consumer")
-file(MAKE_DIRECTORY "${_all_default_consumer}")
-file(WRITE "${_all_default_consumer}/CMakeLists.txt" [=[
+void reject_physical_device_mutation(terreate::graphics::PhysicalDevice &device) {
+  device.native_handle_ = {};
+}
+
+int main() { return 0; }
+]=])
+terreate_expect_compile_failure(physical_device_mutation "${_physical_device_mutation_source}"
+  "no member|private|inaccessible|read-only|const")
+
+set(_all_component_config_consumer
+  "${_terreate_package_root}/all_components/config-consumer")
+set(_all_component_config_build
+  "${_terreate_package_root}/all_components/config-consumer-build")
+file(MAKE_DIRECTORY "${_all_component_config_consumer}")
+file(WRITE "${_all_component_config_consumer}/CMakeLists.txt" [=[
 cmake_minimum_required(VERSION 3.28)
-project(TerreateAllComponentsPackageConsumer LANGUAGES CXX)
-find_package(Terreate REQUIRED)
-foreach(_component IN ITEMS Core Platform Graphics)
-  if(NOT TARGET Terreate::${_component})
-    message(FATAL_ERROR
-      "all-components package did not import Terreate::${_component}")
-  endif()
-endforeach()
-if(NOT Vulkan_FOUND OR NOT TARGET Vulkan::Vulkan)
-  message(FATAL_ERROR
-    "all-components package did not discover Vulkan::Vulkan")
+project(TerreatePackageConfigConsumer LANGUAGES CXX)
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
+set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)
+find_package(Terreate REQUIRED COMPONENTS Core Graphics OPTIONAL_COMPONENTS Future)
+if(NOT TARGET Terreate::Core OR NOT TARGET Terreate::Graphics)
+  message(FATAL_ERROR "Core+Graphics package request omitted a requested target")
+endif()
+if(TARGET Terreate::Platform)
+  message(FATAL_ERROR "Core+Graphics package request imported Platform")
+endif()
+if(DEFINED Terreate_Future_FOUND AND Terreate_Future_FOUND)
+  message(FATAL_ERROR "unknown optional component was reported as found")
+endif()
+get_target_property(_graphics_type Terreate::Graphics TYPE)
+if(NOT "${_graphics_type}" STREQUAL "STATIC_LIBRARY")
+  message(FATAL_ERROR "Graphics package target is not STATIC_LIBRARY: ${_graphics_type}")
+endif()
+get_target_property(_graphics_links Terreate::Graphics INTERFACE_LINK_LIBRARIES)
+if(NOT "${_graphics_links}" MATCHES "Core" OR
+   NOT "${_graphics_links}" MATCHES "Vulkan::Vulkan" OR
+   "${_graphics_links}" MATCHES "Platform")
+  message(FATAL_ERROR "Graphics package dependency closure is invalid: ${_graphics_links}")
 endif()
 ]=])
-
-set(_all_default_consumer_build
-  "${_terreate_package_root}/all_components/default-consumer-build")
-set(_all_default_configure
-  "${CMAKE_COMMAND}"
-  -S "${_all_default_consumer}"
-  -B "${_all_default_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _all_default_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _all_default_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _all_default_configure
+set(_config_command
+  "${CMAKE_COMMAND}" -S "${_all_component_config_consumer}"
+  -B "${_all_component_config_build}"
   "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}")
+terreate_append_generator_and_compiler(_config_command)
 execute_process(
-  COMMAND ${_all_default_configure}
-  RESULT_VARIABLE _all_default_configure_result
-  OUTPUT_VARIABLE _all_default_configure_output
-  ERROR_VARIABLE _all_default_configure_error)
-if(NOT _all_default_configure_result EQUAL 0)
+  COMMAND ${_config_command}
+  RESULT_VARIABLE _config_result
+  OUTPUT_VARIABLE _config_output
+  ERROR_VARIABLE _config_error)
+if(NOT _config_result EQUAL 0)
   message(FATAL_ERROR
-    "all-components default package consumer configuration failed\n"
-    "${_all_default_configure_output}\n${_all_default_configure_error}")
+    "installed package configuration closure failed\n"
+    "${_config_output}\n${_config_error}")
 endif()
 
-# A dependency package is allowed to define PACKAGE_PREFIX_DIR for itself, but
-# it must not redirect Terreate's own public-header probe.  This fixture
-# emulates the CMake 3.28/3.29 behavior where a nested package config writes
-# that variable in the caller's scope.
-if(NOT DEFINED ENV{VULKAN_HEADERS_INCLUDE} OR
-   "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "" OR
-   NOT EXISTS "$ENV{VULKAN_HEADERS_INCLUDE}/vulkan/vulkan_raii.hpp")
-  message(FATAL_ERROR
-    "prefix-overwrite Vulkan fixture requires the pinned Vulkan-Hpp headers")
-endif()
-set(_prefix_overwrite_vulkan_root
-  "${_terreate_package_root}/prefix-overwrite-vulkan")
-set(_prefix_overwrite_vulkan_config_dir
-  "${_prefix_overwrite_vulkan_root}/lib/cmake/Vulkan")
-set(_prefix_overwrite_vulkan_fake_prefix
-  "${_prefix_overwrite_vulkan_root}/fake-prefix")
-file(MAKE_DIRECTORY "${_prefix_overwrite_vulkan_config_dir}")
-file(WRITE "${_prefix_overwrite_vulkan_config_dir}/VulkanConfig.cmake"
-  "set(PACKAGE_PREFIX_DIR \"${_prefix_overwrite_vulkan_fake_prefix}\")\n"
-  "set(PACKAGE_PREFIX_DIR \"${_prefix_overwrite_vulkan_fake_prefix}\" PARENT_SCOPE)\n"
-  "set(Vulkan_VERSION 1.3.0)\n"
-  "set(Vulkan_FOUND TRUE)\n"
-  "add_library(Vulkan::Vulkan INTERFACE IMPORTED)\n"
-  "set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
-  "  \"$ENV{VULKAN_HEADERS_INCLUDE}\")\n")
-file(WRITE "${_prefix_overwrite_vulkan_config_dir}/VulkanConfigVersion.cmake"
-  "set(PACKAGE_VERSION \"1.3.0\")\n"
-  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
-  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
-  "endif()\n")
+terreate_package_configure_and_install(core_only OFF OFF)
+set(_core_source [=[
+#include <terreate/core/result.hpp>
+int main() {
+  terreate::Result<int> result = 11;
+  return terreate::unwrap(result) == 11 ? 0 : 1;
+}
+]=])
+terreate_build_consumer(core_only_runtime "${core_only_PREFIX}" Core
+  "${_core_source}")
 
-set(_prefix_overwrite_consumer
-  "${_terreate_package_root}/all_components/prefix-overwrite-consumer")
-file(MAKE_DIRECTORY "${_prefix_overwrite_consumer}")
-file(WRITE "${_prefix_overwrite_consumer}/CMakeLists.txt"
-  "cmake_minimum_required(VERSION 3.28)\n"
-  "project(TerreatePrefixOverwriteConsumer LANGUAGES CXX)\n"
-  "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
-  "set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)\n"
-  "find_package(Terreate REQUIRED COMPONENTS Core Graphics)\n"
-  "if(NOT Terreate_FOUND OR NOT Terreate_Core_FOUND OR\n"
-  "   NOT Terreate_Graphics_FOUND OR\n"
-  "   NOT TARGET Terreate::Core OR NOT TARGET Terreate::Graphics)\n"
-  "  message(FATAL_ERROR\n"
-  "    \"dependency prefix overwrite made Terreate Graphics unavailable\")\n"
-  "endif()\n")
+terreate_package_configure_and_install(platform_only ON OFF)
+set(_platform_source "int main() { return 0; }\n")
+terreate_build_consumer(platform_only_runtime "${platform_only_PREFIX}" Platform
+  "${_platform_source}")
 
-set(_prefix_overwrite_consumer_build
-  "${_terreate_package_root}/all_components/prefix-overwrite-consumer-build")
-file(REMOVE_RECURSE "${_prefix_overwrite_consumer_build}")
-set(_prefix_overwrite_configure
-  "${CMAKE_COMMAND}"
-  -S "${_prefix_overwrite_consumer}"
-  -B "${_prefix_overwrite_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _prefix_overwrite_configure -G "${TERREATE_CMAKE_GENERATOR}")
+terreate_package_configure_and_install(graphics_only OFF ON)
+terreate_build_consumer(graphics_only_runtime "${graphics_only_PREFIX}" Graphics
+  "${_graphics_consumer_source}")
+
+set(_core_isolation_consumer
+  "${_terreate_package_root}/all_components/core-isolation-consumer")
+set(_core_isolation_build
+  "${_terreate_package_root}/all_components/core-isolation-consumer-build")
+file(MAKE_DIRECTORY "${_core_isolation_consumer}")
+file(WRITE "${_core_isolation_consumer}/CMakeLists.txt" [=[
+cmake_minimum_required(VERSION 3.28)
+project(TerreateCoreIsolationConsumer LANGUAGES CXX)
+set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
+find_package(Terreate REQUIRED COMPONENTS Core)
+if(TARGET Terreate::Platform OR TARGET Terreate::Graphics OR
+   TARGET Vulkan::Vulkan OR Vulkan_FOUND)
+  message(FATAL_ERROR "Core-only package imported an optional/Vulkan target")
 endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _prefix_overwrite_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _prefix_overwrite_configure
+add_executable(core_isolation main.cpp)
+target_link_libraries(core_isolation PRIVATE Terreate::Core)
+]=])
+file(WRITE "${_core_isolation_consumer}/main.cpp" "int main() { return 0; }\n")
+set(_core_isolation_command
+  "${CMAKE_COMMAND}" -S "${_core_isolation_consumer}"
+  -B "${_core_isolation_build}"
   "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-  "-DVulkan_DIR:PATH=${_prefix_overwrite_vulkan_config_dir}")
+  -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE)
+terreate_append_generator_and_compiler(_core_isolation_command)
 execute_process(
-  COMMAND ${_prefix_overwrite_configure}
-  RESULT_VARIABLE _prefix_overwrite_result
-  OUTPUT_VARIABLE _prefix_overwrite_output
-  ERROR_VARIABLE _prefix_overwrite_error)
-if(NOT _prefix_overwrite_result EQUAL 0)
+  COMMAND ${_core_isolation_command}
+  RESULT_VARIABLE _core_isolation_result
+  OUTPUT_VARIABLE _core_isolation_output
+  ERROR_VARIABLE _core_isolation_error)
+if(NOT _core_isolation_result EQUAL 0)
   message(FATAL_ERROR
-    "Terreate prefix-overwrite consumer configuration failed\n"
-    "${_prefix_overwrite_output}\n${_prefix_overwrite_error}")
+    "Core package isolation configuration failed\n"
+    "${_core_isolation_output}\n${_core_isolation_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_core_isolation_build}"
+  RESULT_VARIABLE _core_isolation_build_result
+  OUTPUT_VARIABLE _core_isolation_build_output
+  ERROR_VARIABLE _core_isolation_build_error)
+if(NOT _core_isolation_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "Core package isolation build failed\n"
+    "${_core_isolation_build_output}\n${_core_isolation_build_error}")
 endif()
 
-set(_optional_graphics_consumer
-  "${_terreate_package_root}/all_components/optional-graphics-consumer")
-file(MAKE_DIRECTORY "${_optional_graphics_consumer}")
-file(WRITE "${_optional_graphics_consumer}/CMakeLists.txt" [=[
+set(_optional_no_vulkan_consumer
+  "${_terreate_package_root}/all_components/optional-no-vulkan-consumer")
+set(_optional_no_vulkan_build
+  "${_terreate_package_root}/all_components/optional-no-vulkan-consumer-build")
+file(MAKE_DIRECTORY "${_optional_no_vulkan_consumer}")
+file(WRITE "${_optional_no_vulkan_consumer}/CMakeLists.txt" [=[
 cmake_minimum_required(VERSION 3.28)
 project(TerreateOptionalGraphicsWithoutVulkan LANGUAGES CXX)
 set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
 find_package(Terreate REQUIRED COMPONENTS Core OPTIONAL_COMPONENTS Graphics)
-if(NOT Terreate_FOUND OR NOT Terreate_Core_FOUND OR
-   NOT TARGET Terreate::Core)
-  message(FATAL_ERROR
-    "required Core was rejected while optional Graphics lacked Vulkan")
-endif()
-if(Terreate_Graphics_FOUND OR TARGET Terreate::Graphics)
-  message(FATAL_ERROR
-    "optional Graphics was imported despite unavailable Vulkan")
+if(NOT Terreate_Core_FOUND OR NOT TARGET Terreate::Core OR
+   Terreate_Graphics_FOUND OR TARGET Terreate::Graphics)
+  message(FATAL_ERROR "optional Graphics changed Core-only package resolution")
 endif()
 if(NOT DEFINED Terreate_NOT_FOUND_MESSAGE OR
    NOT "${Terreate_NOT_FOUND_MESSAGE}" MATCHES "Vulkan")
-  message(FATAL_ERROR
-    "optional Graphics status did not retain the Vulkan diagnostic")
+  message(FATAL_ERROR "optional Graphics did not preserve the Vulkan diagnostic")
 endif()
-add_executable(optional_graphics_consumer main.cpp)
-target_link_libraries(optional_graphics_consumer PRIVATE Terreate::Core)
-set_target_properties(optional_graphics_consumer PROPERTIES
-  CXX_STANDARD 23
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF)
 ]=])
-file(WRITE "${_optional_graphics_consumer}/main.cpp" [=[
-#include <terreate/core/result.hpp>
-
-int main() {
-  terreate::Result<int> result = 31;
-  return terreate::unwrap(result) == 31 ? 0 : 1;
-}
-]=])
-
-set(_optional_graphics_consumer_build
-  "${_terreate_package_root}/all_components/optional-graphics-consumer-build")
-set(_optional_graphics_configure
-  "${CMAKE_COMMAND}"
-  -S "${_optional_graphics_consumer}"
-  -B "${_optional_graphics_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _optional_graphics_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _optional_graphics_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _optional_graphics_configure
+set(_optional_no_vulkan_command
+  "${CMAKE_COMMAND}" -S "${_optional_no_vulkan_consumer}"
+  -B "${_optional_no_vulkan_build}"
   "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
   -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE)
+terreate_append_generator_and_compiler(_optional_no_vulkan_command)
 execute_process(
-  COMMAND ${_optional_graphics_configure}
-  RESULT_VARIABLE _optional_graphics_configure_result
-  OUTPUT_VARIABLE _optional_graphics_configure_output
-  ERROR_VARIABLE _optional_graphics_configure_error)
-if(NOT _optional_graphics_configure_result EQUAL 0)
+  COMMAND ${_optional_no_vulkan_command}
+  RESULT_VARIABLE _optional_no_vulkan_result
+  OUTPUT_VARIABLE _optional_no_vulkan_output
+  ERROR_VARIABLE _optional_no_vulkan_error)
+if(NOT _optional_no_vulkan_result EQUAL 0)
   message(FATAL_ERROR
-    "installed optional Graphics consumer configuration failed\n"
-    "${_optional_graphics_configure_output}\n"
-    "${_optional_graphics_configure_error}")
-endif()
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${_optional_graphics_consumer_build}"
-  RESULT_VARIABLE _optional_graphics_build_result
-  OUTPUT_VARIABLE _optional_graphics_build_output
-  ERROR_VARIABLE _optional_graphics_build_error)
-if(NOT _optional_graphics_build_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed optional Graphics consumer build failed\n"
-    "${_optional_graphics_build_output}\n"
-    "${_optional_graphics_build_error}")
+    "optional Graphics without Vulkan configuration failed\n"
+    "${_optional_no_vulkan_output}\n${_optional_no_vulkan_error}")
 endif()
 
-set(_required_graphics_consumer
-  "${_terreate_package_root}/all_components/required-graphics-without-vulkan")
-file(MAKE_DIRECTORY "${_required_graphics_consumer}")
-file(WRITE "${_required_graphics_consumer}/CMakeLists.txt" [=[
+set(_required_no_vulkan_consumer
+  "${_terreate_package_root}/all_components/required-no-vulkan-consumer")
+set(_required_no_vulkan_build
+  "${_terreate_package_root}/all_components/required-no-vulkan-consumer-build")
+file(MAKE_DIRECTORY "${_required_no_vulkan_consumer}")
+file(WRITE "${_required_no_vulkan_consumer}/CMakeLists.txt" [=[
 cmake_minimum_required(VERSION 3.28)
 project(TerreateRequiredGraphicsWithoutVulkan LANGUAGES CXX)
 set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
 find_package(Terreate REQUIRED COMPONENTS Graphics)
 ]=])
-
-set(_required_graphics_consumer_build
-  "${_terreate_package_root}/all_components/required-graphics-without-vulkan-build")
-set(_required_graphics_configure
-  "${CMAKE_COMMAND}"
-  -S "${_required_graphics_consumer}"
-  -B "${_required_graphics_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _required_graphics_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _required_graphics_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _required_graphics_configure
+set(_required_no_vulkan_command
+  "${CMAKE_COMMAND}" -S "${_required_no_vulkan_consumer}"
+  -B "${_required_no_vulkan_build}"
   "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
   -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE)
+terreate_append_generator_and_compiler(_required_no_vulkan_command)
 execute_process(
-  COMMAND ${_required_graphics_configure}
-  RESULT_VARIABLE _required_graphics_configure_result
-  OUTPUT_VARIABLE _required_graphics_configure_output
-  ERROR_VARIABLE _required_graphics_configure_error)
-if(_required_graphics_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed required Graphics consumer unexpectedly configured without Vulkan\n"
-    "${_required_graphics_configure_output}\n"
-    "${_required_graphics_configure_error}")
+  COMMAND ${_required_no_vulkan_command}
+  RESULT_VARIABLE _required_no_vulkan_result
+  OUTPUT_VARIABLE _required_no_vulkan_output
+  ERROR_VARIABLE _required_no_vulkan_error)
+if(_required_no_vulkan_result EQUAL 0)
+  message(FATAL_ERROR "required Graphics unexpectedly configured without Vulkan")
 endif()
-string(TOLOWER
-  "${_required_graphics_configure_output}\n${_required_graphics_configure_error}"
-  _required_graphics_diagnostics)
-if(NOT _required_graphics_diagnostics MATCHES "vulkan")
+string(TOLOWER "${_required_no_vulkan_output}\n${_required_no_vulkan_error}"
+  _required_no_vulkan_diagnostics)
+if(NOT _required_no_vulkan_diagnostics MATCHES "vulkan")
   message(FATAL_ERROR
-    "required Graphics failure did not identify Vulkan discovery as the cause\n"
-    "${_required_graphics_configure_output}\n"
-    "${_required_graphics_configure_error}")
+    "required Graphics failure did not identify Vulkan\n"
+    "${_required_no_vulkan_output}\n${_required_no_vulkan_error}")
 endif()
 
-# A valid Vulkan package may publish Vulkan-Hpp through a separate Headers
-# target.  Keep the loader target itself headerless so this fixture proves the
-# package check follows Vulkan::Vulkan's linked usage closure.
-set(_linked_headers_vulkan_root "${_terreate_package_root}/linked-headers-vulkan")
-set(_linked_headers_vulkan_loader_include
-  "${_linked_headers_vulkan_root}/loader/include")
-set(_linked_headers_vulkan_include
-  "${_linked_headers_vulkan_root}/headers/include")
-set(_linked_headers_vulkan_config_dir
-  "${_linked_headers_vulkan_root}/lib/cmake/Vulkan")
-find_library(_linked_headers_vulkan_library NAMES vulkan)
-if(NOT _linked_headers_vulkan_library)
-  message(FATAL_ERROR
-    "linked Vulkan::Headers fixture could not locate a Vulkan loader library")
-endif()
-file(MAKE_DIRECTORY "${_linked_headers_vulkan_loader_include}"
-  "${_linked_headers_vulkan_include}/vulkan"
-  "${_linked_headers_vulkan_config_dir}")
-file(WRITE "${_linked_headers_vulkan_include}/vulkan/vulkan_core.h" [=[
-#pragma once
-
-#include <cstdint>
-
-#define VK_API_VERSION_1_0 4194304U
-#define VK_API_VERSION_1_3 4202496U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 0x00000001U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 0x00000002U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT 0x00000004U
-
-using VkDebugUtilsMessageTypeFlagsEXT = std::uint32_t;
-]=])
-file(WRITE "${_linked_headers_vulkan_include}/vulkan/vulkan.hpp" [=[
-#pragma once
-
-#include <cstdint>
-#include <system_error>
-
-#include <vulkan/vulkan_core.h>
-
-namespace vk {
-
-enum class DebugUtilsMessageTypeFlagBitsEXT : std::uint32_t {
-  eGeneral = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
-  eValidation = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
-  ePerformance = VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-};
-
-using DebugUtilsMessageTypeFlagsEXT = std::uint32_t;
-
-struct Instance {};
-
-class SystemError : public std::system_error {
-public:
-  using std::system_error::system_error;
-};
-
-} // namespace vk
-]=])
-file(WRITE "${_linked_headers_vulkan_include}/vulkan/vulkan_raii.hpp" [=[
-#pragma once
-
-#include <vulkan/vulkan.hpp>
-
-namespace vk::raii {
-
-class Context {};
-class Instance {};
-class DebugUtilsMessengerEXT {};
-
-} // namespace vk::raii
-]=])
-file(WRITE "${_linked_headers_vulkan_config_dir}/VulkanConfig.cmake"
+# A version-only or loader-only Vulkan package must not satisfy the installed
+# Graphics header contract.  The target intentionally exposes decoy files that
+# do not contain the declarations used by the isolated compile probe.
+set(_decoy_vulkan_root "${_terreate_package_root}/decoy-vulkan")
+set(_decoy_vulkan_include "${_decoy_vulkan_root}/include")
+set(_decoy_vulkan_config "${_decoy_vulkan_root}/lib/cmake/Vulkan")
+file(MAKE_DIRECTORY "${_decoy_vulkan_include}/vulkan"
+  "${_decoy_vulkan_config}")
+file(WRITE "${_decoy_vulkan_include}/vulkan/vulkan_core.h"
+  "#define VK_API_VERSION_1_3 4202496U\n")
+file(WRITE "${_decoy_vulkan_include}/vulkan/vulkan.hpp"
+  "#pragma once\n")
+file(WRITE "${_decoy_vulkan_include}/vulkan/vulkan_raii.hpp"
+  "#pragma once\n")
+file(WRITE "${_decoy_vulkan_config}/VulkanConfig.cmake"
   "set(Vulkan_VERSION 1.3.0)\n"
   "set(Vulkan_FOUND TRUE)\n"
-  "add_library(Vulkan::Headers INTERFACE IMPORTED)\n"
-  "set_property(TARGET Vulkan::Headers PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
-  "  \"${_linked_headers_vulkan_include}\")\n"
-  "add_library(Vulkan::Vulkan UNKNOWN IMPORTED)\n"
-  "set_target_properties(Vulkan::Vulkan PROPERTIES\n"
-  "  IMPORTED_LOCATION \"${_linked_headers_vulkan_library}\"\n"
-  "  INTERFACE_INCLUDE_DIRECTORIES \"${_linked_headers_vulkan_loader_include}\")\n"
-  "set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_LINK_LIBRARIES\n"
-  "  Vulkan::Headers)\n")
-file(WRITE "${_linked_headers_vulkan_config_dir}/VulkanConfigVersion.cmake"
-  "set(PACKAGE_VERSION \"1.3.0\")\n"
-  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
-  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
-  "endif()\n")
-
-set(_linked_headers_consumer
-  "${_terreate_package_root}/all_components/linked-headers-consumer")
-file(MAKE_DIRECTORY "${_linked_headers_consumer}")
-file(WRITE "${_linked_headers_consumer}/CMakeLists.txt"
-  "cmake_minimum_required(VERSION 3.28)\n"
-  "project(TerreateLinkedVulkanHeaders LANGUAGES CXX)\n"
-  "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
-  "find_package(Terreate REQUIRED COMPONENTS Core OPTIONAL_COMPONENTS Graphics)\n"
-  "if(NOT Terreate_FOUND OR NOT Terreate_Core_FOUND OR\n"
-  "   NOT Terreate_Graphics_FOUND OR\n"
-  "   NOT TARGET Terreate::Core OR NOT TARGET Terreate::Graphics)\n"
-  "  message(FATAL_ERROR\n"
-  "    \"linked Vulkan::Headers fixture did not enable Graphics\")\n"
-  "endif()\n"
-  "if(NOT TARGET Vulkan::Vulkan OR NOT TARGET Vulkan::Headers)\n"
-  "  message(FATAL_ERROR\n"
-  "    \"linked Vulkan::Headers fixture did not provide both Vulkan targets\")\n"
-  "endif()\n"
-  "get_target_property(_linked_graphics_links Terreate::Graphics\n"
-  "  INTERFACE_LINK_LIBRARIES)\n"
-  "if(NOT \"\${_linked_graphics_links}\" MATCHES \"Vulkan::Vulkan\")\n"
-  "  message(FATAL_ERROR\n"
-  "    \"installed Graphics target lost its Vulkan::Vulkan dependency\")\n"
-  "endif()\n"
-  "get_target_property(_linked_core_links Terreate::Core\n"
-  "  INTERFACE_LINK_LIBRARIES)\n"
-  "if(\"\${_linked_core_links}\" MATCHES \"Vulkan\")\n"
-  "  message(FATAL_ERROR\n"
-  "    \"Core acquired an unintended Vulkan dependency\")\n"
-  "endif()\n"
-  "add_executable(linked_headers_consumer main.cpp)\n"
-  "target_link_libraries(linked_headers_consumer PRIVATE Terreate::Graphics)\n"
-  "set_target_properties(linked_headers_consumer PROPERTIES\n"
-  "  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)\n")
-file(WRITE "${_linked_headers_consumer}/main.cpp"
-  "#include <terreate/graphics/instance.hpp>\n"
-  "#include <vulkan/vulkan.hpp>\n"
-  "#include <vulkan/vulkan_core.h>\n"
-  "#include <vulkan/vulkan_raii.hpp>\n"
-  "#include <cstdint>\n"
-  "static_assert(VK_API_VERSION_1_3 != 0);\n"
-  "static_assert(sizeof(vk::raii::Context) > 0);\n"
-  "int main() {\n"
-  "  const auto capabilities =\n"
-  "      terreate::graphics::queryInstanceCapabilities();\n"
-  "  return capabilities.has_value() ? 0 : 1;\n"
-  "}\n")
-
-set(_linked_headers_consumer_build
-  "${_terreate_package_root}/all_components/linked-headers-consumer-build")
-file(REMOVE_RECURSE "${_linked_headers_consumer_build}")
-set(_linked_headers_configure
-  "${CMAKE_COMMAND}"
-  -S "${_linked_headers_consumer}"
-  -B "${_linked_headers_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _linked_headers_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _linked_headers_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _linked_headers_configure
-  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-  "-DVulkan_DIR:PATH=${_linked_headers_vulkan_config_dir}"
-  -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE)
-execute_process(
-  COMMAND ${_linked_headers_configure}
-  RESULT_VARIABLE _linked_headers_configure_result
-  OUTPUT_VARIABLE _linked_headers_configure_output
-  ERROR_VARIABLE _linked_headers_configure_error)
-if(NOT _linked_headers_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed linked Vulkan::Headers consumer configuration failed\n"
-    "${_linked_headers_configure_output}\n"
-    "${_linked_headers_configure_error}")
-endif()
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${_linked_headers_consumer_build}"
-  RESULT_VARIABLE _linked_headers_build_result
-  OUTPUT_VARIABLE _linked_headers_build_output
-  ERROR_VARIABLE _linked_headers_build_error)
-if(NOT _linked_headers_build_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed linked Vulkan::Headers consumer build failed\n"
-    "${_linked_headers_build_output}\n"
-    "${_linked_headers_build_error}")
-endif()
-
-# A partial include directory earlier in Vulkan::Vulkan's effective include
-# order must shadow the valid transitive Headers directory and reject optional
-# Graphics.  A per-directory textual check would incorrectly select the later
-# complete directory and accept this package.
-set(_partial_shadow_vulkan_root
-  "${_terreate_package_root}/partial-shadow-vulkan")
-set(_partial_shadow_vulkan_include
-  "${_partial_shadow_vulkan_root}/partial/include")
-set(_partial_shadow_vulkan_config_dir
-  "${_partial_shadow_vulkan_root}/lib/cmake/Vulkan")
-file(MAKE_DIRECTORY "${_partial_shadow_vulkan_include}/vulkan"
-  "${_partial_shadow_vulkan_config_dir}")
-file(WRITE "${_partial_shadow_vulkan_include}/vulkan/vulkan_core.h" [=[
-#pragma once
-
-#include <cstdint>
-
-#define VK_API_VERSION_1_3 4202496U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 0x00000001U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 0x00000002U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT 0x00000004U
-
-using VkDebugUtilsMessageTypeFlagsEXT = std::uint32_t;
-]=])
-file(WRITE "${_partial_shadow_vulkan_include}/vulkan/vulkan.hpp" [=[
-#pragma once
-
-#include <vulkan/vulkan_core.h>
-
-namespace vk {
-
-enum class DebugUtilsMessageTypeFlagBitsEXT : std::uint32_t {
-  eGeneral = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
-  eValidation = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT,
-  ePerformance = VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-};
-
-} // namespace vk
-]=])
-file(WRITE "${_partial_shadow_vulkan_include}/vulkan/vulkan_raii.hpp" [=[
-#pragma once
-
-#include <vulkan/vulkan.hpp>
-
-namespace vk::raii {
-
-class Context {};
-class Instance {};
-class DebugUtilsMessengerEXT {};
-
-} // namespace vk::raii
-]=])
-file(WRITE "${_partial_shadow_vulkan_config_dir}/VulkanConfig.cmake"
-  "set(Vulkan_VERSION 1.3.0)\n"
-  "set(Vulkan_FOUND TRUE)\n"
-  "add_library(Vulkan::Headers INTERFACE IMPORTED)\n"
-  "set_property(TARGET Vulkan::Headers PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
-  "  \"${_linked_headers_vulkan_include}\")\n"
   "add_library(Vulkan::Vulkan INTERFACE IMPORTED)\n"
   "set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
-  "  \"${_partial_shadow_vulkan_include}\")\n"
-  "set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_LINK_LIBRARIES\n"
-  "  Vulkan::Headers)\n")
-file(WRITE "${_partial_shadow_vulkan_config_dir}/VulkanConfigVersion.cmake"
+  "  \"${_decoy_vulkan_include}\")\n")
+file(WRITE "${_decoy_vulkan_config}/VulkanConfigVersion.cmake"
   "set(PACKAGE_VERSION \"1.3.0\")\n"
   "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
   "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
   "endif()\n")
 
-set(_partial_shadow_consumer
-  "${_terreate_package_root}/all_components/partial-shadow-consumer")
-file(MAKE_DIRECTORY "${_partial_shadow_consumer}")
-file(WRITE "${_partial_shadow_consumer}/CMakeLists.txt" [=[
+set(_decoy_consumer "${_terreate_package_root}/all_components/decoy-consumer")
+set(_decoy_build "${_terreate_package_root}/all_components/decoy-consumer-build")
+file(MAKE_DIRECTORY "${_decoy_consumer}")
+file(WRITE "${_decoy_consumer}/CMakeLists.txt" [=[
 cmake_minimum_required(VERSION 3.28)
-project(TerreatePartialShadowVulkan LANGUAGES CXX)
+project(TerreateDecoyVulkan LANGUAGES CXX)
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
 set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)
-find_package(Terreate REQUIRED COMPONENTS Core OPTIONAL_COMPONENTS Graphics)
-if(NOT Terreate_FOUND OR NOT Terreate_Core_FOUND OR
-   NOT TARGET Terreate::Core)
-  message(FATAL_ERROR
-    "required Core was rejected by the partial Vulkan shadow package")
-endif()
-if(Terreate_Graphics_FOUND OR TARGET Terreate::Graphics)
-  message(FATAL_ERROR
-    "optional Graphics accepted an earlier partial Vulkan include directory")
-endif()
-if(NOT DEFINED Terreate_NOT_FOUND_MESSAGE OR
-   NOT "${Terreate_NOT_FOUND_MESSAGE}" MATCHES "compilable|declaration|usage closure")
-  message(FATAL_ERROR
-    "partial Vulkan rejection did not preserve the compile-probe diagnostic")
-endif()
-add_executable(partial_shadow_core_consumer main.cpp)
-target_link_libraries(partial_shadow_core_consumer PRIVATE Terreate::Core)
-set_target_properties(partial_shadow_core_consumer PROPERTIES
-  CXX_STANDARD 23
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF)
-]=])
-file(WRITE "${_partial_shadow_consumer}/main.cpp" [=[
-#include <terreate/core/result.hpp>
-
-int main() {
-  terreate::Result<int> result = 43;
-  return terreate::unwrap(result) == 43 ? 0 : 1;
-}
-]=])
-
-set(_partial_shadow_consumer_build
-  "${_terreate_package_root}/all_components/partial-shadow-consumer-build")
-file(REMOVE_RECURSE "${_partial_shadow_consumer_build}")
-set(_partial_shadow_configure
-  "${CMAKE_COMMAND}"
-  -S "${_partial_shadow_consumer}"
-  -B "${_partial_shadow_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _partial_shadow_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _partial_shadow_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _partial_shadow_configure
-  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-  "-DVulkan_DIR:PATH=${_partial_shadow_vulkan_config_dir}"
-  -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE
-  -DCMAKE_FIND_PACKAGE_NO_MODULE=TRUE)
-execute_process(
-  COMMAND ${_partial_shadow_configure}
-  RESULT_VARIABLE _partial_shadow_configure_result
-  OUTPUT_VARIABLE _partial_shadow_configure_output
-  ERROR_VARIABLE _partial_shadow_configure_error)
-if(NOT _partial_shadow_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed partial-shadow optional Graphics configuration failed\n"
-    "${_partial_shadow_configure_output}\n"
-    "${_partial_shadow_configure_error}")
-endif()
-if(EXISTS "${_partial_shadow_consumer_build}/CMakeFiles/TerreateVulkanHeadersProbe")
-  message(FATAL_ERROR
-    "partial-shadow Vulkan compile probe leaked its temporary directory")
-endif()
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${_partial_shadow_consumer_build}"
-  RESULT_VARIABLE _partial_shadow_build_result
-  OUTPUT_VARIABLE _partial_shadow_build_output
-  ERROR_VARIABLE _partial_shadow_build_error)
-if(NOT _partial_shadow_build_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed partial-shadow Core consumer build failed\n"
-    "${_partial_shadow_build_output}\n"
-    "${_partial_shadow_build_error}")
-endif()
-
-function(terreate_expect_installed_graphics_rejection name vulkan_config_dir)
-  set(_consumer
-    "${_terreate_package_root}/all_components/${name}-consumer")
-  file(MAKE_DIRECTORY "${_consumer}")
-  file(WRITE "${_consumer}/CMakeLists.txt"
-    "cmake_minimum_required(VERSION 3.28)\n"
-    "project(Terreate${name} LANGUAGES CXX)\n"
-    "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
-    "set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)\n"
-    "find_package(Terreate REQUIRED COMPONENTS Graphics)\n")
-
-  set(_consumer_build
-    "${_terreate_package_root}/all_components/${name}-consumer-build")
-  file(REMOVE_RECURSE "${_consumer_build}")
-  set(_configure
-    "${CMAKE_COMMAND}"
-    -S "${_consumer}"
-    -B "${_consumer_build}")
-  if(DEFINED TERREATE_CMAKE_GENERATOR AND
-     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-    list(APPEND _configure -G "${TERREATE_CMAKE_GENERATOR}")
-  endif()
-  if(DEFINED TERREATE_CXX_COMPILER AND
-     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-    list(APPEND _configure
-      "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-  endif()
-  list(APPEND _configure
-    "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-    "-DVulkan_DIR:PATH=${vulkan_config_dir}"
-    -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE)
-  execute_process(
-    COMMAND ${_configure}
-    RESULT_VARIABLE _configure_result
-    OUTPUT_VARIABLE _configure_output
-    ERROR_VARIABLE _configure_error)
-  if(_configure_result EQUAL 0)
-    message(FATAL_ERROR
-      "installed ${name} partial Vulkan package unexpectedly accepted Graphics\n"
-      "${_configure_output}\n${_configure_error}")
-  endif()
-  string(TOLOWER "${_configure_output}\n${_configure_error}" _diagnostics)
-  if(NOT _diagnostics MATCHES
-       "vulkan/vulkan_raii|partial|decoy")
-    message(FATAL_ERROR
-      "installed ${name} rejection did not identify the incomplete Vulkan "
-      "declarations\n${_configure_output}\n${_configure_error}")
-  endif()
-endfunction()
-
-# A complete Vulkan::Vulkan closure must not hide an earlier, partial legacy
-# Vulkan_INCLUDE_DIR.  The installed Graphics target publishes that legacy
-# path directly, before Vulkan::Vulkan's transitive includes; the config probe
-# must therefore reject this conflicting package instead of accepting a
-# consumer that would select the stale headers.
-set(_legacy_partial_shadow_vulkan_root
-  "${_terreate_package_root}/legacy-partial-shadow-vulkan")
-set(_legacy_partial_shadow_vulkan_config_dir
-  "${_legacy_partial_shadow_vulkan_root}/lib/cmake/Vulkan")
-file(MAKE_DIRECTORY "${_legacy_partial_shadow_vulkan_config_dir}")
-file(WRITE "${_legacy_partial_shadow_vulkan_config_dir}/VulkanConfig.cmake"
-  "set(Vulkan_VERSION 1.3.0)\n"
-  "set(Vulkan_FOUND TRUE)\n"
-  "set(Vulkan_INCLUDE_DIR \"${_partial_shadow_vulkan_include}\")\n"
-  "set(Vulkan_INCLUDE_DIRS \"${_partial_shadow_vulkan_include}\")\n"
-  "set(Vulkan_LIBRARY \"${_linked_headers_vulkan_library}\")\n"
-  "add_library(Vulkan::Vulkan UNKNOWN IMPORTED)\n"
-  "set_target_properties(Vulkan::Vulkan PROPERTIES\n"
-  "  IMPORTED_LOCATION \"${_linked_headers_vulkan_library}\"\n"
-  "  INTERFACE_INCLUDE_DIRECTORIES \"${_linked_headers_vulkan_include}\")\n")
-file(WRITE
-  "${_legacy_partial_shadow_vulkan_config_dir}/VulkanConfigVersion.cmake"
-  "set(PACKAGE_VERSION \"1.3.0\")\n"
-  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
-  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
-  "endif()\n")
-terreate_expect_installed_graphics_rejection(
-  legacy-partial-shadow "${_legacy_partial_shadow_vulkan_config_dir}")
-
-function(terreate_expect_installed_graphics_acceptance name vulkan_config_dir)
-  set(_consumer
-    "${_terreate_package_root}/all_components/${name}-consumer")
-  file(MAKE_DIRECTORY "${_consumer}")
-  file(WRITE "${_consumer}/CMakeLists.txt"
-    "cmake_minimum_required(VERSION 3.28)\n"
-    "project(Terreate${name} LANGUAGES CXX)\n"
-    "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
-    "set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)\n"
-    "find_package(Terreate REQUIRED COMPONENTS Graphics)\n"
-    "if(NOT TARGET Terreate::Graphics)\n"
-    "  message(FATAL_ERROR \"accepted Vulkan package omitted Graphics\")\n"
-    "endif()\n")
-
-  set(_consumer_build
-    "${_terreate_package_root}/all_components/${name}-consumer-build")
-  file(REMOVE_RECURSE "${_consumer_build}")
-  set(_configure
-    "${CMAKE_COMMAND}"
-    -S "${_consumer}"
-    -B "${_consumer_build}")
-  if(DEFINED TERREATE_CMAKE_GENERATOR AND
-     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-    list(APPEND _configure -G "${TERREATE_CMAKE_GENERATOR}")
-  endif()
-  if(DEFINED TERREATE_CXX_COMPILER AND
-     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-    list(APPEND _configure
-      "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-  endif()
-  list(APPEND _configure
-    "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-    "-DVulkan_DIR:PATH=${vulkan_config_dir}"
-    -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE)
-  execute_process(
-    COMMAND ${_configure}
-    RESULT_VARIABLE _configure_result
-    OUTPUT_VARIABLE _configure_output
-    ERROR_VARIABLE _configure_error)
-  if(NOT _configure_result EQUAL 0)
-    message(FATAL_ERROR
-      "installed ${name} Vulkan package was rejected unexpectedly\n"
-      "${_configure_output}\n${_configure_error}")
-  endif()
-endfunction()
-
-function(terreate_expect_installed_graphics_legacy_include
-    name vulkan_config_dir expected_include_dir)
-  set(_consumer
-    "${_terreate_package_root}/all_components/${name}-consumer")
-  file(MAKE_DIRECTORY "${_consumer}")
-  file(WRITE "${_consumer}/CMakeLists.txt"
-    "cmake_minimum_required(VERSION 3.28)\n"
-    "project(Terreate${name} LANGUAGES CXX)\n"
-    "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
-    "set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)\n"
-    "find_package(Terreate REQUIRED COMPONENTS Graphics)\n"
-    "if(NOT TARGET Terreate::Graphics)\n"
-    "  message(FATAL_ERROR \"legacy Vulkan include fixture omitted Graphics\")\n"
-    "endif()\n"
-    "get_target_property(_legacy_graphics_includes Terreate::Graphics\n"
-    "  INTERFACE_INCLUDE_DIRECTORIES)\n"
-    "get_target_property(_legacy_graphics_system_includes Terreate::Graphics\n"
-    "  INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)\n"
-    "set(_legacy_graphics_all_includes\n"
-    "  \"\${_legacy_graphics_includes};\${_legacy_graphics_system_includes}\")\n"
-    "list(FIND _legacy_graphics_all_includes \"${expected_include_dir}\"\n"
-    "  _legacy_graphics_include_index)\n"
-    "if(_legacy_graphics_include_index EQUAL -1)\n"
-    "  message(FATAL_ERROR \"validated legacy Vulkan include path was not propagated to Graphics: "
-    "\${_legacy_graphics_all_includes}\")\n"
-    "endif()\n"
-    "add_executable(legacy_vulkan_include_consumer main.cpp)\n"
-    "target_link_libraries(legacy_vulkan_include_consumer PRIVATE Terreate::Graphics)\n"
-    "set_target_properties(legacy_vulkan_include_consumer PROPERTIES\n"
-    "  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)\n")
-  file(WRITE "${_consumer}/main.cpp" [=[
-#include <terreate/graphics/instance.hpp>
-#include <vulkan/vulkan_raii.hpp>
-
-static_assert(sizeof(vk::raii::Context) > 0);
-
-int main() { return 0; }
-]=])
-
-  set(_consumer_build
-    "${_terreate_package_root}/all_components/${name}-consumer-build")
-  file(REMOVE_RECURSE "${_consumer_build}")
-  set(_configure
-    "${CMAKE_COMMAND}"
-    -S "${_consumer}"
-    -B "${_consumer_build}")
-  if(DEFINED TERREATE_CMAKE_GENERATOR AND
-     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-    list(APPEND _configure -G "${TERREATE_CMAKE_GENERATOR}")
-  endif()
-  if(DEFINED TERREATE_CXX_COMPILER AND
-     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-    list(APPEND _configure
-      "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-  endif()
-  list(APPEND _configure
-    "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-    "-DVulkan_DIR:PATH=${vulkan_config_dir}"
-    -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE
-    -DCMAKE_FIND_PACKAGE_NO_MODULE=TRUE)
-  execute_process(
-    COMMAND ${_configure}
-    RESULT_VARIABLE _configure_result
-    OUTPUT_VARIABLE _configure_output
-    ERROR_VARIABLE _configure_error)
-  if(NOT _configure_result EQUAL 0)
-    message(FATAL_ERROR
-      "installed ${name} legacy Vulkan include consumer configuration failed\n"
-      "${_configure_output}\n${_configure_error}")
-  endif()
-
-  execute_process(
-    COMMAND "${CMAKE_COMMAND}" --build "${_consumer_build}"
-    RESULT_VARIABLE _build_result
-    OUTPUT_VARIABLE _build_output
-    ERROR_VARIABLE _build_error)
-  if(NOT _build_result EQUAL 0)
-    message(FATAL_ERROR
-      "installed ${name} legacy Vulkan include consumer build failed\n"
-      "${_build_output}\n${_build_error}")
-  endif()
-endfunction()
-
-# FindVulkan-compatible legacy variables can describe a complete Vulkan-Hpp
-# tree even when Vulkan::Vulkan publishes only the loader.  The installed
-# package must either reject that package or propagate the validated path to
-# the exported Graphics consumer; exercise the latter contract here.
-set(_legacy_variable_vulkan_root
-  "${_terreate_package_root}/legacy-variable-vulkan")
-set(_legacy_variable_vulkan_config_dir
-  "${_legacy_variable_vulkan_root}/lib/cmake/Vulkan")
-find_library(_legacy_variable_vulkan_library NAMES vulkan)
-if(NOT _legacy_variable_vulkan_library)
-  message(FATAL_ERROR
-    "legacy Vulkan variable fixture could not locate a Vulkan loader library")
-endif()
-file(MAKE_DIRECTORY "${_legacy_variable_vulkan_config_dir}")
-file(WRITE "${_legacy_variable_vulkan_config_dir}/VulkanConfig.cmake"
-  "set(Vulkan_VERSION 1.3.0)\n"
-  "set(Vulkan_FOUND TRUE)\n"
-  "set(Vulkan_INCLUDE_DIR \"$ENV{VULKAN_HEADERS_INCLUDE}\")\n"
-  "set(Vulkan_INCLUDE_DIRS \"$ENV{VULKAN_HEADERS_INCLUDE}\")\n"
-  "set(Vulkan_LIBRARY \"${_legacy_variable_vulkan_library}\")\n"
-  "add_library(Vulkan::Vulkan UNKNOWN IMPORTED)\n"
-  "set_target_properties(Vulkan::Vulkan PROPERTIES\n"
-  "  IMPORTED_LOCATION \"${_legacy_variable_vulkan_library}\")\n")
-file(WRITE "${_legacy_variable_vulkan_config_dir}/VulkanConfigVersion.cmake"
-  "set(PACKAGE_VERSION \"1.3.0\")\n"
-  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
-  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
-  "endif()\n")
-terreate_expect_installed_graphics_legacy_include(
-  legacy-variable "${_legacy_variable_vulkan_config_dir}"
-  "$ENV{VULKAN_HEADERS_INCLUDE}")
-
-# Each of these package-local Vulkan fixtures is intentionally incomplete.
-# They all declare a Vulkan 1.3 version and a Vulkan::Vulkan target so a
-# version-only or loader-only check cannot accept them.
-set(_missing_core_vulkan_root
-  "${_terreate_package_root}/missing-core-vulkan")
-set(_missing_core_vulkan_include "${_missing_core_vulkan_root}/include")
-set(_missing_core_vulkan_config_dir
-  "${_missing_core_vulkan_root}/lib/cmake/Vulkan")
-file(MAKE_DIRECTORY "${_missing_core_vulkan_include}/vulkan"
-  "${_missing_core_vulkan_config_dir}")
-file(WRITE "${_missing_core_vulkan_include}/vulkan/vulkan.hpp"
-  "// Hpp decoy without the required core header.\n")
-file(WRITE "${_missing_core_vulkan_include}/vulkan/vulkan_raii.hpp"
-  "// RAII decoy without the required core header.\n")
-file(WRITE "${_missing_core_vulkan_config_dir}/VulkanConfig.cmake"
-  "set(Vulkan_VERSION 1.3.0)\n"
-  "set(Vulkan_FOUND TRUE)\n"
-  "add_library(Vulkan::Vulkan INTERFACE IMPORTED)\n"
-  "set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
-  "  \"${_missing_core_vulkan_include}\")\n")
-file(WRITE "${_missing_core_vulkan_config_dir}/VulkanConfigVersion.cmake"
-  "set(PACKAGE_VERSION \"1.3.0\")\n"
-  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
-  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
-  "endif()\n")
-terreate_expect_installed_graphics_rejection(
-  missing-core "${_missing_core_vulkan_config_dir}")
-
-set(_missing_hpp_vulkan_root
-  "${_terreate_package_root}/missing-hpp-vulkan")
-set(_missing_hpp_vulkan_include "${_missing_hpp_vulkan_root}/include")
-set(_missing_hpp_vulkan_config_dir
-  "${_missing_hpp_vulkan_root}/lib/cmake/Vulkan")
-file(MAKE_DIRECTORY "${_missing_hpp_vulkan_include}/vulkan"
-  "${_missing_hpp_vulkan_config_dir}")
-file(WRITE "${_missing_hpp_vulkan_include}/vulkan/vulkan_core.h" [=[
-#define VK_API_VERSION_1_3 4202496U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 0x00000001U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 0x00000002U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT 0x00000004U
-using VkDebugUtilsMessageTypeFlagsEXT = unsigned int;
-]=])
-file(WRITE "${_missing_hpp_vulkan_include}/vulkan/vulkan_raii.hpp"
-  "class Context {}; class Instance {}; class DebugUtilsMessengerEXT {};\n")
-file(WRITE "${_missing_hpp_vulkan_config_dir}/VulkanConfig.cmake"
-  "set(Vulkan_VERSION 1.3.0)\n"
-  "set(Vulkan_FOUND TRUE)\n"
-  "add_library(Vulkan::Vulkan INTERFACE IMPORTED)\n"
-  "set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
-  "  \"${_missing_hpp_vulkan_include}\")\n")
-file(WRITE "${_missing_hpp_vulkan_config_dir}/VulkanConfigVersion.cmake"
-  "set(PACKAGE_VERSION \"1.3.0\")\n"
-  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
-  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
-  "endif()\n")
-terreate_expect_installed_graphics_rejection(
-  missing-hpp "${_missing_hpp_vulkan_config_dir}")
-
-set(_missing_device_vulkan_root
-  "${_terreate_package_root}/missing-device-address-binding-vulkan")
-set(_missing_device_vulkan_include "${_missing_device_vulkan_root}/include")
-set(_missing_device_vulkan_config_dir
-  "${_missing_device_vulkan_root}/lib/cmake/Vulkan")
-file(MAKE_DIRECTORY "${_missing_device_vulkan_include}/vulkan"
-  "${_missing_device_vulkan_config_dir}")
-file(WRITE "${_missing_device_vulkan_include}/vulkan/vulkan_core.h" [=[
-#define VK_API_VERSION_1_0 4194304U
-#define VK_API_VERSION_1_3 4202496U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 0x00000001U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT 0x00000002U
-#define VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT 0x00000004U
-using VkDebugUtilsMessageTypeFlagsEXT = unsigned int;
-]=])
-file(WRITE "${_missing_device_vulkan_include}/vulkan/vulkan.hpp" [=[
-#pragma once
-
-#include <vulkan/vulkan_core.h>
-
-namespace vk {
-
-enum class DebugUtilsMessageTypeFlagBitsEXT : unsigned int {
-  eGeneral = 1,
-  eValidation = 2,
-  ePerformance = 4,
-};
-
-struct Instance {};
-
-} // namespace vk
-]=])
-file(WRITE "${_missing_device_vulkan_include}/vulkan/vulkan_raii.hpp"
-  "#pragma once\n"
-  "#include <vulkan/vulkan.hpp>\n"
-  "namespace vk::raii {\n"
-  "class Context {}; class Instance {}; class DebugUtilsMessengerEXT {};\n"
-  "}\n")
-file(WRITE "${_missing_device_vulkan_config_dir}/VulkanConfig.cmake"
-  "set(Vulkan_VERSION 1.3.0)\n"
-  "set(Vulkan_FOUND TRUE)\n"
-  "add_library(Vulkan::Vulkan INTERFACE IMPORTED)\n"
-  "set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
-  "  \"${_missing_device_vulkan_include}\")\n")
-file(WRITE "${_missing_device_vulkan_config_dir}/VulkanConfigVersion.cmake"
-  "set(PACKAGE_VERSION \"1.3.0\")\n"
-  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
-  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
-  "endif()\n")
-terreate_expect_installed_graphics_acceptance(
-  missing-device-address-binding "${_missing_device_vulkan_config_dir}")
-
-# A Vulkan loader package can be present without the Vulkan-Hpp RAII header
-# required by Graphics' public API.  Exercise that distinction with a
-# package-local Vulkan config so the installed Terreate config cannot fall
-# through to an unrelated host include directory.
-set(_headerless_vulkan_root "${_terreate_package_root}/headerless-vulkan")
-set(_headerless_vulkan_include "${_headerless_vulkan_root}/include")
-set(_headerless_vulkan_decoy_include
-  "${_headerless_vulkan_root}/decoy-headers/include")
-set(_headerless_vulkan_config_dir
-  "${_headerless_vulkan_root}/lib/cmake/Vulkan")
-file(MAKE_DIRECTORY "${_headerless_vulkan_include}"
-  "${_headerless_vulkan_decoy_include}/vulkan"
-  "${_headerless_vulkan_config_dir}")
-file(WRITE "${_headerless_vulkan_decoy_include}/vulkan/vulkan_raii.hpp"
-  "// This header is attached only to Vulkan::Headers and package variables.\n")
-file(WRITE "${_headerless_vulkan_config_dir}/VulkanConfig.cmake"
-  "set(Vulkan_VERSION 1.3.0)\n"
-  "set(Vulkan_FOUND TRUE)\n"
-  "set(Vulkan_INCLUDE_DIRS \"${_headerless_vulkan_decoy_include}\")\n"
-  "set(Vulkan_INCLUDE_DIR \"${_headerless_vulkan_decoy_include}\")\n"
-  "add_library(Vulkan::Vulkan INTERFACE IMPORTED)\n"
-  "set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
-  "  \"${_headerless_vulkan_include}\")\n"
-  "add_library(Vulkan::Headers INTERFACE IMPORTED)\n"
-  "set_property(TARGET Vulkan::Headers PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
-  "  \"${_headerless_vulkan_decoy_include}\")\n")
-file(WRITE "${_headerless_vulkan_config_dir}/VulkanConfigVersion.cmake"
-  "set(PACKAGE_VERSION \"1.3.0\")\n"
-  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
-  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
-  "endif()\n")
-
-set(_headerless_optional_consumer
-  "${_terreate_package_root}/all_components/optional-graphics-without-raii")
-file(MAKE_DIRECTORY "${_headerless_optional_consumer}")
-file(WRITE "${_headerless_optional_consumer}/CMakeLists.txt"
-  "cmake_minimum_required(VERSION 3.28)\n"
-  "project(TerreateOptionalGraphicsWithoutRaii LANGUAGES CXX)\n"
-  "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
-  "find_package(Terreate REQUIRED COMPONENTS Core OPTIONAL_COMPONENTS Graphics)\n"
-  "if(NOT Terreate_FOUND OR NOT Terreate_Core_FOUND OR\n"
-  "   NOT TARGET Terreate::Core)\n"
-  "  message(FATAL_ERROR \"required Core was rejected while Vulkan-Hpp was absent\")\n"
-  "endif()\n"
-  "get_target_property(_headerless_core_links Terreate::Core\n"
-  "  INTERFACE_LINK_LIBRARIES)\n"
-  "if(\"\${_headerless_core_links}\" MATCHES \"Vulkan\")\n"
-  "  message(FATAL_ERROR\n"
-  "    \"Core acquired an unintended Vulkan dependency from optional Graphics\")\n"
-  "endif()\n"
-  "if(Terreate_Graphics_FOUND OR TARGET Terreate::Graphics)\n"
-  "  message(FATAL_ERROR\n"
-  "    \"optional Graphics was imported without vulkan/vulkan_raii.hpp\")\n"
-  "endif()\n"
-  "if(NOT DEFINED Terreate_NOT_FOUND_MESSAGE OR\n"
-  "   NOT \"\${Terreate_NOT_FOUND_MESSAGE}\" MATCHES \"vulkan/vulkan_raii\")\n"
-  "  message(FATAL_ERROR\n"
-  "    \"optional Graphics status did not name the missing Vulkan-Hpp header\")\n"
-  "endif()\n"
-  "add_executable(headerless_optional_consumer main.cpp)\n"
-  "target_link_libraries(headerless_optional_consumer PRIVATE Terreate::Core)\n"
-  "set_target_properties(headerless_optional_consumer PROPERTIES\n"
-  "  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)\n")
-file(WRITE "${_headerless_optional_consumer}/main.cpp"
-  "#include <terreate/core/result.hpp>\n"
-  "int main() {\n"
-  "  terreate::Result<int> result = 37;\n"
-  "  return terreate::unwrap(result) == 37 ? 0 : 1;\n"
-  "}\n")
-
-set(_headerless_optional_consumer_build
-  "${_terreate_package_root}/all_components/optional-graphics-without-raii-build")
-file(REMOVE_RECURSE "${_headerless_optional_consumer_build}")
-set(_headerless_optional_configure
-  "${CMAKE_COMMAND}"
-  -S "${_headerless_optional_consumer}"
-  -B "${_headerless_optional_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _headerless_optional_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _headerless_optional_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _headerless_optional_configure
-  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-  "-DVulkan_DIR:PATH=${_headerless_vulkan_config_dir}"
-  -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE)
-execute_process(
-  COMMAND ${_headerless_optional_configure}
-  RESULT_VARIABLE _headerless_optional_configure_result
-  OUTPUT_VARIABLE _headerless_optional_configure_output
-  ERROR_VARIABLE _headerless_optional_configure_error)
-if(NOT _headerless_optional_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed optional Graphics-without-Raii consumer configuration failed\n"
-    "${_headerless_optional_configure_output}\n"
-    "${_headerless_optional_configure_error}")
-endif()
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${_headerless_optional_consumer_build}"
-  RESULT_VARIABLE _headerless_optional_build_result
-  OUTPUT_VARIABLE _headerless_optional_build_output
-  ERROR_VARIABLE _headerless_optional_build_error)
-if(NOT _headerless_optional_build_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed optional Graphics-without-Raii consumer build failed\n"
-    "${_headerless_optional_build_output}\n"
-    "${_headerless_optional_build_error}")
-endif()
-
-set(_headerless_required_consumer
-  "${_terreate_package_root}/all_components/required-graphics-without-raii")
-file(MAKE_DIRECTORY "${_headerless_required_consumer}")
-file(WRITE "${_headerless_required_consumer}/CMakeLists.txt"
-  "cmake_minimum_required(VERSION 3.28)\n"
-  "project(TerreateRequiredGraphicsWithoutRaii LANGUAGES CXX)\n"
-  "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
-  "find_package(Terreate REQUIRED COMPONENTS Graphics)\n")
-
-set(_headerless_required_consumer_build
-  "${_terreate_package_root}/all_components/required-graphics-without-raii-build")
-file(REMOVE_RECURSE "${_headerless_required_consumer_build}")
-set(_headerless_required_configure
-  "${CMAKE_COMMAND}"
-  -S "${_headerless_required_consumer}"
-  -B "${_headerless_required_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _headerless_required_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _headerless_required_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _headerless_required_configure
-  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-  "-DVulkan_DIR:PATH=${_headerless_vulkan_config_dir}"
-  -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE)
-execute_process(
-  COMMAND ${_headerless_required_configure}
-  RESULT_VARIABLE _headerless_required_configure_result
-  OUTPUT_VARIABLE _headerless_required_configure_output
-  ERROR_VARIABLE _headerless_required_configure_error)
-if(_headerless_required_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed required Graphics consumer unexpectedly configured without "
-    "vulkan/vulkan_raii.hpp\n"
-    "${_headerless_required_configure_output}")
-endif()
-string(TOLOWER
-  "${_headerless_required_configure_output}\n${_headerless_required_configure_error}"
-  _headerless_required_diagnostics)
-if(NOT _headerless_required_diagnostics MATCHES "vulkan/vulkan_raii")
-  message(FATAL_ERROR
-    "required Graphics failure did not identify the missing Vulkan-Hpp header\n"
-    "${_headerless_required_configure_output}\n"
-    "${_headerless_required_configure_error}")
-endif()
-
-# A loader/header package below the project's Vulkan 1.3 baseline must be
-# rejected at package configuration time, even when it happens to provide the
-# RAII header.  This keeps a pre-1.3 package from reaching consumer compile.
-set(_pre13_vulkan_root "${_terreate_package_root}/pre13-vulkan")
-set(_pre13_vulkan_include "${_pre13_vulkan_root}/include")
-set(_pre13_vulkan_config_dir "${_pre13_vulkan_root}/lib/cmake/Vulkan")
-file(MAKE_DIRECTORY "${_pre13_vulkan_include}/vulkan"
-  "${_pre13_vulkan_config_dir}")
-file(WRITE "${_pre13_vulkan_include}/vulkan/vulkan_raii.hpp"
-  "// The RAII header exists, but this package is Vulkan 1.2.\n")
-file(WRITE "${_pre13_vulkan_include}/vulkan/vulkan_core.h"
-  "#define VK_API_VERSION_1_2 1\n")
-file(WRITE "${_pre13_vulkan_config_dir}/VulkanConfig.cmake"
-  "set(Vulkan_VERSION 1.2.0)\n"
-  "set(Vulkan_FOUND TRUE)\n"
-  "add_library(Vulkan::Vulkan INTERFACE IMPORTED)\n"
-  "set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
-  "  \"${_pre13_vulkan_include}\")\n")
-file(WRITE "${_pre13_vulkan_config_dir}/VulkanConfigVersion.cmake"
-  "set(PACKAGE_VERSION \"1.2.0\")\n"
-  "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"
-  "  set(PACKAGE_VERSION_COMPATIBLE TRUE)\n"
-  "endif()\n")
-
-set(_pre13_consumer
-  "${_terreate_package_root}/all_components/pre13-graphics-consumer")
-file(MAKE_DIRECTORY "${_pre13_consumer}")
-file(WRITE "${_pre13_consumer}/CMakeLists.txt"
-  "cmake_minimum_required(VERSION 3.28)\n"
-  "project(TerreatePre13VulkanConsumer LANGUAGES CXX)\n"
-  "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
-  "set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)\n"
-  "find_package(Terreate REQUIRED COMPONENTS Core OPTIONAL_COMPONENTS Graphics)\n"
-  "if(NOT Terreate_FOUND OR NOT Terreate_Core_FOUND OR\n"
-  "   NOT TARGET Terreate::Core)\n"
-  "  message(FATAL_ERROR\n"
-  "    \"required Core was rejected while Vulkan was pre-1.3\")\n"
-  "endif()\n"
-  "if(Terreate_Graphics_FOUND OR TARGET Terreate::Graphics)\n"
-  "  message(FATAL_ERROR\n"
-  "    \"optional Graphics was imported from pre-1.3 Vulkan\")\n"
-  "endif()\n"
-  "if(NOT DEFINED Terreate_NOT_FOUND_MESSAGE OR\n"
-  "   NOT \"\${Terreate_NOT_FOUND_MESSAGE}\" MATCHES\n"
-  "      \"Vulkan|1\\.3|pre-1\\.3\")\n"
-  "  message(FATAL_ERROR\n"
-  "    \"pre-1.3 Graphics rejection did not identify the Vulkan baseline\")\n"
-  "endif()\n"
-  "add_executable(pre13_core_consumer main.cpp)\n"
-  "target_link_libraries(pre13_core_consumer PRIVATE Terreate::Core)\n"
-  "set_target_properties(pre13_core_consumer PROPERTIES\n"
-  "  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)\n")
-file(WRITE "${_pre13_consumer}/main.cpp"
-  "#include <terreate/core/result.hpp>\n"
-  "int main() {\n"
-  "  terreate::Result<int> result = 41;\n"
-  "  return terreate::unwrap(result) == 41 ? 0 : 1;\n"
-  "}\n")
-
-set(_pre13_consumer_build
-  "${_terreate_package_root}/all_components/pre13-graphics-consumer-build")
-file(REMOVE_RECURSE "${_pre13_consumer_build}")
-set(_pre13_configure
-  "${CMAKE_COMMAND}"
-  -S "${_pre13_consumer}"
-  -B "${_pre13_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _pre13_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _pre13_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _pre13_configure
-  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-  "-DVulkan_DIR:PATH=${_pre13_vulkan_config_dir}"
-  -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE)
-execute_process(
-  COMMAND ${_pre13_configure}
-  RESULT_VARIABLE _pre13_configure_result
-  OUTPUT_VARIABLE _pre13_configure_output
-  ERROR_VARIABLE _pre13_configure_error)
-if(NOT _pre13_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed pre-1.3 optional Graphics consumer configuration failed\n"
-    "${_pre13_configure_output}\n${_pre13_configure_error}")
-endif()
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${_pre13_consumer_build}"
-  RESULT_VARIABLE _pre13_build_result
-  OUTPUT_VARIABLE _pre13_build_output
-  ERROR_VARIABLE _pre13_build_error)
-if(NOT _pre13_build_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed pre-1.3 Core isolation consumer build failed\n"
-    "${_pre13_build_output}\n${_pre13_build_error}")
-endif()
-
-set(_pre13_required_consumer
-  "${_terreate_package_root}/all_components/pre13-required-graphics")
-file(MAKE_DIRECTORY "${_pre13_required_consumer}")
-file(WRITE "${_pre13_required_consumer}/CMakeLists.txt"
-  "cmake_minimum_required(VERSION 3.28)\n"
-  "project(TerreatePre13RequiredGraphics LANGUAGES CXX)\n"
-  "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
-  "set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)\n"
-  "find_package(Terreate REQUIRED COMPONENTS Graphics)\n")
-set(_pre13_required_build
-  "${_terreate_package_root}/all_components/pre13-required-graphics-build")
-file(REMOVE_RECURSE "${_pre13_required_build}")
-set(_pre13_required_configure
-  "${CMAKE_COMMAND}"
-  -S "${_pre13_required_consumer}"
-  -B "${_pre13_required_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _pre13_required_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _pre13_required_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _pre13_required_configure
-  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
-  "-DVulkan_DIR:PATH=${_pre13_vulkan_config_dir}"
-  -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=TRUE)
-execute_process(
-  COMMAND ${_pre13_required_configure}
-  RESULT_VARIABLE _pre13_required_configure_result
-  OUTPUT_VARIABLE _pre13_required_configure_output
-  ERROR_VARIABLE _pre13_required_configure_error)
-if(_pre13_required_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "installed required Graphics unexpectedly accepted pre-1.3 Vulkan\n"
-    "${_pre13_required_configure_output}")
-endif()
-string(TOLOWER
-  "${_pre13_required_configure_output}\n${_pre13_required_configure_error}"
-  _pre13_required_diagnostics)
-if(NOT _pre13_required_diagnostics MATCHES "vulkan|1\\.3|pre-1\\.3")
-  message(FATAL_ERROR
-    "pre-1.3 required Graphics failure did not identify the Vulkan baseline\n"
-    "${_pre13_required_configure_output}\n"
-    "${_pre13_required_configure_error}")
-endif()
-
-terreate_package_configure_and_install(core_only OFF OFF)
-set(_core_prefix "${core_only_PREFIX}")
-
-set(_core_consumer "${_terreate_package_root}/core_only/core-consumer")
-file(MAKE_DIRECTORY "${_core_consumer}")
-file(WRITE "${_core_consumer}/CMakeLists.txt" [=[
-cmake_minimum_required(VERSION 3.28)
-project(TerreateCoreOnlyConsumer LANGUAGES CXX)
-find_package(Terreate REQUIRED COMPONENTS Core)
-if(TARGET Terreate::Platform OR TARGET Terreate::Graphics)
-  message(FATAL_ERROR "Core-only package exported an optional component")
-endif()
-add_executable(core_only_consumer main.cpp)
-target_link_libraries(core_only_consumer PRIVATE Terreate::Core)
-set_target_properties(core_only_consumer PROPERTIES
-  CXX_STANDARD 23
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF)
-]=])
-file(WRITE "${_core_consumer}/main.cpp" [=[
-#include <terreate/core/diagnostics.hpp>
-#include <terreate/core/result.hpp>
-
-int main() {
-  terreate::Result<int> result = 23;
-  terreate::DiagnosticEvent event{
-      .severity = terreate::DiagnosticSeverity::info,
-      .categories = {"package-specific"}};
-  terreate::DiagnosticSinkView sink;
-  sink.emit(event);
-  return terreate::unwrap(result) == 23 && event.severity == terreate::DiagnosticSeverity::info &&
-                 event.categories.size() == 1 && event.categories.front() == "package-specific"
-             ? 0
-             : 1;
-}
-]=])
-
-set(_core_consumer_build
-  "${_terreate_package_root}/core_only/core-consumer-build")
-set(_core_consumer_configure
-  "${CMAKE_COMMAND}"
-  -S "${_core_consumer}"
-  -B "${_core_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _core_consumer_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _core_consumer_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _core_consumer_configure
-  "-DCMAKE_PREFIX_PATH:PATH=${_core_prefix}")
-execute_process(
-  COMMAND ${_core_consumer_configure}
-  RESULT_VARIABLE _core_consumer_configure_result
-  OUTPUT_VARIABLE _core_consumer_configure_output
-  ERROR_VARIABLE _core_consumer_configure_error)
-if(NOT _core_consumer_configure_result EQUAL 0)
-  message(FATAL_ERROR
-    "Core-only package consumer configuration failed\n"
-    "${_core_consumer_configure_output}\n${_core_consumer_configure_error}")
-endif()
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${_core_consumer_build}"
-  RESULT_VARIABLE _core_consumer_build_result
-  OUTPUT_VARIABLE _core_consumer_build_output
-  ERROR_VARIABLE _core_consumer_build_error)
-if(NOT _core_consumer_build_result EQUAL 0)
-  message(FATAL_ERROR
-    "Core-only package consumer build failed\n"
-    "${_core_consumer_build_output}\n${_core_consumer_build_error}")
-endif()
-
-set(_quiet_consumer "${_terreate_package_root}/core_only/quiet-consumer")
-file(MAKE_DIRECTORY "${_quiet_consumer}")
-file(WRITE "${_quiet_consumer}/CMakeLists.txt" [=[
-cmake_minimum_required(VERSION 3.28)
-project(TerreateQuietMissingComponentConsumer LANGUAGES CXX)
-find_package(Terreate QUIET COMPONENTS Graphics)
-if(NOT DEFINED Terreate_FOUND OR Terreate_FOUND)
-  message(FATAL_ERROR
-    "non-REQUIRED missing component did not set Terreate_FOUND=FALSE")
-endif()
-if(NOT DEFINED Terreate_Graphics_FOUND OR Terreate_Graphics_FOUND)
-  message(FATAL_ERROR
-    "missing component did not set Terreate_Graphics_FOUND=FALSE")
-endif()
-if(NOT DEFINED Terreate_NOT_FOUND_MESSAGE OR
-   NOT "${Terreate_NOT_FOUND_MESSAGE}" MATCHES "disabled")
-  message(FATAL_ERROR
-    "missing component did not set Terreate_NOT_FOUND_MESSAGE")
-endif()
-]=])
-
-set(_quiet_consumer_build
-  "${_terreate_package_root}/core_only/quiet-consumer-build")
-set(_quiet_configure
-  "${CMAKE_COMMAND}"
-  -S "${_quiet_consumer}"
-  -B "${_quiet_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _quiet_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _quiet_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _quiet_configure
-  "-DCMAKE_PREFIX_PATH:PATH=${_core_prefix}")
-execute_process(
-  COMMAND ${_quiet_configure}
-  RESULT_VARIABLE _quiet_result
-  OUTPUT_VARIABLE _quiet_output
-  ERROR_VARIABLE _quiet_error)
-if(NOT _quiet_result EQUAL 0)
-  message(FATAL_ERROR
-    "quiet optional missing component configuration failed\n"
-    "${_quiet_output}\n${_quiet_error}")
-endif()
-
-set(_disabled_consumer "${_terreate_package_root}/core_only/disabled-consumer")
-file(MAKE_DIRECTORY "${_disabled_consumer}")
-file(WRITE "${_disabled_consumer}/CMakeLists.txt" [=[
-cmake_minimum_required(VERSION 3.28)
-project(TerreateDisabledComponentConsumer LANGUAGES CXX)
 find_package(Terreate REQUIRED COMPONENTS Graphics)
 ]=])
-
-set(_disabled_consumer_build
-  "${_terreate_package_root}/core_only/disabled-consumer-build")
-set(_disabled_configure
-  "${CMAKE_COMMAND}"
-  -S "${_disabled_consumer}"
-  -B "${_disabled_consumer_build}")
-if(DEFINED TERREATE_CMAKE_GENERATOR AND
-   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-  list(APPEND _disabled_configure -G "${TERREATE_CMAKE_GENERATOR}")
-endif()
-if(DEFINED TERREATE_CXX_COMPILER AND
-   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-  list(APPEND _disabled_configure
-    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-endif()
-list(APPEND _disabled_configure
-  "-DCMAKE_PREFIX_PATH:PATH=${_core_prefix}")
+set(_decoy_command
+  "${CMAKE_COMMAND}" -S "${_decoy_consumer}" -B "${_decoy_build}"
+  "-DCMAKE_PREFIX_PATH:PATH=${_all_prefix}"
+  "-DVulkan_DIR:PATH=${_decoy_vulkan_config}")
+terreate_append_generator_and_compiler(_decoy_command)
 execute_process(
-  COMMAND ${_disabled_configure}
-  RESULT_VARIABLE _disabled_result
-  OUTPUT_VARIABLE _disabled_output
-  ERROR_VARIABLE _disabled_error)
-if(_disabled_result EQUAL 0)
-  message(FATAL_ERROR
-    "find_package unexpectedly accepted disabled Graphics component")
+  COMMAND ${_decoy_command}
+  RESULT_VARIABLE _decoy_result
+  OUTPUT_VARIABLE _decoy_output
+  ERROR_VARIABLE _decoy_error)
+if(_decoy_result EQUAL 0)
+  message(FATAL_ERROR "incomplete Vulkan package unexpectedly enabled Graphics")
 endif()
-string(TOLOWER "${_disabled_output}\n${_disabled_error}" _disabled_diagnostics)
-if(NOT _disabled_diagnostics MATCHES "disabled|unavailable|not found|not.*built")
+string(TOLOWER "${_decoy_output}\n${_decoy_error}" _decoy_diagnostics)
+if(NOT _decoy_diagnostics MATCHES "compile|declaration|vulkan")
   message(FATAL_ERROR
-    "disabled component diagnostic was not actionable:\n"
-    "${_disabled_output}\n${_disabled_error}")
+    "incomplete Vulkan rejection was not actionable\n"
+    "${_decoy_output}\n${_decoy_error}")
 endif()
-if(NOT "${_disabled_output}\n${_disabled_error}" MATCHES
-   "TERREATE_BUILD_GRAPHICS=ON")
-  message(FATAL_ERROR
-    "disabled component diagnostic did not name the exact remediation option:\n"
-    "${_disabled_output}\n${_disabled_error}")
-endif()
-
-# Exercise the other independently installable component closures as packages,
-# not only as source-subdirectory configurations.  The installed exports must
-# retain Core as the dependency of Platform and Graphics, while never importing
-# an optional sibling merely because it was built in a different package.
-function(terreate_build_installed_component_consumer name prefix component)
-  set(_consumer
-    "${_terreate_package_root}/${name}/consumer")
-  file(MAKE_DIRECTORY "${_consumer}")
-
-  set(_consumer_contents "")
-  string(APPEND _consumer_contents
-    "cmake_minimum_required(VERSION 3.28)\n"
-    "project(Terreate${name}Consumer LANGUAGES CXX)\n"
-    "find_package(Terreate REQUIRED COMPONENTS ${component})\n"
-    "if(NOT TARGET Terreate::Core OR NOT TARGET Terreate::${component})\n"
-    "  message(FATAL_ERROR \"${name} package omitted its requested target closure\")\n"
-    "endif()\n")
-  set(_source "")
-  if("${component}" STREQUAL "Platform")
-    string(APPEND _consumer_contents
-      "if(TARGET Terreate::Graphics OR TARGET Vulkan::Vulkan)\n"
-      "  message(FATAL_ERROR \"Platform-only package imported Graphics or Vulkan\")\n"
-      "endif()\n"
-      "get_target_property(_platform_links Terreate::Platform\n"
-      "  INTERFACE_LINK_LIBRARIES)\n"
-      "if(NOT \"\${_platform_links}\" MATCHES \"Core\" OR\n"
-      "   \"\${_platform_links}\" MATCHES \"Graphics|Vulkan\")\n"
-      "  message(FATAL_ERROR \"Platform package has an invalid dependency closure: \${_platform_links}\")\n"
-      "endif()\n"
-      "add_executable(package_component_consumer main.cpp)\n"
-      "target_link_libraries(package_component_consumer PRIVATE Terreate::Platform)\n")
-    string(APPEND _source "int main() { return 0; }\n")
-  elseif("${component}" STREQUAL "Graphics")
-    string(APPEND _consumer_contents
-      "if(TARGET Terreate::Platform OR NOT TARGET Vulkan::Vulkan OR NOT Vulkan_FOUND)\n"
-      "  message(FATAL_ERROR \"Graphics-only package omitted Vulkan or imported Platform\")\n"
-      "endif()\n"
-      "get_target_property(_graphics_links Terreate::Graphics\n"
-      "  INTERFACE_LINK_LIBRARIES)\n"
-      "if(NOT \"\${_graphics_links}\" MATCHES \"Core\" OR\n"
-      "   NOT \"\${_graphics_links}\" MATCHES \"Vulkan::Vulkan\" OR\n"
-      "   \"\${_graphics_links}\" MATCHES \"Platform\")\n"
-      "  message(FATAL_ERROR \"Graphics package has an invalid dependency closure: \${_graphics_links}\")\n"
-      "endif()\n"
-      "add_executable(package_component_consumer main.cpp)\n"
-      "target_link_libraries(package_component_consumer PRIVATE Terreate::Graphics)\n")
-    string(APPEND _source
-      "#include <terreate/graphics/instance.hpp>\n"
-      "int main() { return 0; }\n")
-  else()
-    message(FATAL_ERROR "unsupported installed package component ${component}")
-  endif()
-  string(APPEND _consumer_contents
-    "set_target_properties(package_component_consumer PROPERTIES\n"
-    "  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)\n")
-
-  file(WRITE "${_consumer}/CMakeLists.txt" "${_consumer_contents}")
-  file(WRITE "${_consumer}/main.cpp" "${_source}")
-
-  set(_consumer_build
-    "${_terreate_package_root}/${name}/consumer-build")
-  file(REMOVE_RECURSE "${_consumer_build}")
-  set(_configure
-    "${CMAKE_COMMAND}"
-    -S "${_consumer}"
-    -B "${_consumer_build}")
-  if(DEFINED TERREATE_CMAKE_GENERATOR AND
-     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
-    list(APPEND _configure -G "${TERREATE_CMAKE_GENERATOR}")
-  endif()
-  if(DEFINED TERREATE_CXX_COMPILER AND
-     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
-    list(APPEND _configure
-      "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
-  endif()
-  list(APPEND _configure "-DCMAKE_PREFIX_PATH:PATH=${prefix}")
-  execute_process(
-    COMMAND ${_configure}
-    RESULT_VARIABLE _configure_result
-    OUTPUT_VARIABLE _configure_output
-    ERROR_VARIABLE _configure_error)
-  if(NOT _configure_result EQUAL 0)
-    message(FATAL_ERROR
-      "installed ${name} ${component} consumer configuration failed\n"
-      "${_configure_output}\n${_configure_error}")
-  endif()
-
-  execute_process(
-    COMMAND "${CMAKE_COMMAND}" --build "${_consumer_build}"
-    RESULT_VARIABLE _build_result
-    OUTPUT_VARIABLE _build_output
-    ERROR_VARIABLE _build_error)
-  if(NOT _build_result EQUAL 0)
-    message(FATAL_ERROR
-      "installed ${name} ${component} consumer build failed\n"
-      "${_build_output}\n${_build_error}")
-  endif()
-endfunction()
-
-terreate_package_configure_and_install(platform_only ON OFF)
-terreate_build_installed_component_consumer(
-  platform_only "${platform_only_PREFIX}" Platform)
-
-terreate_package_configure_and_install(graphics_only OFF ON)
-terreate_build_installed_component_consumer(
-  graphics_only "${graphics_only_PREFIX}" Graphics)

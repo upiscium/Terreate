@@ -15,6 +15,13 @@
 
 namespace terreate::graphics {
 
+class Instance;
+class PhysicalDevice;
+struct PhysicalDeviceInventory;
+
+[[nodiscard]] terreate::Result<PhysicalDeviceInventory>
+queryPhysicalDevices(const Instance &instance);
+
 /// Vulkan instance API versions are represented using Vulkan's packed version
 /// value.  A missing version in InstanceDescription is deliberately different
 /// from an explicit value: it selects Vulkan 1.3 through the documented
@@ -217,9 +224,10 @@ enum class InstanceError : std::uint8_t {
 /// Instance has no public default constructor for an empty state and is
 /// produced only by a successful createInstance call.  Move construction and
 /// move assignment transfer the native ownership; a moved-from Instance has no
-/// handle or plan.  Borrowed values obtained from an Instance should not be
-/// retained across any move of that Instance; reacquire them from the new
-/// owner.
+/// handle or plan.  Borrowed values belonging to the source implementation
+/// follow that implementation to its new owner because the implementation is
+/// moved by unique_ptr.  A borrow whose parent is destroyed or displaced by
+/// move assignment must not be used again.
 class Instance {
 public:
   Instance() = delete;
@@ -233,10 +241,12 @@ public:
   [[nodiscard]] explicit operator bool() const noexcept;
   [[nodiscard]] bool valid() const noexcept;
 
-  /// Return a borrowed copy of the native handle.  This does not transfer
-  /// ownership or permit destruction through the returned value.  The handle
-  /// must not be used after this Instance is destroyed or participates in a
-  /// move; reacquire it from the current owning Instance instead.
+  /// Return a borrowed copy of the native handle.  Ownership never transfers
+  /// to the caller, and callers must never destroy the Vulkan instance through
+  /// this handle.  The returned handle is invalid after this Instance is
+  /// destroyed or participates in a move; reacquire it from the current
+  /// owning Instance instead.  This API relies on the caller to follow those
+  /// rules; the handle type cannot enforce them.
   [[nodiscard]] vk::Instance nativeHandle() const noexcept;
 
   /// Return a pointer to the effective configuration used for native creation.
@@ -249,12 +259,15 @@ public:
 private:
   struct Impl;
 
-  explicit Instance(std::unique_ptr<Impl> impl) noexcept;
+  explicit Instance(std::unique_ptr<Impl> implementation) noexcept;
 
-  std::unique_ptr<Impl> impl_{};
+  std::unique_ptr<Impl> implementation_{};
 
-  friend terreate::Result<Instance> createInstance(const InstancePlan &plan,
-                                                   terreate::DiagnosticSinkView sink);
+  friend auto createInstance(const InstancePlan &plan, terreate::DiagnosticSinkView sink)
+      -> terreate::Result<Instance>;
+  friend class PhysicalDevice;
+  friend auto queryPhysicalDevices(const Instance &instance)
+      -> terreate::Result<PhysicalDeviceInventory>;
 };
 
 /// Query the loader's instance API version, instance extensions, and layers.
@@ -281,7 +294,8 @@ resolveInstance(const InstanceDescription &description, const InstanceCapabiliti
 /// successful Instance retains its own copy.  The sink view is also copied into
 /// callback state, but its application-owned target is not; that target must
 /// outlive the returned Instance and all callbacks delivered through it.
-[[nodiscard]] auto createInstance(const InstancePlan &plan, terreate::DiagnosticSinkView sink = {})
+[[nodiscard]]
+auto createInstance(const InstancePlan &plan, terreate::DiagnosticSinkView sink = {})
     -> terreate::Result<Instance>;
 
 } // namespace terreate::graphics

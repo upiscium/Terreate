@@ -186,6 +186,7 @@ function(terreate_probe_vulkan_headers include_directories result_variable)
 
   file(WRITE "${_probe_source_dir}/probe.cpp" [=[
 #include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_raii.hpp>
@@ -196,6 +197,7 @@ static_assert(VK_API_VERSION_1_3 != 0);
 static_assert(sizeof(vk::raii::Context) > 0);
 static_assert(sizeof(vk::raii::Instance) > 0);
 static_assert(sizeof(vk::raii::DebugUtilsMessengerEXT) > 0);
+static_assert(sizeof(vk::raii::PhysicalDevice) > 0);
 
 int main() { return 0; }
 ]=])
@@ -413,6 +415,19 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
     set_tests_properties(graphics.instance PROPERTIES
       PASS_REGULAR_EXPRESSION
         "graphics\\.instance: headless-instance=PASS")
+
+    add_executable(terreate_graphics_physical_device_tests
+      tests/test_graphics_physical_device.cpp)
+    target_link_libraries(terreate_graphics_physical_device_tests
+      PRIVATE Terreate::Graphics)
+    target_include_directories(terreate_graphics_physical_device_tests PRIVATE
+      "${PROJECT_SOURCE_DIR}/modules/graphics/src")
+    terreate_configure_target(terreate_graphics_physical_device_tests)
+    add_test(NAME graphics.physical_device
+      COMMAND terreate_graphics_physical_device_tests)
+    set_tests_properties(graphics.physical_device PROPERTIES
+      PASS_REGULAR_EXPRESSION
+        "graphics\\.physical-device: headless-query=PASS")
   endif()
 
   add_test(
