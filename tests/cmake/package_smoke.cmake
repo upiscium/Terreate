@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-           "^include/terreate/(core/(diagnostics|error|result)|graphics/(instance|physical_device))\\.hpp$")
+           "^include/terreate/(core/(diagnostics|error|result)|graphics/(device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -297,6 +297,7 @@ foreach(_forbidden_graphics_marker IN ITEMS
 endforeach()
 
 set(_graphics_consumer_source [=[
+#include <terreate/graphics/device.hpp>
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
 #include <vulkan/vulkan_raii.hpp>
@@ -305,6 +306,13 @@ set(_graphics_consumer_source [=[
 #include <type_traits>
 #include <utility>
 
+static_assert(!std::is_default_constructible_v<terreate::graphics::Device>);
+static_assert(!std::is_copy_constructible_v<terreate::graphics::Device>);
+static_assert(std::is_move_constructible_v<terreate::graphics::Device>);
+static_assert(std::is_copy_constructible_v<terreate::graphics::Queue>);
+static_assert(std::is_trivially_copyable_v<terreate::graphics::Queue>);
+static_assert(!std::is_constructible_v<terreate::graphics::Queue,
+                                      vk::Queue, const void *>);
 static_assert(std::is_copy_constructible_v<terreate::graphics::PhysicalDevice>);
 static_assert(std::is_trivially_copyable_v<terreate::graphics::PhysicalDevice>);
 static_assert(sizeof(terreate::graphics::PhysicalDevice) <= 2 * sizeof(void *));
@@ -369,7 +377,48 @@ int main() {
   }
   const auto selection = terreate::graphics::selectPhysicalDevice(
       candidate, terreate::graphics::PhysicalDeviceRequirements{});
-  return selection ? 0 : 8;
+  if (!selection) {
+    return 8;
+  }
+
+  std::size_t queue_family_index = 0;
+  vk::QueueFlags queue_flags{};
+  for (std::size_t index = 0; index < candidate.capabilities().queue_families.size(); ++index) {
+    const auto family = candidate.capabilities().queue_families[index];
+    if (family.queueCount == 0 || static_cast<VkQueueFlags>(family.queueFlags) == 0) {
+      continue;
+    }
+    queue_family_index = index;
+    queue_flags = (static_cast<VkQueueFlags>(family.queueFlags) &
+                   static_cast<VkQueueFlags>(vk::QueueFlagBits::eGraphics)) != 0
+                      ? vk::QueueFlagBits::eGraphics
+                      : ((static_cast<VkQueueFlags>(family.queueFlags) &
+                          static_cast<VkQueueFlags>(vk::QueueFlagBits::eCompute)) != 0
+                             ? vk::QueueFlagBits::eCompute
+                             : vk::QueueFlagBits::eTransfer);
+    break;
+  }
+  if (static_cast<VkQueueFlags>(queue_flags) == 0) {
+    return 9;
+  }
+  terreate::graphics::DeviceDescription device_description;
+  device_description.queue_requests.push_back(terreate::graphics::DeviceQueueRequest{
+      .caller_id = "package-main",
+      .strength = terreate::graphics::RequirementStrength::required,
+      .required_flags = queue_flags,
+      .allowed_family_indices = {queue_family_index},
+      .preferred_family_indices = {queue_family_index},
+      .priority = 1.0F,
+  });
+  const auto device_plan = terreate::graphics::resolveDevice(candidate, device_description);
+  if (!device_plan) {
+    return 10;
+  }
+  auto device = terreate::graphics::createDevice(*instance, *device_plan);
+  if (!device || !device->valid() || !device->queue("package-main")) {
+    return 11;
+  }
+  return device->plan() != nullptr && device->queues().size() == 1 ? 0 : 12;
 }
 ]=])
 terreate_build_consumer(all_components_runtime "${_all_prefix}" Graphics
@@ -688,26 +737,36 @@ if(NOT _required_no_vulkan_diagnostics MATCHES "vulkan")
     "${_required_no_vulkan_output}\n${_required_no_vulkan_error}")
 endif()
 
-# A version-only or loader-only Vulkan package must not satisfy the installed
-# Graphics header contract.  The target intentionally exposes decoy files that
-# do not contain the declarations used by the isolated compile probe.
+# A partial Vulkan package must not satisfy the installed Graphics header
+# contract, even when it also publishes a complete transitive Headers target.
+# The partial directory is intentionally first in the effective target include
+# order, so a probe that checks each directory in isolation would accept the
+# package and defer the failure to a consumer compile.
 set(_decoy_vulkan_root "${_terreate_package_root}/decoy-vulkan")
 set(_decoy_vulkan_include "${_decoy_vulkan_root}/include")
 set(_decoy_vulkan_config "${_decoy_vulkan_root}/lib/cmake/Vulkan")
 file(MAKE_DIRECTORY "${_decoy_vulkan_include}/vulkan"
   "${_decoy_vulkan_config}")
 file(WRITE "${_decoy_vulkan_include}/vulkan/vulkan_core.h"
+  "#pragma once\n"
   "#define VK_API_VERSION_1_3 4202496U\n")
 file(WRITE "${_decoy_vulkan_include}/vulkan/vulkan.hpp"
-  "#pragma once\n")
+  "#pragma once\n"
+  "// Deliberately partial Hpp declarations.\n")
 file(WRITE "${_decoy_vulkan_include}/vulkan/vulkan_raii.hpp"
-  "#pragma once\n")
+  "#pragma once\n"
+  "// Deliberately partial RAII declarations; Device is absent.\n")
 file(WRITE "${_decoy_vulkan_config}/VulkanConfig.cmake"
   "set(Vulkan_VERSION 1.3.0)\n"
   "set(Vulkan_FOUND TRUE)\n"
+  "add_library(Vulkan::Headers INTERFACE IMPORTED)\n"
+  "set_property(TARGET Vulkan::Headers PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
+  "  \"$ENV{VULKAN_HEADERS_INCLUDE}\")\n"
   "add_library(Vulkan::Vulkan INTERFACE IMPORTED)\n"
   "set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_INCLUDE_DIRECTORIES\n"
-  "  \"${_decoy_vulkan_include}\")\n")
+  "  \"${_decoy_vulkan_include}\")\n"
+  "set_property(TARGET Vulkan::Vulkan PROPERTY INTERFACE_LINK_LIBRARIES\n"
+  "  Vulkan::Headers)\n")
 file(WRITE "${_decoy_vulkan_config}/VulkanConfigVersion.cmake"
   "set(PACKAGE_VERSION \"1.3.0\")\n"
   "if(PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)\n"

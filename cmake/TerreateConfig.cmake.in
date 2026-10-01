@@ -170,6 +170,7 @@ if(_Terreate_graphics_built AND _Terreate_graphics_requested)
       file(WRITE "${_Terreate_probe_source_dir}/probe.cpp" [=[
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
+#include <terreate/graphics/device.hpp>
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_raii.hpp>
@@ -181,6 +182,7 @@ static_assert(sizeof(vk::raii::Context) > 0);
 static_assert(sizeof(vk::raii::Instance) > 0);
 static_assert(sizeof(vk::raii::DebugUtilsMessengerEXT) > 0);
 static_assert(sizeof(vk::raii::PhysicalDevice) > 0);
+static_assert(sizeof(vk::raii::Device) > 0);
 
 int main() { return 0; }
 ]=])
