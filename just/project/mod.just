@@ -1,14 +1,9 @@
 root := justfile_directory()
-bootstrap_script := root / ".automation/bin/project_bootstrap.py"
 
 mod cmake 'cmake.just'
 mod quality 'quality.just'
 mod tests 'test.just'
 mod? repository 'repository.just'
-
-[working-directory: root]
-bootstrap name='':
-    python3 {{quote(bootstrap_script)}} {{quote(name)}}
 
 [working-directory: root]
 doctor:

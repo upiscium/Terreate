@@ -1,8 +1,9 @@
-# terreate
+# Terreate
 
-Agent-ready C++23/CMake project using GCC/g++, Ninja, CTest, Nix, Just, and
-the shared Agent Core.  The repository configuration is a Vulkan 1.3+
-development baseline and Graphics exposes the minimal Vulkan instance bootstrap.
+Terreate is a code-first C++23/Vulkan rendering-support library, not an application engine.
+The application retains its own loop, scheduling, and resource lifetime decisions.
+The project uses GCC/g++, CMake, Ninja, CTest, Nix, and Just. KAGARI v0.1.0
+is an optional external, isolated Work Unit developer tool rather than a repository-owned agent runtime.
 
 ## Architecture documentation
 
