@@ -23,44 +23,6 @@
 
 namespace terreate::graphics {
 
-struct DevicePlanBuilder {
-  static DevicePlan build(
-      DeviceDescription requested, PhysicalDevice physical_device,
-       PhysicalDeviceCapabilities capabilities, std::size_t enumeration_index,
-       std::uint32_t effective_api_version, std::vector<std::string> enabled_extensions,
-       DeviceApiVersionProvenance api_version_provenance,
-       vk::PhysicalDeviceFeatures enabled_features_10,
-      vk::PhysicalDeviceVulkan11Features enabled_features_11,
-      vk::PhysicalDeviceVulkan12Features enabled_features_12,
-      vk::PhysicalDeviceVulkan13Features enabled_features_13,
-      std::vector<DeviceFeatureDecision> feature_decisions,
-      std::vector<DeviceExtensionDecision> extension_decisions,
-      std::vector<DeviceQueueDecision> queue_decisions,
-      std::vector<DeviceQueueAllocation> queue_allocations,
-      std::vector<DeviceQueueAssignment> queue_assignments,
-      std::vector<DeviceQueueAliasGroup> queue_alias_groups,
-      std::vector<float> queue_priorities) {
-    return DevicePlan{std::move(requested),
-                      physical_device,
-                       std::move(capabilities),
-                       enumeration_index,
-                       effective_api_version,
-                       std::move(enabled_extensions),
-                       api_version_provenance,
-                       enabled_features_10,
-                      enabled_features_11,
-                      enabled_features_12,
-                      enabled_features_13,
-                      std::move(feature_decisions),
-                      std::move(extension_decisions),
-                      std::move(queue_decisions),
-                      std::move(queue_allocations),
-                      std::move(queue_assignments),
-                      std::move(queue_alias_groups),
-                      std::move(queue_priorities)};
-  }
-};
-
 namespace {
 
 class DeviceErrorCategory final : public std::error_category {
@@ -75,8 +37,6 @@ public:
       return "invalid logical-device description";
     case DeviceError::contradictory_requirements:
       return "contradictory logical-device requirements";
-    case DeviceError::unsupported_api_version:
-      return "requested logical-device API version is unavailable";
     case DeviceError::missing_required_extension:
       return "required Vulkan device extension is unavailable";
     case DeviceError::unsupported_required_feature:
@@ -89,6 +49,8 @@ public:
       return "logical-device queue request cannot be allocated";
     case DeviceError::ambiguous_queue:
       return "logical-device queue family selection is ambiguous";
+    case DeviceError::queue_resolution_limit:
+      return "logical-device queue resolution exceeded its deterministic limit";
     case DeviceError::invalid_instance:
       return "the Vulkan instance is not a valid logical-device parent";
     case DeviceError::invalid_physical_device:
@@ -524,20 +486,27 @@ void append_feature_decisions(DeviceFeatureVersion version, std::string_view str
 
 [[nodiscard]] std::optional<std::string>
 validate_capability_feature_snapshots(const PhysicalDeviceCapabilities &capabilities) {
-  if (capabilities.features2.sType != vk::StructureType::ePhysicalDeviceFeatures2 ||
-      capabilities.features_11.sType != vk::StructureType::ePhysicalDeviceVulkan11Features ||
-      capabilities.features_12.sType != vk::StructureType::ePhysicalDeviceVulkan12Features ||
-      capabilities.features_13.sType != vk::StructureType::ePhysicalDeviceVulkan13Features) {
-    return "physical-device feature snapshots have an unexpected sType";
+  if ((capabilities.features2_available &&
+       capabilities.features2.sType != vk::StructureType::ePhysicalDeviceFeatures2) ||
+      (capabilities.features_11_available &&
+       capabilities.features_11.sType != vk::StructureType::ePhysicalDeviceVulkan11Features) ||
+      (capabilities.features_12_available &&
+       capabilities.features_12.sType != vk::StructureType::ePhysicalDeviceVulkan12Features) ||
+      (capabilities.features_13_available &&
+       capabilities.features_13.sType != vk::StructureType::ePhysicalDeviceVulkan13Features)) {
+    return "available physical-device feature snapshots have an unexpected sType";
   }
   if (capabilities.features2.pNext != nullptr || capabilities.features_11.pNext != nullptr ||
       capabilities.features_12.pNext != nullptr || capabilities.features_13.pNext != nullptr) {
     return "physical-device feature snapshots must have null pNext members";
   }
   if (has_invalid_boolean(capabilities.features_10, feature_fields_10) ||
-      has_invalid_boolean(capabilities.features_11, feature_fields_11) ||
-      has_invalid_boolean(capabilities.features_12, feature_fields_12) ||
-      has_invalid_boolean(capabilities.features_13, feature_fields_13)) {
+      (capabilities.features_11_available &&
+       has_invalid_boolean(capabilities.features_11, feature_fields_11)) ||
+      (capabilities.features_12_available &&
+       has_invalid_boolean(capabilities.features_12, feature_fields_12)) ||
+      (capabilities.features_13_available &&
+       has_invalid_boolean(capabilities.features_13, feature_fields_13))) {
     return "physical-device feature snapshots contain a non-boolean feature value";
   }
   return std::nullopt;
@@ -552,7 +521,9 @@ struct NormalizedQueueRequest {
   RequirementStrength strength = RequirementStrength::required;
   vk::QueueFlags required_flags{};
   std::vector<std::size_t> allowed_families{};
+  std::map<std::size_t, std::size_t> allowed_family_positions{};
   std::vector<std::size_t> preferred_families{};
+  std::map<std::size_t, std::size_t> preferred_family_positions{};
   float priority = 1.0F;
   DeviceQueueAliasPolicy alias_policy = DeviceQueueAliasPolicy::forbid_alias;
   std::string alias_target{};
@@ -562,11 +533,6 @@ struct NormalizedQueueRequest {
                                          vk::QueueFlags required) noexcept {
   return (static_cast<VkQueueFlags>(family.queueFlags) & static_cast<VkQueueFlags>(required)) ==
          static_cast<VkQueueFlags>(required);
-}
-
-[[nodiscard]] bool queue_contains(const std::vector<std::size_t> &values,
-                                  std::size_t value) {
-  return std::find(values.begin(), values.end(), value) != values.end();
 }
 
 [[nodiscard]] std::optional<std::string>
@@ -580,6 +546,11 @@ normalize_queue_request(const DeviceQueueRequest &input, NormalizedQueueRequest 
   if (static_cast<VkQueueFlags>(input.required_flags) == 0) {
     return "queue request '" + output.caller_id + "' needs non-zero required_flags";
   }
+  if ((static_cast<VkQueueFlags>(input.required_flags) &
+       static_cast<VkQueueFlags>(vk::QueueFlagBits::eProtected)) != 0) {
+    return "queue request '" + output.caller_id +
+           "' requests protected queues, which this API does not create";
+  }
   if (!std::isfinite(input.priority) || input.priority < 0.0F || input.priority > 1.0F) {
     return "queue request '" + output.caller_id +
            "' priority must be finite and in [0, 1]";
@@ -587,23 +558,21 @@ normalize_queue_request(const DeviceQueueRequest &input, NormalizedQueueRequest 
   output.allowed_families = input.allowed_family_indices;
   output.preferred_families = input.preferred_family_indices;
   for (std::size_t list_index = 0; list_index < output.allowed_families.size(); ++list_index) {
-    const auto previous_end = output.allowed_families.begin() +
-                               static_cast<std::vector<std::size_t>::difference_type>(list_index);
-    if (std::find(output.allowed_families.begin(), previous_end,
-                  output.allowed_families[list_index]) != previous_end) {
+    if (!output.allowed_family_positions
+             .emplace(output.allowed_families[list_index], list_index)
+             .second) {
       return "queue request '" + output.caller_id +
              "' allowed_family_indices contains a duplicate family index";
     }
   }
   for (std::size_t list_index = 0; list_index < output.preferred_families.size(); ++list_index) {
-    const auto previous_end = output.preferred_families.begin() +
-                               static_cast<std::vector<std::size_t>::difference_type>(list_index);
-    if (std::find(output.preferred_families.begin(), previous_end,
-                  output.preferred_families[list_index]) != previous_end) {
+    const auto family_index = output.preferred_families[list_index];
+    if (!output.preferred_family_positions.emplace(family_index, list_index).second) {
       return "queue request '" + output.caller_id +
              "' preferred_family_indices contains a duplicate family index";
     }
-    if (!queue_contains(output.allowed_families, output.preferred_families[list_index])) {
+    if (!output.allowed_families.empty() &&
+        !output.allowed_family_positions.contains(family_index)) {
       return "queue request '" + output.caller_id +
              "' preferred_family_indices must be contained in allowed_family_indices";
     }
@@ -616,10 +585,6 @@ normalize_queue_request(const DeviceQueueRequest &input, NormalizedQueueRequest 
     return "queue request '" + output.caller_id + "' has an invalid requirement strength";
   }
   output.strength = input.strength;
-  if (output.allowed_families.empty() && output.strength == RequirementStrength::required) {
-    return "queue request '" + output.caller_id +
-           "' must provide an explicit allowed_family_indices whitelist";
-  }
   output.priority = input.priority;
   output.alias_policy = input.alias_policy;
   output.alias_target = input.alias_target;
@@ -658,11 +623,25 @@ struct QueueSearchChoice {
 
 struct QueueSearchState {
   std::vector<QueueSearchChoice> choices{};
-  std::vector<std::pair<std::size_t, std::size_t>> used_coordinates{};
+  std::vector<std::size_t> used_queue_counts{};
 };
 
 struct QueueSearchSolution {
   std::vector<QueueSearchChoice> choices{};
+};
+
+struct QueueSearchBudget {
+  std::size_t search_work = 0;
+  bool limit_reached = false;
+
+  [[nodiscard]] bool consume() noexcept {
+    if (search_work >= max_queue_resolution_search_work) {
+      limit_reached = true;
+      return false;
+    }
+    ++search_work;
+    return true;
+  }
 };
 
 struct QueueResolutionFailure {
@@ -671,53 +650,95 @@ struct QueueResolutionFailure {
     contradictory,
     insufficient,
     ambiguous,
+    limit,
   } kind = Kind::invalid;
   std::string detail{};
 };
 
-[[nodiscard]] bool coordinate_used(const QueueSearchState &state, std::size_t family_index,
-                                   std::size_t queue_index) {
-  return std::find(state.used_coordinates.begin(), state.used_coordinates.end(),
-                   std::pair{family_index, queue_index}) != state.used_coordinates.end();
-}
-
-[[nodiscard]] std::optional<std::size_t>
-first_free_queue(const PhysicalDeviceCapabilities &capabilities, const QueueSearchState &state,
-                 std::size_t family_index) {
-  if (family_index >= capabilities.queue_families.size()) {
-    return std::nullopt;
+[[nodiscard]] std::optional<QueueResolutionFailure>
+validate_queue_resolution_input_limits(const PhysicalDeviceCapabilities &capabilities,
+                                       const DeviceDescription &description) {
+  if (description.queue_requests.size() > max_queue_resolution_request_depth) {
+    return QueueResolutionFailure{
+        .kind = QueueResolutionFailure::Kind::limit,
+        .detail = "queue request depth exceeds the deterministic queue resolution limit"};
   }
-  for (std::size_t queue_index = 0;
-       queue_index < capabilities.queue_families[family_index].queueCount; ++queue_index) {
-    if (!coordinate_used(state, family_index, queue_index)) {
-      return queue_index;
+  if (capabilities.queue_families.size() > max_queue_resolution_queue_family_inventory) {
+    return QueueResolutionFailure{
+        .kind = QueueResolutionFailure::Kind::limit,
+        .detail = "queue-family inventory exceeds the deterministic queue resolution limit of " +
+                  std::to_string(max_queue_resolution_queue_family_inventory)};
+  }
+  for (std::size_t index = 0; index < description.queue_requests.size(); ++index) {
+    const auto &request = description.queue_requests[index];
+    if (request.allowed_family_indices.size() > max_queue_resolution_allowed_family_indices) {
+      return QueueResolutionFailure{
+          .kind = QueueResolutionFailure::Kind::limit,
+          .detail = "queue request " + std::to_string(index) +
+                    " allowed_family_indices exceeds the deterministic queue resolution limit of " +
+                    std::to_string(max_queue_resolution_allowed_family_indices)};
+    }
+    if (request.preferred_family_indices.size() > max_queue_resolution_preferred_family_indices) {
+      return QueueResolutionFailure{
+          .kind = QueueResolutionFailure::Kind::limit,
+          .detail = "queue request " + std::to_string(index) +
+                    " preferred_family_indices exceeds the deterministic queue resolution limit of " +
+                    std::to_string(max_queue_resolution_preferred_family_indices)};
     }
   }
   return std::nullopt;
 }
 
-[[nodiscard]] std::vector<std::size_t>
+[[nodiscard]] std::optional<std::size_t>
+first_free_queue(const PhysicalDeviceCapabilities &capabilities, const QueueSearchState &state,
+                std::size_t family_index) {
+  if (family_index >= capabilities.queue_families.size() ||
+      family_index >= state.used_queue_counts.size()) {
+    return std::nullopt;
+  }
+  const auto queue_index = state.used_queue_counts[family_index];
+  if (queue_index >= capabilities.queue_families[family_index].queueCount) {
+    return std::nullopt;
+  }
+  return queue_index;
+}
+
+[[nodiscard]] std::optional<std::vector<std::size_t>>
 candidate_families(const PhysicalDeviceCapabilities &capabilities,
-                   const NormalizedQueueRequest &request, const QueueSearchState &state) {
+                   const NormalizedQueueRequest &request, const QueueSearchState &state,
+                   QueueSearchBudget &budget) {
   std::vector<std::size_t> candidates;
   const auto append = [&](std::size_t family_index) {
+    if (!budget.consume()) {
+      return false;
+    }
     if (family_index >= capabilities.queue_families.size() ||
-        !queue_contains(request.allowed_families, family_index) ||
+        (!request.allowed_families.empty() &&
+         !request.allowed_family_positions.contains(family_index)) ||
         !queue_family_matches(capabilities.queue_families[family_index],
                               request.required_flags) ||
-        !first_free_queue(capabilities, state, family_index) ||
-        queue_contains(candidates, family_index)) {
-      return;
+        !first_free_queue(capabilities, state, family_index)) {
+      return true;
     }
     candidates.push_back(family_index);
+    return true;
   };
   for (const auto family_index : request.preferred_families) {
-    append(family_index);
+    if (!append(family_index)) {
+      return std::nullopt;
+    }
   }
-  std::vector<std::size_t> remaining = request.allowed_families;
-  std::sort(remaining.begin(), remaining.end());
-  for (const auto family_index : remaining) {
-    append(family_index);
+  for (std::size_t family_index = 0; family_index < capabilities.queue_families.size();
+       ++family_index) {
+    if (request.preferred_family_positions.contains(family_index)) {
+      if (!budget.consume()) {
+        return std::nullopt;
+      }
+      continue;
+    }
+    if (!append(family_index)) {
+      return std::nullopt;
+    }
   }
   return candidates;
 }
@@ -737,110 +758,188 @@ find_queue_request(const std::vector<NormalizedQueueRequest> &requests, std::str
                                            const NormalizedQueueRequest &target,
                                            const QueueSearchChoice &target_choice) {
   return target_choice.accepted && target_choice.family_index < capabilities.queue_families.size() &&
-         queue_contains(request.allowed_families, target_choice.family_index) &&
-         queue_family_matches(capabilities.queue_families[target_choice.family_index],
-                              request.required_flags) &&
-         target.priority == request.priority;
+          (request.allowed_families.empty() ||
+           request.allowed_family_positions.contains(target_choice.family_index)) &&
+          queue_family_matches(capabilities.queue_families[target_choice.family_index],
+                               request.required_flags) &&
+          target.priority == request.priority;
 }
 
-[[nodiscard]] bool queue_choice_less(const QueueSearchChoice &left,
-                                     const QueueSearchChoice &right) noexcept {
-  if (left.accepted != right.accepted) {
-    return left.accepted > right.accepted;
+enum class QueueChoicePreference : std::uint8_t {
+  worse,
+  equal,
+  better,
+  incomparable,
+};
+
+[[nodiscard]] bool same_queue_coordinate(const QueueSearchChoice &left,
+                                          const QueueSearchChoice &right) noexcept {
+  return left.accepted && right.accepted && left.family_index == right.family_index &&
+         left.queue_index == right.queue_index;
+}
+
+[[nodiscard]] QueueChoicePreference compare_family_order(const NormalizedQueueRequest &request,
+                                                         std::size_t left_family,
+                                                         std::size_t right_family) noexcept {
+  if (left_family == right_family) {
+    return QueueChoicePreference::equal;
   }
-  if (!left.accepted) {
+  const auto left_iterator = request.preferred_family_positions.find(left_family);
+  const auto right_iterator = request.preferred_family_positions.find(right_family);
+  const bool left_listed = left_iterator != request.preferred_family_positions.end();
+  const bool right_listed = right_iterator != request.preferred_family_positions.end();
+  if (left_listed != right_listed) {
+    return left_listed ? QueueChoicePreference::better : QueueChoicePreference::worse;
+  }
+  if (!left_listed) {
+    return QueueChoicePreference::equal;
+  }
+  return left_iterator->second < right_iterator->second ? QueueChoicePreference::better
+                                                         : QueueChoicePreference::worse;
+}
+
+[[nodiscard]] QueueChoicePreference compare_alias_policy(const NormalizedQueueRequest &request,
+                                                         bool left_aliased,
+                                                         bool right_aliased) noexcept {
+  if (left_aliased == right_aliased) {
+    return QueueChoicePreference::equal;
+  }
+  switch (request.alias_policy) {
+  case DeviceQueueAliasPolicy::prefer_alias_with_distinct_fallback:
+  case DeviceQueueAliasPolicy::require_alias:
+    return left_aliased ? QueueChoicePreference::better : QueueChoicePreference::worse;
+  case DeviceQueueAliasPolicy::prefer_distinct_with_alias_fallback:
+  case DeviceQueueAliasPolicy::forbid_alias:
+    return left_aliased ? QueueChoicePreference::worse : QueueChoicePreference::better;
+  }
+  return QueueChoicePreference::equal;
+}
+
+[[nodiscard]] bool coordinate_used_by_another_request(const QueueSearchSolution &solution,
+                                                      std::size_t request_index,
+                                                      const QueueSearchChoice &choice) noexcept {
+  if (!choice.accepted || choice.aliased) {
     return false;
   }
-  if (left.family_index != right.family_index) {
-    return left.family_index < right.family_index;
-  }
-  if (left.queue_index != right.queue_index) {
-    return left.queue_index < right.queue_index;
-  }
-  return left.aliased < right.aliased;
-}
-
-[[nodiscard]] bool solution_less(const QueueSearchSolution &left,
-                                 const QueueSearchSolution &right) noexcept {
-  for (std::size_t index = 0; index < left.choices.size(); ++index) {
-    if (left.choices[index].accepted != right.choices[index].accepted) {
-      return left.choices[index].accepted > right.choices[index].accepted;
-    }
-    if (left.choices[index].accepted &&
-        queue_choice_less(left.choices[index], right.choices[index])) {
+  for (std::size_t index = 0; index < solution.choices.size(); ++index) {
+    if (index != request_index && same_queue_coordinate(solution.choices[index], choice)) {
       return true;
-    }
-    if (left.choices[index].accepted &&
-        queue_choice_less(right.choices[index], left.choices[index])) {
-      return false;
     }
   }
   return false;
 }
 
-struct QueueScore {
-  std::size_t optional_accepted = 0;
-  std::size_t alias_preference = 0;
-  std::size_t preferred_penalty = 0;
-};
+[[nodiscard]] QueueChoicePreference compare_queue_choices(
+    const std::vector<NormalizedQueueRequest> &requests, std::size_t request_index,
+    const QueueSearchSolution &left, const QueueSearchSolution &right) noexcept {
+  const auto &request = requests[request_index];
+  const auto &left_choice = left.choices[request_index];
+  const auto &right_choice = right.choices[request_index];
+  if (!left_choice.accepted || !right_choice.accepted) {
+    if (left_choice.accepted == right_choice.accepted) {
+      return QueueChoicePreference::equal;
+    }
+    if (request.strength == RequirementStrength::required) {
+      return left_choice.accepted ? QueueChoicePreference::better
+                                  : QueueChoicePreference::worse;
+    }
+    const auto &accepted_choice = left_choice.accepted ? left_choice : right_choice;
+    const auto &declined_solution = left_choice.accepted ? right : left;
+    // Optional acceptance is an explicit preference only when it does not
+    // displace another allocation.  If the alternative consumes a coordinate
+    // used by the rejected solution, no policy ranks accepting it over keeping
+    // the competing allocation.
+    if (coordinate_used_by_another_request(declined_solution, request_index,
+                                           accepted_choice)) {
+      return QueueChoicePreference::incomparable;
+    }
+    return left_choice.accepted ? QueueChoicePreference::better
+                                : QueueChoicePreference::worse;
+  }
 
-[[nodiscard]] QueueScore score_solution(const std::vector<NormalizedQueueRequest> &requests,
-                                         const QueueSearchSolution &solution) {
-  QueueScore score;
+  const auto family_order = compare_family_order(
+      request, left_choice.family_index, right_choice.family_index);
+  const auto alias_order =
+      compare_alias_policy(request, left_choice.aliased, right_choice.aliased);
+  if ((family_order == QueueChoicePreference::better &&
+       alias_order == QueueChoicePreference::worse) ||
+      (family_order == QueueChoicePreference::worse &&
+       alias_order == QueueChoicePreference::better)) {
+    return QueueChoicePreference::incomparable;
+  }
+  if (family_order == QueueChoicePreference::equal &&
+      alias_order == QueueChoicePreference::equal) {
+    return QueueChoicePreference::equal;
+  }
+  return family_order == QueueChoicePreference::better ||
+                 alias_order == QueueChoicePreference::better
+             ? QueueChoicePreference::better
+             : QueueChoicePreference::worse;
+}
+
+[[nodiscard]] std::optional<bool>
+solution_dominates(const std::vector<NormalizedQueueRequest> &requests,
+                   const QueueSearchSolution &left, const QueueSearchSolution &right,
+                   QueueSearchBudget &budget) noexcept {
+  bool strictly_better = false;
   for (std::size_t index = 0; index < requests.size(); ++index) {
-    const auto &request = requests[index];
-    const auto &choice = solution.choices[index];
-    if (!choice.accepted) {
-      continue;
+    if (!budget.consume()) {
+      return std::nullopt;
     }
-    if (request.strength == RequirementStrength::optional) {
-      ++score.optional_accepted;
-    }
-    switch (request.alias_policy) {
-    case DeviceQueueAliasPolicy::prefer_alias_with_distinct_fallback:
-      score.alias_preference += choice.aliased ? 2U : 1U;
+    switch (compare_queue_choices(requests, index, left, right)) {
+    case QueueChoicePreference::worse:
+    case QueueChoicePreference::incomparable:
+      return false;
+    case QueueChoicePreference::better:
+      strictly_better = true;
       break;
-    case DeviceQueueAliasPolicy::prefer_distinct_with_alias_fallback:
-      score.alias_preference += choice.aliased ? 1U : 2U;
+    case QueueChoicePreference::equal:
       break;
-    case DeviceQueueAliasPolicy::forbid_alias:
-    case DeviceQueueAliasPolicy::require_alias:
-      break;
-    }
-    if (!request.preferred_families.empty()) {
-      const auto preferred = std::find(request.preferred_families.begin(),
-                                       request.preferred_families.end(), choice.family_index);
-      score.preferred_penalty +=
-          preferred == request.preferred_families.end()
-              ? request.preferred_families.size() + 1U
-              : static_cast<std::size_t>(preferred - request.preferred_families.begin());
     }
   }
-  return score;
+  return strictly_better;
 }
 
-[[nodiscard]] bool score_better(const QueueScore &left, const QueueScore &right) noexcept {
-  if (left.optional_accepted != right.optional_accepted) {
-    return left.optional_accepted > right.optional_accepted;
+[[nodiscard]] std::optional<bool>
+solution_same_choices(const QueueSearchSolution &left, const QueueSearchSolution &right,
+                     QueueSearchBudget &budget) noexcept {
+  if (left.choices.size() != right.choices.size()) {
+    return false;
   }
-  if (left.alias_preference != right.alias_preference) {
-    return left.alias_preference > right.alias_preference;
+  for (std::size_t index = 0; index < left.choices.size(); ++index) {
+    if (!budget.consume()) {
+      return std::nullopt;
+    }
+    const auto &left_choice = left.choices[index];
+    const auto &right_choice = right.choices[index];
+    if (left_choice.accepted != right_choice.accepted ||
+        (left_choice.accepted &&
+         (left_choice.aliased != right_choice.aliased ||
+          left_choice.family_index != right_choice.family_index ||
+          left_choice.queue_index != right_choice.queue_index))) {
+      return false;
+    }
   }
-  return left.preferred_penalty < right.preferred_penalty;
-}
-
-[[nodiscard]] bool score_equal(const QueueScore &left, const QueueScore &right) noexcept {
-  return left.optional_accepted == right.optional_accepted &&
-         left.alias_preference == right.alias_preference &&
-         left.preferred_penalty == right.preferred_penalty;
+  return true;
 }
 
 void search_queue_solutions(const PhysicalDeviceCapabilities &capabilities,
                             const std::vector<NormalizedQueueRequest> &requests,
                             const std::vector<std::size_t> &order, std::size_t order_index,
                             QueueSearchState &state,
-                            std::vector<QueueSearchSolution> &solutions) {
+                            std::vector<QueueSearchSolution> &solutions,
+                            QueueSearchBudget &budget) {
+  if (budget.limit_reached) {
+    return;
+  }
   if (order_index == order.size()) {
+    if (!budget.consume()) {
+      return;
+    }
+    if (solutions.size() >= max_queue_resolution_retained_solutions) {
+      budget.limit_reached = true;
+      return;
+    }
     solutions.push_back(QueueSearchSolution{.choices = state.choices});
     return;
   }
@@ -851,13 +950,18 @@ void search_queue_solutions(const PhysicalDeviceCapabilities &capabilities,
                                 : find_queue_request(requests, request.alias_target);
 
   const auto visit = [&](QueueSearchChoice choice) {
+    if (!budget.consume()) {
+      return;
+    }
     state.choices[request_index] = choice;
     if (choice.accepted && !choice.aliased) {
-      state.used_coordinates.emplace_back(choice.family_index, choice.queue_index);
-      search_queue_solutions(capabilities, requests, order, order_index + 1, state, solutions);
-      state.used_coordinates.pop_back();
+      ++state.used_queue_counts[choice.family_index];
+      search_queue_solutions(capabilities, requests, order, order_index + 1, state, solutions,
+                             budget);
+      --state.used_queue_counts[choice.family_index];
     } else {
-      search_queue_solutions(capabilities, requests, order, order_index + 1, state, solutions);
+      search_queue_solutions(capabilities, requests, order, order_index + 1, state, solutions,
+                             budget);
     }
     state.choices[request_index] = QueueSearchChoice{};
   };
@@ -880,7 +984,11 @@ void search_queue_solutions(const PhysicalDeviceCapabilities &capabilities,
                             .queue_index = target_choice.queue_index});
   };
   const auto distinct_choices = [&]() {
-    for (const auto family_index : candidate_families(capabilities, request, state)) {
+    const auto candidates = candidate_families(capabilities, request, state, budget);
+    if (!candidates) {
+      return;
+    }
+    for (const auto family_index : *candidates) {
       const auto queue_index = first_free_queue(capabilities, state, family_index);
       if (!queue_index) {
         continue;
@@ -973,6 +1081,9 @@ resolve_queues(const PhysicalDeviceCapabilities &capabilities,
                std::vector<DeviceQueueAllocation> &allocations,
                std::vector<DeviceQueueAssignment> &assignments,
                std::vector<DeviceQueueAliasGroup> &alias_groups) {
+  if (const auto error = validate_queue_resolution_input_limits(capabilities, description)) {
+    return error;
+  }
   std::vector<NormalizedQueueRequest> requests;
   requests.reserve(description.queue_requests.size());
   for (std::size_t index = 0; index < description.queue_requests.size(); ++index) {
@@ -994,8 +1105,15 @@ resolve_queues(const PhysicalDeviceCapabilities &capabilities,
 
   QueueSearchState state;
   state.choices.resize(requests.size());
+  state.used_queue_counts.resize(capabilities.queue_families.size());
   std::vector<QueueSearchSolution> solutions;
-  search_queue_solutions(capabilities, requests, order, 0, state, solutions);
+  QueueSearchBudget budget;
+  search_queue_solutions(capabilities, requests, order, 0, state, solutions, budget);
+  if (budget.limit_reached) {
+    return QueueResolutionFailure{
+        .kind = QueueResolutionFailure::Kind::limit,
+        .detail = "queue resolution exceeded its deterministic search or retained-solution limit"};
+  }
   if (solutions.empty()) {
     for (const auto &request : requests) {
       if (request.strength != RequirementStrength::required) {
@@ -1012,83 +1130,74 @@ resolve_queues(const PhysicalDeviceCapabilities &capabilities,
         }
       }
       const bool supported = std::any_of(
-          request.allowed_families.begin(), request.allowed_families.end(), [&](std::size_t family) {
-            return family < capabilities.queue_families.size() &&
-                   queue_family_matches(capabilities.queue_families[family], request.required_flags);
-          });
+          capabilities.queue_families.begin(), capabilities.queue_families.end(),
+          [&](const auto &family) { return queue_family_matches(family, request.required_flags); });
+      const bool allowed_supported =
+          request.allowed_families.empty()
+              ? supported
+              : std::any_of(request.allowed_families.begin(), request.allowed_families.end(),
+                            [&](std::size_t family) {
+                              return family < capabilities.queue_families.size() &&
+                                     queue_family_matches(capabilities.queue_families[family],
+                                                          request.required_flags);
+                            });
       return QueueResolutionFailure{
           .kind = QueueResolutionFailure::Kind::insufficient,
-          .detail = supported ? "required queue request '" + request.caller_id +
-                                     "' cannot be allocated under the declared alias/capacity policy"
-                              : "required queue request '" + request.caller_id +
+          .detail = allowed_supported ? "required queue request '" + request.caller_id +
+                                      "' cannot be allocated under the declared alias/capacity policy"
+                               : "required queue request '" + request.caller_id +
                                      "' has no allowed family supporting required_flags"};
     }
     return QueueResolutionFailure{.kind = QueueResolutionFailure::Kind::insufficient,
                                   .detail = "required queue requests cannot be allocated"};
   }
 
-  QueueScore best_score = score_solution(requests, solutions.front());
-  for (const auto &solution : solutions) {
-    const auto score = score_solution(requests, solution);
-    if (score_better(score, best_score)) {
-      best_score = score;
-    }
-  }
-  std::vector<QueueSearchSolution> best_solutions;
-  for (const auto &solution : solutions) {
-    if (score_equal(score_solution(requests, solution), best_score)) {
-      best_solutions.push_back(solution);
-    }
-  }
-  std::sort(best_solutions.begin(), best_solutions.end(), solution_less);
-  auto selected = best_solutions.front();
-
-  std::vector<bool> optional_ambiguity(requests.size(), false);
-  for (std::size_t index = 0; index < requests.size(); ++index) {
-    for (const auto &solution : best_solutions) {
-      const auto &left = selected.choices[index];
-      const auto &right = solution.choices[index];
-      if (left.accepted != right.accepted || left.aliased != right.aliased ||
-          (left.accepted && (left.family_index != right.family_index ||
-                             left.queue_index != right.queue_index))) {
-        if (requests[index].strength == RequirementStrength::required) {
-          return QueueResolutionFailure{
-              .kind = QueueResolutionFailure::Kind::ambiguous,
-              .detail = "required queue request '" + requests[index].caller_id +
-                        "' has multiple equally valid global allocations"};
-        }
-        optional_ambiguity[index] = true;
-        break;
-      }
-    }
-  }
-  bool dependent_changed = true;
-  while (dependent_changed) {
-    dependent_changed = false;
-    for (std::size_t index = 0; index < requests.size(); ++index) {
-      if (!selected.choices[index].accepted || !selected.choices[index].aliased ||
-          requests[index].alias_target.empty()) {
+  std::vector<QueueSearchSolution> maximal_solutions;
+  for (std::size_t candidate_index = 0; candidate_index < solutions.size();
+       ++candidate_index) {
+    bool dominated = false;
+    for (std::size_t other_index = 0; other_index < solutions.size(); ++other_index) {
+      if (candidate_index == other_index) {
         continue;
       }
-      const auto target_index = find_queue_request(requests, requests[index].alias_target);
-      if (!target_index || !optional_ambiguity[*target_index] || optional_ambiguity[index]) {
-        continue;
-      }
-      if (requests[index].strength == RequirementStrength::required) {
+      const auto dominates = solution_dominates(requests, solutions[other_index],
+                                                solutions[candidate_index], budget);
+      if (!dominates) {
         return QueueResolutionFailure{
-            .kind = QueueResolutionFailure::Kind::ambiguous,
-            .detail = "required queue request '" + requests[index].caller_id +
-                      "' depends on an ambiguous optional alias target"};
+            .kind = QueueResolutionFailure::Kind::limit,
+            .detail = "queue resolution exceeded its deterministic search or retained-solution limit"};
       }
-      optional_ambiguity[index] = true;
-      dependent_changed = true;
+      if (!*dominates) {
+        continue;
+      }
+      dominated = true;
+      break;
+    }
+    bool duplicate = false;
+    if (!dominated) {
+      for (const auto &solution : maximal_solutions) {
+        const auto same = solution_same_choices(solution, solutions[candidate_index], budget);
+        if (!same) {
+          return QueueResolutionFailure{
+              .kind = QueueResolutionFailure::Kind::limit,
+              .detail = "queue resolution exceeded its deterministic search or retained-solution limit"};
+        }
+        if (*same) {
+          duplicate = true;
+          break;
+        }
+      }
+    }
+    if (!dominated && !duplicate) {
+      maximal_solutions.push_back(solutions[candidate_index]);
     }
   }
-  for (std::size_t index = 0; index < requests.size(); ++index) {
-    if (optional_ambiguity[index]) {
-      selected.choices[index] = QueueSearchChoice{};
-    }
+  if (maximal_solutions.size() != 1) {
+    return QueueResolutionFailure{
+        .kind = QueueResolutionFailure::Kind::ambiguous,
+        .detail = "queue requests have multiple incomparable complete allocations"};
   }
+  const auto &selected = maximal_solutions.front();
 
   struct CoordinateAllocation {
     std::size_t family_index = 0;
@@ -1119,10 +1228,15 @@ resolve_queues(const PhysicalDeviceCapabilities &capabilities,
     }
   }
   std::sort(coordinate_allocations.begin(), coordinate_allocations.end(), [](const auto &left,
-                                                                              const auto &right) {
+                                                                               const auto &right) {
     return std::pair{left.family_index, left.queue_index} <
            std::pair{right.family_index, right.queue_index};
   });
+  if (coordinate_allocations.empty()) {
+    return QueueResolutionFailure{
+        .kind = QueueResolutionFailure::Kind::insufficient,
+        .detail = "queue resolution produced no unique native queue allocation"};
+  }
   for (std::size_t allocation_index = 0; allocation_index < coordinate_allocations.size();
        ++allocation_index) {
     const auto &coordinate = coordinate_allocations[allocation_index];
@@ -1173,11 +1287,19 @@ resolve_queues(const PhysicalDeviceCapabilities &capabilities,
                             ? std::optional<std::string>{}
                             : std::optional<std::string>{request.alias_target},
     };
-    decision.supported = std::any_of(
-        request.allowed_families.begin(), request.allowed_families.end(), [&](std::size_t family) {
-          return family < capabilities.queue_families.size() &&
-                 queue_family_matches(capabilities.queue_families[family], request.required_flags);
-        });
+    decision.supported = request.allowed_families.empty()
+                             ? std::any_of(capabilities.queue_families.begin(),
+                                           capabilities.queue_families.end(), [&](const auto &family) {
+                                             return queue_family_matches(family,
+                                                                          request.required_flags);
+                                           })
+                             : std::any_of(request.allowed_families.begin(),
+                                           request.allowed_families.end(), [&](std::size_t family) {
+                                             return family < capabilities.queue_families.size() &&
+                                                    queue_family_matches(
+                                                        capabilities.queue_families[family],
+                                                        request.required_flags);
+                                           });
     if (choice.accepted) {
       decision.family_index = choice.family_index;
       decision.queue_index = choice.queue_index;
@@ -1187,8 +1309,7 @@ resolve_queues(const PhysicalDeviceCapabilities &capabilities,
         decision.provenance = DeviceQueueProvenance::alias;
       } else if (choice.alias_priority_conflict) {
         decision.reason = DeviceDecisionReason::conflicting_priority;
-      } else if (!request.preferred_families.empty() &&
-                 request.preferred_families.front() == choice.family_index) {
+      } else if (request.preferred_family_positions.contains(choice.family_index)) {
         decision.reason = DeviceDecisionReason::preferred_family;
         decision.provenance = DeviceQueueProvenance::preferred_family;
       } else if (!request.preferred_families.empty()) {
@@ -1209,15 +1330,14 @@ resolve_queues(const PhysicalDeviceCapabilities &capabilities,
                               ? std::optional<std::string>{request.alias_target}
                               : std::optional<std::string>{},
       });
-    } else if (optional_ambiguity[request_index]) {
-      decision.reason = DeviceDecisionReason::ambiguous;
     } else if (!request.alias_target.empty()) {
       const auto target_index = find_queue_request(requests, request.alias_target);
       const bool priority_conflict =
           target_index && selected.choices[*target_index].accepted &&
           selected.choices[*target_index].family_index < capabilities.queue_families.size() &&
-          queue_contains(request.allowed_families,
-                         selected.choices[*target_index].family_index) &&
+          (request.allowed_families.empty() ||
+           request.allowed_family_positions.contains(
+               selected.choices[*target_index].family_index)) &&
           queue_family_matches(
               capabilities.queue_families[selected.choices[*target_index].family_index],
               request.required_flags) &&
@@ -1248,19 +1368,6 @@ resolve_queues(const PhysicalDeviceCapabilities &capabilities,
 
 [[nodiscard]] bool has_any_enabled(const vk::PhysicalDeviceVulkan13Features &features) noexcept {
   return has_requested_feature(features, feature_fields_13);
-}
-
-[[nodiscard]] std::optional<std::string>
-validate_description_versions(const DeviceDescription &description) {
-  if (description.api_version && *description.api_version == 0) {
-    return "api_version must be non-zero";
-  }
-  return std::nullopt;
-}
-
-[[nodiscard]] std::optional<std::uint32_t>
-requested_api_version(const DeviceDescription &description) noexcept {
-  return description.api_version;
 }
 
 struct CanonicalExtensionRequest {
@@ -1326,31 +1433,47 @@ validate_capability_names(const PhysicalDeviceCapabilities &capabilities) {
   return std::nullopt;
 }
 
-[[nodiscard]] terreate::Result<DevicePlan>
+struct ResolvedDeviceData {
+  DeviceDescription requested{};
+  PhysicalDevice physical_device{};
+  PhysicalDeviceCapabilities capabilities{};
+  std::size_t enumeration_index = 0;
+  std::vector<std::string> enabled_extensions{};
+  vk::PhysicalDeviceFeatures enabled_features_10{};
+  vk::PhysicalDeviceVulkan11Features enabled_features_11{};
+  vk::PhysicalDeviceVulkan12Features enabled_features_12{};
+  vk::PhysicalDeviceVulkan13Features enabled_features_13{};
+  std::vector<DeviceFeatureDecision> feature_decisions{};
+  std::vector<DeviceExtensionDecision> extension_decisions{};
+  std::vector<DeviceQueueDecision> queue_decisions{};
+  std::vector<DeviceQueueAllocation> queue_allocations{};
+  std::vector<DeviceQueueAssignment> queue_assignments{};
+  std::vector<DeviceQueueAliasGroup> queue_alias_groups{};
+  std::vector<float> queue_priorities{};
+};
+
+[[nodiscard]] terreate::Result<ResolvedDeviceData>
 resolve_device_impl(const PhysicalDevice &physical_device,
                     const PhysicalDeviceCapabilities &input_capabilities, std::size_t index,
                     const DeviceDescription &description) {
-  if (const auto error = validate_description_versions(description)) {
-    return fail<DevicePlan>(DeviceError::invalid_description, "resolve Vulkan device", *error);
+  if (const auto error = validate_queue_resolution_input_limits(input_capabilities, description)) {
+    return fail<ResolvedDeviceData>(DeviceError::queue_resolution_limit,
+                                    "resolve Vulkan device", error->detail);
   }
   MergedFeatureMasks requested_features;
   if (const auto error = merge_feature_requests(description, requested_features)) {
     const auto device_error = error->kind == FeatureRequestFailureKind::contradictory
                                   ? DeviceError::contradictory_requirements
                                   : DeviceError::invalid_feature_chain;
-    return fail<DevicePlan>(device_error, "resolve Vulkan device", error->detail);
+    return fail<ResolvedDeviceData>(device_error, "resolve Vulkan device", error->detail);
   }
   if (const auto error = validate_capability_names(input_capabilities)) {
-    return fail<DevicePlan>(DeviceError::invalid_description, "resolve Vulkan device", *error);
+    return fail<ResolvedDeviceData>(DeviceError::invalid_description, "resolve Vulkan device",
+                                    *error);
   }
   if (const auto error = validate_capability_feature_snapshots(input_capabilities)) {
-    return fail<DevicePlan>(DeviceError::invalid_feature_chain, "resolve Vulkan device", *error);
-  }
-  const auto requested_version = requested_api_version(description);
-  if (requested_version && input_capabilities.api_version < *requested_version) {
-    return fail<DevicePlan>(DeviceError::unsupported_api_version, "resolve Vulkan device",
-                            "requested Vulkan API version " + std::to_string(*requested_version) +
-                                " exceeds the physical device's advertised version");
+    return fail<ResolvedDeviceData>(DeviceError::invalid_feature_chain, "resolve Vulkan device",
+                                    *error);
   }
 
   std::vector<std::string> available_extensions = input_capabilities.extensions;
@@ -1362,7 +1485,7 @@ resolve_device_impl(const PhysicalDevice &physical_device,
     const auto device_error = error->kind == ExtensionRequestFailureKind::contradictory
                                   ? DeviceError::contradictory_requirements
                                   : DeviceError::invalid_description;
-    return fail<DevicePlan>(device_error, "resolve Vulkan device", error->detail);
+    return fail<ResolvedDeviceData>(device_error, "resolve Vulkan device", error->detail);
   }
   std::vector<std::string> enabled_extensions;
   std::vector<DeviceExtensionDecision> extension_decisions;
@@ -1385,8 +1508,8 @@ resolve_device_impl(const PhysicalDevice &physical_device,
         .reason = reason,
     });
     if (!supported && strength == RequirementStrength::required) {
-      return fail<DevicePlan>(DeviceError::missing_required_extension, "resolve Vulkan device",
-                              extension_detail(name));
+      return fail<ResolvedDeviceData>(DeviceError::missing_required_extension,
+                                      "resolve Vulkan device", extension_detail(name));
     }
     if (supported) {
       enabled_extensions.push_back(name);
@@ -1444,8 +1567,14 @@ resolve_device_impl(const PhysicalDevice &physical_device,
                             input_capabilities.features_13, input_capabilities.features_13_available,
                             feature_fields_13, enabled13, feature_decisions, required_feature_failure);
   if (required_feature_failure) {
-    return fail<DevicePlan>(DeviceError::unsupported_required_feature, "resolve Vulkan device",
-                            *required_feature_failure);
+    return fail<ResolvedDeviceData>(DeviceError::unsupported_required_feature,
+                                    "resolve Vulkan device", *required_feature_failure);
+  }
+  if (enabled11.variablePointers == VK_TRUE && enabled11.variablePointersStorageBuffer != VK_TRUE) {
+    return fail<ResolvedDeviceData>(
+        DeviceError::contradictory_requirements, "resolve Vulkan device",
+        "variablePointers requires variablePointersStorageBuffer to be explicitly requested and "
+        "enabled as a mandatory Vulkan prerequisite");
   }
 
   std::vector<DeviceQueueDecision> queue_decisions;
@@ -1463,12 +1592,14 @@ resolve_device_impl(const PhysicalDevice &physical_device,
          return DeviceError::contradictory_requirements;
        case QueueResolutionFailure::Kind::insufficient:
          return DeviceError::insufficient_queue_count;
-       case QueueResolutionFailure::Kind::ambiguous:
-         return DeviceError::ambiguous_queue;
-      }
+        case QueueResolutionFailure::Kind::ambiguous:
+          return DeviceError::ambiguous_queue;
+        case QueueResolutionFailure::Kind::limit:
+          return DeviceError::queue_resolution_limit;
+       }
       return DeviceError::invalid_queue_request;
     }();
-    return fail<DevicePlan>(queue_error, "resolve Vulkan device", error->detail);
+    return fail<ResolvedDeviceData>(queue_error, "resolve Vulkan device", error->detail);
   }
   std::vector<float> queue_priorities;
   queue_priorities.reserve(queue_allocations.size());
@@ -1488,16 +1619,24 @@ resolve_device_impl(const PhysicalDevice &physical_device,
   requested_snapshot.required_features_13.pNext = nullptr;
   requested_snapshot.optional_features_13.pNext = nullptr;
 
-  return DevicePlanBuilder::build(
-       std::move(requested_snapshot), physical_device, input_capabilities, index,
-       requested_version.value_or(input_capabilities.api_version),
-       std::move(enabled_extensions),
-       requested_version ? DeviceApiVersionProvenance::explicit_request
-                         : DeviceApiVersionProvenance::capability_snapshot,
-       enabled10, enabled11, enabled12, enabled13,
-      std::move(feature_decisions), std::move(extension_decisions), std::move(queue_decisions),
-      std::move(queue_allocations), std::move(queue_assignments), std::move(queue_alias_groups),
-      std::move(queue_priorities));
+  return ResolvedDeviceData{
+      .requested = std::move(requested_snapshot),
+      .physical_device = physical_device,
+      .capabilities = input_capabilities,
+      .enumeration_index = index,
+      .enabled_extensions = std::move(enabled_extensions),
+      .enabled_features_10 = enabled10,
+      .enabled_features_11 = enabled11,
+      .enabled_features_12 = enabled12,
+      .enabled_features_13 = enabled13,
+      .feature_decisions = std::move(feature_decisions),
+      .extension_decisions = std::move(extension_decisions),
+      .queue_decisions = std::move(queue_decisions),
+      .queue_allocations = std::move(queue_allocations),
+      .queue_assignments = std::move(queue_assignments),
+      .queue_alias_groups = std::move(queue_alias_groups),
+      .queue_priorities = std::move(queue_priorities),
+  };
 }
 
 struct NativeQueueGroup {
@@ -1517,10 +1656,6 @@ validate_native_plan(const Instance &instance, const DevicePlan &plan) {
   }
   if (!plan.physicalDevice().correlatedWith(instance)) {
     return "the plan's physical device is correlated with a different Instance";
-  }
-  const auto requested_version = requested_api_version(plan.requested());
-  if (requested_version && instance.plan()->effectiveApiVersion() < *requested_version) {
-    return "the parent Instance API version is below the DevicePlan minimum";
   }
   if (plan.queueAllocations().size() != plan.queuePriorities().size()) {
     return "queue allocation and priority storage lengths differ";
@@ -1580,13 +1715,51 @@ std::error_code make_error_code(DeviceError error) noexcept {
 
 terreate::Result<DevicePlan> resolveDevice(const PhysicalDeviceCandidate &candidate,
                                            const DeviceDescription &description) {
-  return resolve_device_impl(candidate.device(), candidate.capabilities(), candidate.enumerationIndex(),
-                             description);
+  auto resolved = resolve_device_impl(candidate.device(), candidate.capabilities(),
+                                      candidate.enumerationIndex(), description);
+  if (!resolved) {
+    return std::unexpected(std::move(resolved.error()));
+  }
+  return DevicePlan{std::move(resolved->requested),
+                    resolved->physical_device,
+                    std::move(resolved->capabilities),
+                    resolved->enumeration_index,
+                    std::move(resolved->enabled_extensions),
+                    resolved->enabled_features_10,
+                    resolved->enabled_features_11,
+                    resolved->enabled_features_12,
+                    resolved->enabled_features_13,
+                    std::move(resolved->feature_decisions),
+                    std::move(resolved->extension_decisions),
+                    std::move(resolved->queue_decisions),
+                    std::move(resolved->queue_allocations),
+                    std::move(resolved->queue_assignments),
+                    std::move(resolved->queue_alias_groups),
+                    std::move(resolved->queue_priorities)};
 }
 
 terreate::Result<DevicePlan> resolveDevice(const PhysicalDeviceCapabilities &capabilities,
-                                           const DeviceDescription &description) {
-  return resolve_device_impl(PhysicalDevice{}, capabilities, 0, description);
+                                            const DeviceDescription &description) {
+  auto resolved = resolve_device_impl(PhysicalDevice{}, capabilities, 0, description);
+  if (!resolved) {
+    return std::unexpected(std::move(resolved.error()));
+  }
+  return DevicePlan{std::move(resolved->requested),
+                    resolved->physical_device,
+                    std::move(resolved->capabilities),
+                    resolved->enumeration_index,
+                    std::move(resolved->enabled_extensions),
+                    resolved->enabled_features_10,
+                    resolved->enabled_features_11,
+                    resolved->enabled_features_12,
+                    resolved->enabled_features_13,
+                    std::move(resolved->feature_decisions),
+                    std::move(resolved->extension_decisions),
+                    std::move(resolved->queue_decisions),
+                    std::move(resolved->queue_allocations),
+                    std::move(resolved->queue_assignments),
+                    std::move(resolved->queue_alias_groups),
+                    std::move(resolved->queue_priorities)};
 }
 
 struct Device::Impl {
@@ -1828,10 +2001,6 @@ terreate::Result<Device> createDevice(const Instance &instance, const DevicePlan
     return std::unexpected(
         terreate::Error{error.code(), "create Vulkan device", error.what()});
   }
-}
-
-terreate::Result<Device> createDevice(const DevicePlan &plan, const Instance &instance) {
-  return createDevice(instance, plan);
 }
 
 } // namespace terreate::graphics

@@ -21,7 +21,6 @@ namespace terreate::graphics {
 class Device;
 class DevicePlan;
 class Queue;
-struct DevicePlanBuilder;
 
 /// The Vulkan feature structure family represented by a feature decision.
 enum class DeviceFeatureVersion : std::uint8_t {
@@ -29,11 +28,6 @@ enum class DeviceFeatureVersion : std::uint8_t {
   vulkan_1_1,
   vulkan_1_2,
   vulkan_1_3,
-};
-
-enum class DeviceApiVersionProvenance : std::uint8_t {
-  explicit_request,
-  capability_snapshot,
 };
 
 /// Queue aliasing is a relation between one request and the request named by
@@ -47,17 +41,32 @@ enum class DeviceQueueAliasPolicy : std::uint8_t {
   prefer_distinct_with_alias_fallback,
 };
 
+/// Deterministic public bounds for queue-resolution work.  A request that
+/// exceeds any input bound, or whose complete-allocation search reaches the
+/// retained-solution or search-work bound, fails with
+/// `DeviceError::queue_resolution_limit`; no partial allocation is returned.
+/// The input bounds are 32 queue requests, 256 allowed-family indices and 256
+/// preferred-family indices per request, and 256 queue-family inventory entries.
+inline constexpr std::size_t max_queue_resolution_request_depth = 32;
+inline constexpr std::size_t max_queue_resolution_allowed_family_indices = 256;
+inline constexpr std::size_t max_queue_resolution_preferred_family_indices = 256;
+inline constexpr std::size_t max_queue_resolution_queue_family_inventory = 256;
+inline constexpr std::size_t max_queue_resolution_retained_solutions = 4096;
+inline constexpr std::size_t max_queue_resolution_search_work = 100'000;
+
 /// One logical queue demand.  A request describes exactly one logical queue;
 /// there is no count field.  `caller_id` is the stable identity used by the
-/// resolver and by the resulting caller-to-allocation relation.  Family choice
-/// is restricted to `allowed_family_indices`; `preferred_family_indices` is an
-/// ordered tie-breaker within that whitelist.
+/// resolver and by the resulting caller-to-allocation relation.  A non-empty
+/// `allowed_family_indices` is a strict whitelist.  An empty list permits all
+/// families; `preferred_family_indices` is then an ordered prefix and all other
+/// compatible families remain unordered alternatives.
 struct DeviceQueueRequest {
   std::string caller_id{};
   RequirementStrength strength = RequirementStrength::required;
   vk::QueueFlags required_flags{};
   std::vector<std::size_t> allowed_family_indices{};
   std::vector<std::size_t> preferred_family_indices{};
+  /// The native Vulkan queue priority; it is not a resolver ranking.
   float priority = 1.0F;
 
   DeviceQueueAliasPolicy alias_policy = DeviceQueueAliasPolicy::forbid_alias;
@@ -68,8 +77,6 @@ struct DeviceQueueRequest {
 /// request masks: VK_TRUE means requested and VK_FALSE means unspecified.
 /// The resolver validates and snapshots all structures with a null pNext.
 struct DeviceDescription {
-  std::optional<std::uint32_t> api_version{};
-
   std::vector<std::string> required_extensions{};
   std::vector<std::string> optional_extensions{};
 
@@ -205,12 +212,6 @@ public:
   [[nodiscard]] std::size_t enumerationIndex() const noexcept { return data_.enumeration_index; }
   [[nodiscard]] bool hasPhysicalDevice() const noexcept { return data_.physical_device.valid(); }
 
-  [[nodiscard]] std::uint32_t effectiveApiVersion() const noexcept {
-    return data_.effective_api_version;
-  }
-  [[nodiscard]] DeviceApiVersionProvenance apiVersionProvenance() const noexcept {
-    return data_.api_version_provenance;
-  }
   [[nodiscard]] const std::vector<std::string> &enabledExtensions() const noexcept {
     return data_.enabled_extensions;
   }
@@ -259,9 +260,6 @@ private:
     PhysicalDevice physical_device{};
     PhysicalDeviceCapabilities capabilities{};
     std::size_t enumeration_index = 0;
-    std::uint32_t effective_api_version = VK_API_VERSION_1_0;
-    DeviceApiVersionProvenance api_version_provenance =
-        DeviceApiVersionProvenance::capability_snapshot;
     std::vector<std::string> enabled_extensions{};
     vk::PhysicalDeviceFeatures enabled_features_10{};
     vk::PhysicalDeviceVulkan11Features enabled_features_11{};
@@ -279,8 +277,7 @@ private:
   // NOLINTBEGIN(bugprone-easily-swappable-parameters)
   DevicePlan(DeviceDescription requested, PhysicalDevice physical_device,
              PhysicalDeviceCapabilities capabilities, std::size_t enumeration_index,
-             std::uint32_t effective_api_version, std::vector<std::string> enabled_extensions,
-             DeviceApiVersionProvenance api_version_provenance,
+             std::vector<std::string> enabled_extensions,
              vk::PhysicalDeviceFeatures enabled_features_10,
              vk::PhysicalDeviceVulkan11Features enabled_features_11,
              vk::PhysicalDeviceVulkan12Features enabled_features_12,
@@ -297,8 +294,6 @@ private:
     data_.physical_device = physical_device;
     data_.capabilities = std::move(capabilities);
     data_.enumeration_index = enumeration_index;
-    data_.effective_api_version = effective_api_version;
-    data_.api_version_provenance = api_version_provenance;
     data_.enabled_extensions = std::move(enabled_extensions);
     data_.enabled_features_10 = enabled_features_10;
     data_.enabled_features_11 = enabled_features_11;
@@ -320,7 +315,6 @@ private:
       -> terreate::Result<DevicePlan>;
   friend auto resolveDevice(const PhysicalDeviceCapabilities &, const DeviceDescription &)
       -> terreate::Result<DevicePlan>;
-  friend struct DevicePlanBuilder;
 };
 
 using DevicePlanResult = terreate::Result<DevicePlan>;
@@ -328,7 +322,6 @@ using DevicePlanResult = terreate::Result<DevicePlan>;
 enum class DeviceError : std::uint8_t {
   invalid_description = 1,
   contradictory_requirements = 2,
-  unsupported_api_version = 3,
   missing_required_extension = 4,
   unsupported_required_feature = 5,
   invalid_feature_chain = 6,
@@ -339,6 +332,7 @@ enum class DeviceError : std::uint8_t {
   invalid_physical_device = 11,
   parent_mismatch = 12,
   invalid_plan = 13,
+  queue_resolution_limit = 14,
 };
 
 [[nodiscard]] const std::error_category &device_error_category() noexcept;
@@ -421,23 +415,17 @@ private:
 
   friend class Device;
   friend struct Device::Impl;
-  friend auto createDevice(const Instance &, const DevicePlan &) -> terreate::Result<Device>;
 };
 
 /// Apply a previously resolved plan by creating an owning Vulkan logical
 /// device.  `instance` and the selected PhysicalDevice's parent Instance are
 /// borrowed only; they must outlive the returned Device.  The caller must
 /// destroy Device before its Instance and must retain no expectation that this
-/// API creates shared ownership or keeps a parent alive.  A plan with no
-/// effective queue allocation is rejected before native creation because
+/// API creates shared ownership or keeps a parent alive.  Resolution rejects
+/// plans with no effective queue allocation before this native stage because
 /// Vulkan requires queueCreateInfoCount to be non-zero.
 [[nodiscard]] auto createDevice(const Instance &instance, const DevicePlan &plan)
     -> terreate::Result<Device>;
-
-/// Equivalent argument order for createDevice(const Instance &, const DevicePlan &).
-/// The same borrowed-parent and destruction-order contract applies.
-[[nodiscard]]
-auto createDevice(const DevicePlan &plan, const Instance &instance) -> terreate::Result<Device>;
 
 } // namespace terreate::graphics
 

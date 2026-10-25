@@ -54,10 +54,10 @@ one instance cannot be applied to another.  Synthetic capability snapshots
 are useful for deterministic resolution tests but intentionally do not
 fabricate a native physical-device handle.
 
-Native application also rejects a plan with zero effective queue allocations
-before calling Vulkan: `VkDeviceCreateInfo::queueCreateInfoCount` must be
-greater than zero.  Optional requests may still be declined in a plan; a
-caller that intends to create a native device must provide at least one
+Resolution rejects a description when it would produce zero unique queue
+allocations: `VkDeviceCreateInfo::queueCreateInfoCount` must be greater than
+zero, and there is no successful zero-allocation `DevicePlan`.  Unsupported
+optional queue requests may still be declined when another request supplies an
 effective allocation.
 
 ## Queue requests and global resolution
@@ -67,15 +67,17 @@ effective allocation.
 
 - a unique caller ID and explicit `RequirementStrength`;
 - required queue flags;
-- a strict `allowed_family_indices` whitelist;
-- an ordered `preferred_family_indices` list contained in that whitelist; and
-- one finite Vulkan priority.
+- a strict `allowed_family_indices` whitelist when the list is non-empty;
+- an ordered `preferred_family_indices` prefix, followed by remaining
+  compatible families when the whitelist is empty; and
+- one finite Vulkan queue priority.
 
-There is no request count, role/name compatibility alias, inferred family, or
-hidden allow flag.  An optional request with no usable whitelisted family is
-declined and its reason remains observable.  A request with multiple equally
-valid families and no ordered preference is ambiguous; required ambiguity is a
-resolution failure rather than an enumeration-order winner.
+There is no request count, role/name compatibility alias, or hidden allow flag.
+An empty whitelist means all queue families, while a non-empty whitelist is
+never expanded.  An optional request with no compatible family is declined and
+its reason remains observable when the overall plan has another allocation.  A
+request with multiple equally valid unpreferred families is ambiguous rather
+than an enumeration-index winner.
 
 Alias relations are explicit.  A request that aliases names a target caller
 ID and selects one of:
@@ -86,18 +88,43 @@ ID and selects one of:
 
 `forbid_alias` is the explicit distinct-only policy.  Aliasing requires the
 target allocation to satisfy the request's flags and whitelist and requires
-the same native priority.  The resolver searches the complete request graph
-in canonical caller-ID order, while honoring alias dependencies, then scores
-explicit optional acceptance, alias policy, and ordered family preferences.
+the same native priority.  Priority is only the Vulkan queue priority; it is
+not a resolver score.  The resolver searches complete allocations in canonical
+caller-ID order, then compares them by the partial order formed by each
+request's explicit family and alias preferences.  A crossed or otherwise
+incomparable tradeoff is a resolution ambiguity; no numeric or global score
+selects a winner.  Optional acceptance that would consume a resource used by
+the reject alternative is likewise ambiguous without an explicit policy.
 The resulting allocation and alias relations are canonicalized by
 `(family_index, queue_index)`, so shuffling input requests cannot change the
-global solution.  Required distinct requests fail on a one-queue family;
-the #228 case of required graphics plus optional compute accepts an explicit
-compute-to-graphics alias at family 0, queue 0.
+global solution.  Required distinct requests fail on a one-queue family; the
+#228 case of required graphics plus optional compute accepts an explicit
+compute-to-graphics alias at family 0, queue 0, while an alias fallback with
+incompatible priorities fails distinctly when no distinct queue is available.
+
+Requests for `vk::QueueFlagBits::eProtected` are rejected explicitly.  This
+API does not silently create protected queues or set protected queue-create
+flags.
 
 The native plan contains only unique allocations.  It also retains a
 request-to-allocation assignment and an alias group for every allocation, so
 the provenance of a shared queue is observable before native creation.
+
+Queue resolution is deliberately bounded at the public `resolveDevice`
+boundary.  The complete deterministic policy permits at most 32
+queue-request levels, at most 256 entries in each request's
+`allowed_family_indices` list, at most 256 entries in each request's
+`preferred_family_indices` list, and at most 256 queue-family entries in the
+capability inventory.  It retains at most 4,096 complete allocations while
+comparing alternatives and spends at most 100,000 search-work units across
+candidate inspection, branch and leaf visits, and pairwise global-solution
+comparison.  These limits are fixed policy values, not timeouts or
+process-global state.  Input bounds are checked before queue-request
+normalization or capability-driven resolution work; if any input bound, the
+retained-solution bound, or the search-work bound is reached, enumeration
+stops without selecting a partial result and resolution returns the stable
+semantic `DeviceError::queue_resolution_limit` failure.  The caller receives
+no partially resolved `DevicePlan`.
 
 ## Extension and feature decisions
 
@@ -109,7 +136,10 @@ unsupported optional items are declined and retained in the plan.
 
 Vulkan 1.0 through 1.3 request and effective structures are copied into the
 plan as owned, pNext-free values.  The input description is never normalized in
-place.  `createDevice` constructs its temporary native pNext chain from the
+place.  Aggregate Vulkan 1.1, 1.2, and 1.3 feature requests are gated by the
+corresponding actual interface-availability observations from #269; a required
+feature fails and an optional feature is declined when that interface is not
+available.  `createDevice` constructs its temporary native pNext chain from the
 effective snapshot and applies the already-selected extensions, features,
 queues, and priorities mechanically; it never re-resolves.
 

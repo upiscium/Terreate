@@ -22,6 +22,14 @@ static_assert(!std::default_initializable<DevicePlan>);
 static_assert(std::copy_constructible<DevicePlan>);
 static_assert(std::is_nothrow_move_constructible_v<DevicePlan>);
 static_assert(std::is_nothrow_move_assignable_v<DevicePlan>);
+static_assert(!std::is_constructible_v<
+              DevicePlan, DeviceDescription, PhysicalDevice, PhysicalDeviceCapabilities,
+              std::size_t, std::vector<std::string>, vk::PhysicalDeviceFeatures,
+              vk::PhysicalDeviceVulkan11Features, vk::PhysicalDeviceVulkan12Features,
+              vk::PhysicalDeviceVulkan13Features, std::vector<DeviceFeatureDecision>,
+              std::vector<DeviceExtensionDecision>, std::vector<DeviceQueueDecision>,
+              std::vector<DeviceQueueAllocation>, std::vector<DeviceQueueAssignment>,
+              std::vector<DeviceQueueAliasGroup>, std::vector<float>>);
 static_assert(!std::copy_constructible<Device>);
 static_assert(std::movable<Device>);
 static_assert(!std::default_initializable<Device>);
@@ -30,6 +38,12 @@ static_assert(std::is_nothrow_copy_constructible_v<Queue>);
 static_assert(std::is_trivially_copyable_v<Queue>);
 static_assert(!std::is_constructible_v<Queue, vk::Queue, const void *>);
 static_assert(!std::is_convertible_v<Queue, vk::Queue>);
+template <typename Plan, typename InstanceType>
+concept has_reversed_create_device = requires(const Plan &plan, const InstanceType &instance) {
+  createDevice(plan, instance);
+};
+
+static_assert(!has_reversed_create_device<DevicePlan, Instance>);
 
 [[nodiscard]] bool check(bool condition, const char *message) {
   if (!condition) {
@@ -112,7 +126,6 @@ void emit_runtime_marker(const char *marker) {
   constexpr std::array expected_codes{
       std::pair{DeviceError::invalid_description, 1},
       std::pair{DeviceError::contradictory_requirements, 2},
-      std::pair{DeviceError::unsupported_api_version, 3},
       std::pair{DeviceError::missing_required_extension, 4},
       std::pair{DeviceError::unsupported_required_feature, 5},
       std::pair{DeviceError::invalid_feature_chain, 6},
@@ -123,6 +136,7 @@ void emit_runtime_marker(const char *marker) {
       std::pair{DeviceError::invalid_physical_device, 11},
       std::pair{DeviceError::parent_mismatch, 12},
       std::pair{DeviceError::invalid_plan, 13},
+      std::pair{DeviceError::queue_resolution_limit, 14},
   };
 
   bool passed = true;
@@ -265,22 +279,51 @@ void emit_runtime_marker(const char *marker) {
                       result.error().code() == make_error_code(DeviceError::invalid_queue_request),
                   "zero required queue flags were not rejected");
 
-  DeviceDescription invalid_whitelist;
-  invalid_whitelist.queue_requests.push_back(
-      queue_request("invalid-whitelist", RequirementStrength::required,
-                    vk::QueueFlagBits::eGraphics, 0));
-  invalid_whitelist.queue_requests.front().allowed_family_indices = {};
-  result = resolveDevice(capabilities, invalid_whitelist);
+  DeviceDescription strict_whitelist;
+  strict_whitelist.queue_requests.push_back(DeviceQueueRequest{
+      .caller_id = "strict-whitelist",
+      .strength = RequirementStrength::required,
+      .required_flags = vk::QueueFlagBits::eGraphics,
+      .allowed_family_indices = {1},
+      .preferred_family_indices = {1},
+      .priority = 0.5F,
+  });
+  result = resolveDevice(capabilities, strict_whitelist);
+  passed &= check(result.has_value() && queue_decision(*result, "strict-whitelist") != nullptr &&
+                      queue_decision(*result, "strict-whitelist")->family_index == 1,
+                  "non-empty family whitelist was not strict");
+
+  DeviceDescription empty_whitelist;
+  empty_whitelist.queue_requests.push_back(DeviceQueueRequest{
+      .caller_id = "all-families",
+      .strength = RequirementStrength::required,
+      .required_flags = vk::QueueFlagBits::eGraphics,
+      .priority = 0.5F,
+  });
+  result = resolveDevice(capabilities, empty_whitelist);
   passed &= check(!result &&
-                      result.error().code() == make_error_code(DeviceError::invalid_queue_request),
-                  "missing strict family whitelist was not rejected");
+                      result.error().code() == make_error_code(DeviceError::ambiguous_queue),
+                  "empty family whitelist did not consider all unordered compatible families");
+  empty_whitelist.queue_requests.front().preferred_family_indices = {1};
+  result = resolveDevice(capabilities, empty_whitelist);
+  passed &= check(result.has_value() &&
+                      queue_decision(*result, "all-families")->family_index == 1,
+                  "empty family whitelist did not honor its ordered preferred prefix");
+  empty_whitelist.queue_requests.front().preferred_family_indices = {1, 0};
+  result = resolveDevice(capabilities, empty_whitelist);
+  passed &= check(result.has_value() &&
+                      queue_decision(*result, "all-families")->family_index == 1,
+                  "ordered preferred families did not precede remaining families");
 
   DeviceDescription optional_decline;
   auto unsupported = queue_request("optional-compute", RequirementStrength::optional,
-                                  vk::QueueFlagBits::eTransfer, 1);
+                                    vk::QueueFlagBits::eTransfer, 1);
+  optional_decline.queue_requests.push_back(
+      queue_request("required-graphics", RequirementStrength::required,
+                    vk::QueueFlagBits::eGraphics, 0));
   optional_decline.queue_requests.push_back(std::move(unsupported));
   result = resolveDevice(capabilities, optional_decline);
-  passed &= check(result.has_value() && result->queueAllocations().empty() &&
+  passed &= check(result.has_value() && result->queueAllocations().size() == 1 &&
                       queue_decision(*result, "optional-compute") != nullptr &&
                       queue_decision(*result, "optional-compute")->outcome ==
                           DeviceDecisionOutcome::declined &&
@@ -296,12 +339,9 @@ void emit_runtime_marker(const char *marker) {
       .priority = 0.5F,
   });
   result = resolveDevice(capabilities, empty_optional_whitelist);
-  passed &= check(result.has_value() && queue_decision(*result, "empty-optional") != nullptr &&
-                      queue_decision(*result, "empty-optional")->outcome ==
-                          DeviceDecisionOutcome::declined &&
-                      queue_decision(*result, "empty-optional")->reason ==
-                          DeviceDecisionReason::unsupported,
-                   "optional request without a whitelist was not declined");
+  passed &= check(!result &&
+                      result.error().code() == make_error_code(DeviceError::ambiguous_queue),
+                  "optional request without a whitelist silently chose an index winner");
 
   DeviceDescription distinct_required;
   distinct_required.queue_requests = {
@@ -356,7 +396,160 @@ void emit_runtime_marker(const char *marker) {
   passed &= check(result.has_value() && result->queueAllocations().size() == 1 &&
                       queue_decision(*result, "compute")->reason ==
                           DeviceDecisionReason::accepted_by_aliasing,
-                  "distinct-preferred alias fallback was not accepted");
+                   "distinct-preferred alias fallback was not accepted");
+
+  DeviceDescription distinct_alias_failure;
+  auto conflict_graphics = queue_request("graphics", RequirementStrength::required,
+                                         vk::QueueFlagBits::eGraphics, 0, 0.75F);
+  auto conflict_compute = queue_request("compute", RequirementStrength::required,
+                                        vk::QueueFlagBits::eCompute, 0, 0.25F);
+  conflict_compute.alias_policy = DeviceQueueAliasPolicy::prefer_alias_with_distinct_fallback;
+  conflict_compute.alias_target = "graphics";
+  distinct_alias_failure.queue_requests = {conflict_graphics, conflict_compute};
+  result = resolveDevice(synthetic_capabilities(), distinct_alias_failure);
+  passed &= check(!result &&
+                      result.error().code() == make_error_code(DeviceError::insufficient_queue_count),
+                  "required alias with conflicting Vulkan priorities did not fail distinctly");
+
+  DeviceDescription optional_resource_conflict;
+  optional_resource_conflict.queue_requests = {
+      DeviceQueueRequest{
+          .caller_id = "required",
+          .strength = RequirementStrength::required,
+          .required_flags = vk::QueueFlagBits::eGraphics,
+          .preferred_family_indices = {0, 1},
+          .priority = 0.5F,
+      },
+      DeviceQueueRequest{
+          .caller_id = "optional",
+          .strength = RequirementStrength::optional,
+          .required_flags = vk::QueueFlagBits::eCompute,
+          .allowed_family_indices = {0},
+          .priority = 0.5F,
+      },
+  };
+  result = resolveDevice(synthetic_capabilities(1, true), optional_resource_conflict);
+  passed &= check(!result &&
+                      result.error().code() == make_error_code(DeviceError::ambiguous_queue),
+                  "optional resource-conflict accept/reject alternatives were not ambiguous");
+
+  DeviceDescription crossed_tradeoff;
+  crossed_tradeoff.queue_requests = {
+      DeviceQueueRequest{
+          .caller_id = "graphics",
+          .strength = RequirementStrength::required,
+          .required_flags = vk::QueueFlagBits::eGraphics,
+          .preferred_family_indices = {0},
+          .priority = 0.5F,
+          .alias_policy = DeviceQueueAliasPolicy::forbid_alias,
+      },
+      DeviceQueueRequest{
+          .caller_id = "compute",
+          .strength = RequirementStrength::required,
+          .required_flags = vk::QueueFlagBits::eCompute,
+          .preferred_family_indices = {1},
+          .priority = 0.5F,
+          .alias_policy = DeviceQueueAliasPolicy::prefer_alias_with_distinct_fallback,
+          .alias_target = "graphics",
+      },
+  };
+  result = resolveDevice(synthetic_capabilities(1, true), crossed_tradeoff);
+  passed &= check(!result &&
+                      result.error().code() == make_error_code(DeviceError::ambiguous_queue),
+                  "crossed family/alias preferences did not report ambiguity");
+
+  DeviceDescription protected_queue;
+  protected_queue.queue_requests.push_back(DeviceQueueRequest{
+      .caller_id = "protected",
+      .strength = RequirementStrength::required,
+      .required_flags = vk::QueueFlagBits::eGraphics | vk::QueueFlagBits::eProtected,
+      .priority = 1.0F,
+  });
+  result = resolveDevice(capabilities, protected_queue);
+  passed &= check(!result &&
+                      result.error().code() == make_error_code(DeviceError::invalid_queue_request),
+                  "protected queue request was not rejected before native creation");
+
+  DeviceDescription too_deep;
+  for (std::size_t index = 0; index <= max_queue_resolution_request_depth; ++index) {
+    too_deep.queue_requests.push_back(DeviceQueueRequest{
+        .caller_id = "depth-" + std::to_string(index),
+        .strength = RequirementStrength::required,
+        .required_flags = vk::QueueFlagBits::eGraphics,
+        .allowed_family_indices = {0},
+        .priority = 0.5F,
+    });
+  }
+  result = resolveDevice(capabilities, too_deep);
+  passed &= check(!result &&
+                      result.error().code() == make_error_code(DeviceError::queue_resolution_limit),
+                  "queue request depth limit did not reject an over-depth request set");
+
+  DeviceDescription oversized_allowed;
+  DeviceQueueRequest allowed_limit_request{
+      .caller_id = "oversized-allowed",
+      .strength = RequirementStrength::required,
+      .required_flags = vk::QueueFlagBits::eGraphics,
+      .priority = 0.5F,
+  };
+  for (std::size_t family = 0;
+       family <= max_queue_resolution_allowed_family_indices; ++family) {
+    allowed_limit_request.allowed_family_indices.push_back(family);
+  }
+  oversized_allowed.queue_requests.push_back(std::move(allowed_limit_request));
+  result = resolveDevice(capabilities, oversized_allowed);
+  passed &= check(!result &&
+                      result.error().code() == make_error_code(DeviceError::queue_resolution_limit),
+                  "oversized allowed-family list bypassed the queue-resolution limit");
+
+  DeviceDescription oversized_preferred;
+  DeviceQueueRequest preferred_limit_request{
+      .caller_id = "oversized-preferred",
+      .strength = RequirementStrength::required,
+      .required_flags = vk::QueueFlagBits::eGraphics,
+      .priority = 0.5F,
+  };
+  for (std::size_t family = 0;
+       family <= max_queue_resolution_preferred_family_indices; ++family) {
+    preferred_limit_request.preferred_family_indices.push_back(family);
+  }
+  oversized_preferred.queue_requests.push_back(std::move(preferred_limit_request));
+  result = resolveDevice(capabilities, oversized_preferred);
+  passed &= check(!result &&
+                      result.error().code() == make_error_code(DeviceError::queue_resolution_limit),
+                  "oversized preferred-family list bypassed the queue-resolution limit");
+
+  auto oversized_inventory = capabilities;
+  oversized_inventory.queue_families.resize(max_queue_resolution_queue_family_inventory + 1,
+                                            capabilities.queue_families.front());
+  DeviceDescription inventory_limit_request;
+  inventory_limit_request.queue_requests.push_back(
+      queue_request("oversized-inventory", RequirementStrength::required,
+                    vk::QueueFlagBits::eGraphics, 0));
+  result = resolveDevice(oversized_inventory, inventory_limit_request);
+  passed &= check(!result &&
+                      result.error().code() == make_error_code(DeviceError::queue_resolution_limit),
+                  "oversized queue-family inventory bypassed the queue-resolution limit");
+
+  DeviceDescription too_many_solutions;
+  for (std::size_t index = 0; index < 13; ++index) {
+    too_many_solutions.queue_requests.push_back(DeviceQueueRequest{
+        .caller_id = "retained-" + std::to_string(index),
+        .strength = RequirementStrength::optional,
+        .required_flags = vk::QueueFlagBits::eGraphics,
+        .priority = 0.5F,
+    });
+  }
+  const auto bounded_capabilities = synthetic_capabilities(32, true);
+  const auto bounded_result = resolveDevice(bounded_capabilities, too_many_solutions);
+  const auto replayed_bounded_result = resolveDevice(bounded_capabilities, too_many_solutions);
+  passed &= check(
+      !bounded_result && !replayed_bounded_result &&
+          bounded_result.error().code() == make_error_code(DeviceError::queue_resolution_limit) &&
+          replayed_bounded_result.error().code() ==
+              make_error_code(DeviceError::queue_resolution_limit) &&
+          bounded_result.error().detail() == replayed_bounded_result.error().detail(),
+      "queue solution retention/search bound did not return a stable semantic failure");
   return passed;
 }
 
@@ -422,7 +615,97 @@ void emit_runtime_marker(const char *marker) {
   result = resolveDevice(bad_chain, DeviceDescription{});
   passed &= check(!result &&
                       result.error().code() == make_error_code(DeviceError::invalid_feature_chain),
-                  "borrowed capability pNext chain was not rejected");
+                   "borrowed capability pNext chain was not rejected");
+
+  auto vulkan10 = capabilities;
+  vulkan10.api_version = VK_API_VERSION_1_0;
+  vulkan10.features_11_available = false;
+  vulkan10.features_12_available = false;
+  vulkan10.features_13_available = false;
+  DeviceDescription requires11;
+  requires11.required_features_11.shaderDrawParameters = VK_TRUE;
+  result = resolveDevice(vulkan10, requires11);
+  passed &= check(!result &&
+                      result.error().code() == make_error_code(DeviceError::unsupported_required_feature),
+                  "Vulkan 1.0 capability boundary enabled aggregate 1.1 features");
+
+  auto vulkan11 = capabilities;
+  vulkan11.api_version = VK_API_VERSION_1_1;
+  vulkan11.features_11_available = true;
+  vulkan11.features_12_available = false;
+  vulkan11.features_13_available = false;
+  DeviceDescription requires12;
+  requires12.required_features_12.timelineSemaphore = VK_TRUE;
+  result = resolveDevice(vulkan11, requires12);
+  passed &= check(!result &&
+                      result.error().code() == make_error_code(DeviceError::unsupported_required_feature),
+                  "Vulkan 1.1 capability boundary enabled aggregate 1.2 features");
+
+  auto vulkan12 = capabilities;
+  vulkan12.api_version = VK_API_VERSION_1_2;
+  vulkan12.features_11_available = true;
+  vulkan12.features_12_available = true;
+  vulkan12.features_13_available = false;
+  DeviceDescription optional13;
+  optional13.optional_features_13.dynamicRendering = VK_TRUE;
+  optional13.queue_requests.push_back(
+      queue_request("boundary", RequirementStrength::required, vk::QueueFlagBits::eGraphics, 0));
+  result = resolveDevice(vulkan12, optional13);
+  passed &= check(result.has_value() &&
+                      std::any_of(result->featureDecisions().begin(), result->featureDecisions().end(),
+                                  [](const auto &decision) {
+                                    return decision.version == DeviceFeatureVersion::vulkan_1_3 &&
+                                           decision.member == "dynamicRendering" &&
+                                           decision.outcome == DeviceDecisionOutcome::declined &&
+                                           !decision.supported && !decision.effective;
+                                  }),
+                   "Vulkan 1.2 capability boundary did not decline optional aggregate 1.3 feature");
+
+  auto variable_pointer_capabilities = capabilities;
+  variable_pointer_capabilities.features_11.variablePointers = VK_TRUE;
+  variable_pointer_capabilities.features_11.variablePointersStorageBuffer = VK_TRUE;
+  DeviceDescription variable_pointers;
+  variable_pointers.queue_requests.push_back(
+      queue_request("variable-pointers", RequirementStrength::required,
+                    vk::QueueFlagBits::eGraphics, 0));
+  result = resolveDevice(variable_pointer_capabilities, variable_pointers);
+  passed &= check(result.has_value() &&
+                      result->enabledFeatures11().variablePointers == VK_FALSE &&
+                      result->enabledFeatures11().variablePointersStorageBuffer == VK_FALSE,
+                  "supported but unrequested variable pointer features were implicitly enabled");
+
+  variable_pointers.required_features_11.variablePointers = VK_TRUE;
+  const auto original_variable_pointers = variable_pointers;
+  const auto dependent_only = resolveDevice(variable_pointer_capabilities, variable_pointers);
+  passed &= check(!dependent_only &&
+                      dependent_only.error().code() ==
+                          make_error_code(DeviceError::contradictory_requirements) &&
+                      dependent_only.error().detail() ==
+                          "variablePointers requires variablePointersStorageBuffer to be explicitly "
+                          "requested and enabled as a mandatory Vulkan prerequisite",
+                  "required variablePointers without its enabled prerequisite was not rejected");
+  passed &= check(variable_pointers.required_features_11 ==
+                          original_variable_pointers.required_features_11 &&
+                      variable_pointers.optional_features_11 ==
+                          original_variable_pointers.optional_features_11,
+                  "variable pointer dependency rejection mutated the caller's feature requests");
+
+  variable_pointers.required_features_11.variablePointersStorageBuffer = VK_TRUE;
+  result = resolveDevice(variable_pointer_capabilities, variable_pointers);
+  passed &= check(result.has_value() &&
+                      result->enabledFeatures11().variablePointers == VK_TRUE &&
+                      result->enabledFeatures11().variablePointersStorageBuffer == VK_TRUE,
+                  "explicitly requested variable pointer feature pair did not remain enabled");
+
+  DeviceDescription optional_variable_pointers;
+  optional_variable_pointers.queue_requests = variable_pointers.queue_requests;
+  optional_variable_pointers.optional_features_11.variablePointers = VK_TRUE;
+  result = resolveDevice(variable_pointer_capabilities, optional_variable_pointers);
+  passed &= check(!result && !dependent_only &&
+                      result.error().code() ==
+                          make_error_code(DeviceError::contradictory_requirements) &&
+                      result.error().detail() == dependent_only.error().detail(),
+                  "optional variablePointers without its enabled prerequisite was not rejected");
   return passed;
 }
 
@@ -517,14 +800,10 @@ first_usable_queue_family(const PhysicalDeviceCapabilities &capabilities) {
   const auto &candidate = inventory->front();
   bool passed = true;
   const auto empty_queue_plan = resolveDevice(candidate, DeviceDescription{});
-  passed &= check(empty_queue_plan.has_value() && empty_queue_plan->queueAllocations().empty(),
-                  "empty queue description did not produce an observable zero-allocation plan");
-  if (empty_queue_plan) {
-    const auto empty_queue_device = createDevice(*instance, *empty_queue_plan);
-    passed &= check(!empty_queue_device &&
-                        empty_queue_device.error().code() == make_error_code(DeviceError::invalid_plan),
-                    "zero-allocation native plan was not rejected before Vulkan creation");
-  }
+  passed &= check(!empty_queue_plan &&
+                      empty_queue_plan.error().code() ==
+                          make_error_code(DeviceError::insufficient_queue_count),
+                  "zero-allocation device resolution did not fail before native creation");
   const auto queue_family = first_usable_queue_family(candidate.capabilities());
   if (!check(queue_family.has_value(), "headless physical device exposed no usable queue family")) {
     return false;
