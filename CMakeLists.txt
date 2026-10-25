@@ -444,6 +444,16 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
         "graphics\\.device: headless-device=PASS"
       FAIL_REGULAR_EXPRESSION
         "graphics\\.device: assertion=FAIL")
+
+    add_executable(terreate_graphics_allocator_tests tests/test_graphics_allocator.cpp)
+    target_link_libraries(terreate_graphics_allocator_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_allocator_tests PRIVATE
+      "-Wl,--wrap=vmaCreateAllocator" "-Wl,--wrap=vmaDestroyAllocator")
+    terreate_configure_target(terreate_graphics_allocator_tests)
+    add_test(NAME graphics.allocator COMMAND terreate_graphics_allocator_tests)
+    set_tests_properties(graphics.allocator PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.allocator: headless-allocator=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.allocator: assertion=FAIL")
   endif()
 
   add_test(
