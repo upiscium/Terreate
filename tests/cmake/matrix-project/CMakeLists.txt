@@ -97,15 +97,19 @@ if(_component STREQUAL "Graphics")
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
 #include <terreate/graphics/device.hpp>
+#include <terreate/graphics/allocator.hpp>
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_raii.hpp>
 
 #include <cstdint>
+#include <type_traits>
 
 static_assert(VK_API_VERSION_1_3 != 0);
 static_assert(sizeof(vk::raii::Context) > 0);
 static_assert(sizeof(vk::raii::Device) > 0);
+static_assert(!std::is_copy_constructible_v<terreate::graphics::Allocator>);
+static_assert(std::is_move_constructible_v<terreate::graphics::Allocator>);
 
 int main() {
   const auto capabilities = terreate::graphics::queryInstanceCapabilities();

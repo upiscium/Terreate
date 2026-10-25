@@ -270,6 +270,22 @@ set_target_properties(terreate_vulkan_headers_probe PROPERTIES
   endif()
 endif()
 
+# VMA is a public requirement only when a Vulkan-capable Graphics target is requested.
+if(_Terreate_graphics_built AND _Terreate_graphics_requested AND
+   _Terreate_graphics_available)
+  if(_Terreate_graphics_required)
+    find_dependency(VulkanMemoryAllocator CONFIG)
+  else()
+    find_package(VulkanMemoryAllocator CONFIG QUIET)
+  endif()
+  set(PACKAGE_PREFIX_DIR "${_Terreate_package_prefix_dir}")
+  if(NOT TARGET GPUOpen::VulkanMemoryAllocator)
+    set(_Terreate_graphics_available FALSE)
+    set(_Terreate_graphics_unavailable_reason
+      "Terreate Graphics requires GPUOpen::VulkanMemoryAllocator")
+  endif()
+endif()
+
 if(_Terreate_graphics_built AND _Terreate_graphics_requested AND
    NOT _Terreate_graphics_available)
   set(Terreate_NOT_FOUND_MESSAGE "${_Terreate_graphics_unavailable_reason}")

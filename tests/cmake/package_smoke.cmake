@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-           "^include/terreate/(core/(diagnostics|error|result)|graphics/(device|instance|physical_device))\\.hpp$")
+           "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -297,6 +297,7 @@ foreach(_forbidden_graphics_marker IN ITEMS
 endforeach()
 
 set(_graphics_consumer_source [=[
+#include <terreate/graphics/allocator.hpp>
 #include <terreate/graphics/device.hpp>
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
@@ -306,6 +307,9 @@ set(_graphics_consumer_source [=[
 #include <type_traits>
 #include <utility>
 
+static_assert(!std::is_default_constructible_v<terreate::graphics::Allocator>);
+static_assert(!std::is_copy_constructible_v<terreate::graphics::Allocator>);
+static_assert(std::is_move_constructible_v<terreate::graphics::Allocator>);
 static_assert(!std::is_default_constructible_v<terreate::graphics::Device>);
 static_assert(!std::is_copy_constructible_v<terreate::graphics::Device>);
 static_assert(std::is_move_constructible_v<terreate::graphics::Device>);
@@ -418,7 +422,15 @@ int main() {
   if (!device || !device->valid() || !device->queue("package-main")) {
     return 11;
   }
-  return device->plan() != nullptr && device->queues().size() == 1 ? 0 : 12;
+  auto allocator = terreate::graphics::createAllocator(*instance, candidate, *device);
+  if (!allocator || !allocator->valid() ||
+      allocator->nativeHandle() == VK_NULL_HANDLE ||
+      allocator->configuration() == nullptr ||
+      allocator->effectiveFlags() != 0) return 12;
+  const auto budgets = allocator->budgets();
+  const auto statistics = allocator->statistics();
+  return budgets && statistics && device->plan() != nullptr &&
+         device->queues().size() == 1 ? 0 : 13;
 }
 ]=])
 terreate_build_consumer(all_components_runtime "${_all_prefix}" Graphics
@@ -583,6 +595,7 @@ endif()
 get_target_property(_graphics_links Terreate::Graphics INTERFACE_LINK_LIBRARIES)
 if(NOT "${_graphics_links}" MATCHES "Core" OR
    NOT "${_graphics_links}" MATCHES "Vulkan::Vulkan" OR
+   NOT "${_graphics_links}" MATCHES "GPUOpen::VulkanMemoryAllocator" OR
    "${_graphics_links}" MATCHES "Platform")
   message(FATAL_ERROR "Graphics package dependency closure is invalid: ${_graphics_links}")
 endif()

@@ -5,6 +5,10 @@ if(NOT TARGET terreate_core)
 endif()
 
 find_package(Vulkan REQUIRED)
+find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+if(NOT TARGET GPUOpen::VulkanMemoryAllocator)
+  message(FATAL_ERROR "Terreate Graphics requires GPUOpen::VulkanMemoryAllocator")
+endif()
 if(NOT TARGET Vulkan::Vulkan)
   message(FATAL_ERROR
     "Terreate Graphics requires Vulkan::Vulkan from a Vulkan >= 1.3 package")
@@ -132,12 +136,24 @@ if(NOT "${_terreate_vulkan_explicit_include_dir}" STREQUAL "")
     "${_terreate_vulkan_explicit_include_dir}")
 endif()
 
+# VMA implementation is one dedicated object, compiled from allocator.cpp
+# with a private macro. This preserves a testable external VMA call boundary
+# and prevents two definitions of any vma* symbol in the public STATIC archive.
+add_library(terreate_graphics_vma_impl OBJECT src/allocator.cpp)
+target_compile_definitions(terreate_graphics_vma_impl PRIVATE
+  TERREATE_GRAPHICS_VMA_IMPLEMENTATION_ONLY=1)
+target_link_libraries(terreate_graphics_vma_impl PRIVATE
+  GPUOpen::VulkanMemoryAllocator Vulkan::Vulkan)
+terreate_configure_target(terreate_graphics_vma_impl)
+
 # Graphics is intentionally independent of Platform.  Vulkan is the first
 # Graphics-owned native dependency; Window/GLFW, Surface presentation, and
-# VMA/resources remain outside this component.  The Graphics API below owns
+# Buffer/Image resources remain outside this component; the explicit VMA Allocator belongs to Graphics.  The Graphics API below owns
 # logical devices; physical devices remain borrowed from their parent Instance
 # and queues remain borrowed from Device.
 add_library(terreate_graphics STATIC
+  $<TARGET_OBJECTS:terreate_graphics_vma_impl>
+  src/allocator.cpp
   src/graphics.cpp
   src/graphics_diagnostics.cpp
   src/device.cpp
@@ -152,7 +168,8 @@ target_include_directories(terreate_graphics
 target_link_libraries(terreate_graphics
   PUBLIC
     Terreate::Core
-    Vulkan::Vulkan)
+    Vulkan::Vulkan
+    GPUOpen::VulkanMemoryAllocator)
 
 terreate_configure_target(terreate_graphics)
 
