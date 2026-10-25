@@ -121,10 +121,13 @@ The following invariants apply to every domain resolver.
    outcome, selected values, failure details, and canonical ordering. It does
    not depend on time, randomness, process-global state, or incidental native
    enumeration order.
-7. **Tie-breakers are declared.** Alternatives have an explicit priority and
-   stable tie-breaker. If equally valid alternatives have no defined
-   tie-breaker, the resolver reports an ambiguity rather than choosing
-   arbitrarily.
+7. **Alternative ordering is declared.** A domain declares the comparison
+   policy for its alternatives. Queue-role allocation is deliberately
+   different from a generic total ranking: the caller declares a per-request
+   partial ordering, and the resolver reports `ambiguous_queue` when complete
+   global solutions are incomparable. This queue-role rule supersedes any
+   generic wording about weighted priorities or stable tie-breakers; it never
+   chooses an incomparable allocation from enumeration order.
 8. **Resolution does not apply native state.** Querying and resolving do not
    create or mutate backend objects. Native application is a separate stage
    whose actual result is observable.
@@ -229,8 +232,11 @@ A conforming flow proceeds conceptually as follows:
    value and its policy source or revision.
 4. Evaluate required requirements and required combinations. Do not convert a
    missing capability into an optional choice.
-5. Resolve declared alternatives using domain policy, explicit priority, and
-   stable tie-breakers. A fallback is valid only when the request permits it.
+5. Resolve declared alternatives using domain policy. A fallback is valid only
+   when the request permits it. Queue-role allocation uses the caller's
+   per-request partial ordering rather than weighted priorities or stable
+   tie-breakers; incomparable complete global allocations produce
+   `ambiguous_queue`.
 6. Evaluate optional requirements. Record acceptance, decline, conflict, or
    omission for each requested optional item.
 7. Construct a separate `Effective` value with exact selected values and a
@@ -322,7 +328,8 @@ Defaults are centralized domain policy. They follow these rules:
 - a default may fill an omitted choice, but may not create an undeclared
   required feature, extension, dependency, or queue role;
 - “best available” is not a default until the domain defines its ordering and
-  tie-breaker;
+  tie-breaker. Queue-role allocation instead uses its caller-declared
+  per-request partial ordering and reports incomparable global solutions;
 - default selection is deterministic and independent of driver enumeration
   order; and
 - the `Effective` value identifies the field as defaulted and records the
@@ -371,11 +378,12 @@ It must not turn backend capabilities into user intent.
 ### Domain ownership
 
 Each domain owns its intent vocabulary, capability adapter, legal combinations,
-default policy, alternative priorities, tie-breakers, and mapping from its
-effective configuration to a backend request. The domain must expose enough
-decision information for the shared contract to remain observable. Domain
-policy may derive a dependency only when that rule is explicit, stable, and
-recorded in the decision trace.
+default policy, alternative ordering, and mapping from its effective
+configuration to a backend request. The domain must expose enough decision
+information for the shared contract to remain observable. Domain policy may
+derive a dependency only when that rule is explicit, stable, and recorded in
+the decision trace. For queue roles, the alternative ordering is the caller's
+per-request partial ordering, not a weighted priority or stable tie-breaker.
 
 ### Backend/native ownership
 
@@ -542,8 +550,12 @@ resolver still checks the domain's synchronization and ownership constraints;
 it must not alias merely to make an unsatisfied request appear to fit. A
 preference for a dedicated family may fall back only when that fallback was
 declared optional and the decision is recorded. Family selection and queue
-allocation use explicit priorities and stable tie-breakers rather than
-incidental native enumeration order.
+allocation use the caller-declared per-request partial ordering rather than
+weighted priorities or stable tie-breakers. Vulkan queue priority is a
+native-only value used when creating the queue; it is not a resolver ranking.
+When complete global allocations are incomparable under the declared
+pairwise policies, resolution returns the stable semantic `ambiguous_queue`
+failure instead of selecting from native or incidental enumeration order.
 
 The native plan should contain only unique queue allocations while retaining
 the role-to-allocation mapping for diagnostics. This makes aliasing visible
@@ -606,9 +618,10 @@ of these exact cases:
     feature names as requirements or constructing enable chains. #270 owns
     explicit feature selection and enablement.
 9. **Defaults and alternatives:** explicit values beat defaults; omitted values
-   use only documented defaults with provenance; declared priorities and stable
-   tie-breakers decide alternatives, while an equal-priority case with no
-   tie-breaker reports ambiguity rather than choosing arbitrarily.
+   use only documented defaults with provenance. Generic alternatives use their
+   declared ordering; queue roles use caller-declared per-request partial
+   ordering, with `ambiguous_queue` for incomparable complete global
+   allocations rather than a weighted priority or stable tie-breaker.
 10. **Backend/native divergence:** a backend rejection after successful
      resolution is reported as a distinct native/backend application failure,
      not a `Resolution Failure`. It retains the original `Requested` and
