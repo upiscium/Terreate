@@ -10,6 +10,7 @@ is an optional external, isolated Work Unit developer tool rather than a reposit
 - [Configuration and capability resolution contract](docs/architecture/configuration-resolution.md)
 - [Core error and result contract](docs/architecture/error-result.md)
 - [Structured diagnostics contract](docs/architecture/diagnostics.md)
+- [Graphics allocator integration and ownership](docs/architecture/allocator.md)
 
 ## Development shell
 
@@ -82,10 +83,11 @@ uses the surrounding project's Vulkan package discovery, with
 case, an explicitly supplied include path is used rather than silently
 searching inherited SDK or host defaults.
 
-The devShell dependencies are not consumer linkage.  Core and Platform remain
-Vulkan-free; Graphics owns the Vulkan loader link and publishes `Vulkan::Vulkan`
-to consumers.  The project still does not link GLFW, VMA, or optional shader
-backends.
+The devShell dependencies are not, by themselves, consumer linkage. Core and
+Platform remain Vulkan-free and VMA-free. Graphics publicly depends on Vulkan
+and VMA through `Vulkan::Vulkan` and `GPUOpen::VulkanMemoryAllocator`, including
+their transitive header and linkage requirements. The project still does not
+link GLFW or optional shader backends.
 
 ## Components and package exports
 
@@ -108,9 +110,18 @@ The package reports disabled or unknown requested components through the
 standard `<Package>_<Component>_FOUND` and `<Package>_NOT_FOUND_MESSAGE`
 variables.  Optional component requests can therefore be inspected without
 failing a quiet package lookup, while required requests fail through
-`find_package`.  Graphics discovers Vulkan only when that component is built and
-requested; Core-only and Graphics-OFF packages do not discover Vulkan.  No
-component discovers or links GLFW or VMA.
+`find_package`. Graphics discovers Vulkan and VMA when it is built; package
+consumers discover them only when Graphics is requested and available. Core-only
+and Graphics-OFF packages do not discover Vulkan or VMA. An optional Graphics
+request with unavailable dependencies must leave Core usable rather than force
+VMA on Core-only consumers. No component discovers or links GLFW.
+
+Allocator integration is already merged into main. Its public-interface and
+installed-consumer contracts retain the same `Terreate::Graphics` target and
+transitive dependency visibility; allocator-test linker wrapping is private to
+the test executable, not an installed usage requirement. Merged implementation
+does not establish a verified package release or formal KAGARI qualification,
+and this documentation update claims no newly performed validation.
 
 ### Graphics instance ownership
 

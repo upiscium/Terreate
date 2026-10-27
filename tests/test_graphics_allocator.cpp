@@ -8,8 +8,8 @@
 
 #include <terreate/graphics/allocator.hpp>
 
-// Pre-integration candidate. The separately authorized test target must link
-// with --wrap=vmaCreateAllocator and --wrap=vmaDestroyAllocator (GNU ld/lld).
+// The native test target links with --wrap=vmaCreateAllocator and
+// --wrap=vmaDestroyAllocator (GNU ld/lld).
 // Only native failures are injected; successful calls always reach real VMA.
 // These wrappers do not replace any Terreate-owned API symbol.
 namespace {
@@ -65,7 +65,8 @@ static_assert(std::is_nothrow_move_assignable_v<Allocator>);
 }
 
 [[nodiscard]] bool test_allocator(const Instance &instance,
-                                  const PhysicalDeviceCandidate &candidate, const Device &device) {
+                                  const PhysicalDeviceCandidate &candidate, const Device &device,
+                                  const Device &second_device) {
   bool passed = true;
   const auto before_rejections = creation_calls;
   // Synthetic requests against genuine parents: neither support alone nor an
@@ -126,7 +127,7 @@ static_assert(std::is_nothrow_move_assignable_v<Allocator>);
     second_request.flags = VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT;
     second_request.api_version = VK_API_VERSION_1_0;
     auto first = createAllocator(instance, candidate, device, first_request);
-    auto second = createAllocator(instance, candidate, device, second_request);
+    auto second = createAllocator(instance, candidate, second_device, second_request);
     if (!check(first.has_value() && second.has_value(), "real VMA creation failed")) {
       return false;
     }
@@ -157,6 +158,14 @@ static_assert(std::is_nothrow_move_assignable_v<Allocator>);
                         native_info.physicalDevice ==
                             static_cast<VkPhysicalDevice>(candidate.device().nativeHandle()),
                     "VMA native parent observation differs from borrowed parents");
+    VmaAllocatorInfo second_native_info{};
+    vmaGetAllocatorInfo(second->nativeHandle(), &second_native_info);
+    passed &= check(second_native_info.instance == native_info.instance &&
+                        second_native_info.physicalDevice == native_info.physicalDevice &&
+                        second_native_info.device ==
+                            static_cast<VkDevice>(second_device.nativeHandle()) &&
+                        second_native_info.device != native_info.device,
+                    "independent allocator does not match its distinct logical Device");
     const auto budgets = first->budgets();
     const auto statistics = first->statistics();
     passed &= check(budgets && statistics && !budgets->memory_budget_enabled &&
@@ -167,6 +176,56 @@ static_assert(std::is_nothrow_move_assignable_v<Allocator>);
     for (const auto &type : first->memoryTypes()) {
       passed &=
           check(type.heapIndex < first->memoryHeaps().size(), "invalid memory type heap index");
+    }
+
+    // Native escape-hatch resources remain caller-owned and are released before
+    // either allocator is moved or destroyed. No commands are submitted.
+    VmaTotalStatistics before_allocation{};
+    VmaTotalStatistics second_before_allocation{};
+    vmaCalculateStatistics(first->nativeHandle(), &before_allocation);
+    vmaCalculateStatistics(second->nativeHandle(), &second_before_allocation);
+    passed &= check(before_allocation.total.statistics.allocationCount == 0 &&
+                        second_before_allocation.total.statistics.allocationCount == 0,
+                    "fresh allocators unexpectedly contain live allocations");
+    VkBufferCreateInfo buffer_info{};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = 256;
+    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VmaAllocationCreateInfo allocation_info{};
+    allocation_info.usage = VMA_MEMORY_USAGE_AUTO;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    const auto buffer_result = vmaCreateBuffer(first->nativeHandle(), &buffer_info,
+                                               &allocation_info, &buffer, &allocation, nullptr);
+    passed &= check(buffer_result == VK_SUCCESS && buffer != VK_NULL_HANDLE &&
+                        allocation != VK_NULL_HANDLE,
+                    "real VMA buffer/allocation creation failed");
+    if (buffer_result == VK_SUCCESS) {
+      VmaTotalStatistics during_allocation{};
+      VmaTotalStatistics second_during_allocation{};
+      vmaCalculateStatistics(first->nativeHandle(), &during_allocation);
+      vmaCalculateStatistics(second->nativeHandle(), &second_during_allocation);
+      passed &= check(during_allocation.total.statistics.allocationCount ==
+                              before_allocation.total.statistics.allocationCount + 1 &&
+                          during_allocation.total.statistics.allocationBytes >=
+                              before_allocation.total.statistics.allocationBytes + buffer_info.size,
+                      "native statistics did not observe the real buffer allocation");
+      passed &= check(second_during_allocation.total.statistics.allocationCount ==
+                              second_before_allocation.total.statistics.allocationCount &&
+                          second_during_allocation.total.statistics.allocationBytes ==
+                              second_before_allocation.total.statistics.allocationBytes,
+                      "allocation affected the other Device's allocator statistics");
+      vmaDestroyBuffer(first->nativeHandle(), buffer, allocation);
+      VmaTotalStatistics after_release{};
+      vmaCalculateStatistics(first->nativeHandle(), &after_release);
+      passed &= check(after_release.total.statistics.allocationCount ==
+                              before_allocation.total.statistics.allocationCount &&
+                          after_release.total.statistics.allocationBytes ==
+                              before_allocation.total.statistics.allocationBytes &&
+                          destruction_calls == before_destroy,
+                      "buffer release did not restore live allocation statistics "
+                      "before owner destruction");
     }
     const auto first_handle = first->nativeHandle();
     Allocator moved = std::move(*first);
@@ -233,9 +292,24 @@ static_assert(std::is_nothrow_move_assignable_v<Allocator>);
   if (!check(device.has_value(), "headless Device creation failed")) {
     return false;
   }
-  // No work is submitted: no waitIdle is needed. Allocators die in the callee,
-  // then Device here, then the borrowed physical-device inventory and Instance.
-  return test_allocator(*instance, candidate, *device);
+  auto second_device = createDevice(*instance, *device_plan);
+  if (!check(second_device.has_value(), "second headless Device creation failed")) {
+    return false;
+  }
+  if (!check(device->nativeHandle() != second_device->nativeHandle(),
+             "concurrently live logical Devices are not distinct")) {
+    return false;
+  }
+  // Both Devices use the same selected physical GPU. No work is submitted:
+  // no waitIdle is needed. All allocator children die in the callee while both
+  // Devices are still live, then Devices here, then inventory and Instance.
+  const auto before_destroy = destruction_calls;
+  bool passed = test_allocator(*instance, candidate, *device, *second_device);
+  passed &= check(device->nativeHandle() != vk::Device{} &&
+                      second_device->nativeHandle() != vk::Device{} &&
+                      destruction_calls == before_destroy + 2,
+                  "allocator children were not destroyed before their live Device parents");
+  return passed;
 }
 } // namespace
 
@@ -243,6 +317,9 @@ int main() {
   const bool passed = test_headless_native_allocator();
   if (passed) {
     std::puts("graphics.allocator: headless-allocator=PASS");
+  } else {
+    std::fputs("graphics.allocator: headless-allocator=BLOCKED; native coverage not established\n",
+               stderr);
   }
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
