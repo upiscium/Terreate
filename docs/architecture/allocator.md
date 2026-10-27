@@ -1,11 +1,11 @@
-# Graphics allocator integration candidate (Issue #365)
+# Graphics allocator integration (Issue #365)
 
-This is an **isolated integration candidate**, not a merged, published, or
-released allocator feature. The candidate Graphics CMake configuration includes
-VMA as a public Graphics dependency and builds native Allocator tests; completion
-and verification results must be reported with the exact source snapshot.
-The presence of tests alone is not evidence of execution. The original Project
-and dirty worktrees remain unchanged pending separate publication authorization.
+The allocator integration is **already merged into main**. Graphics includes
+VMA as a public dependency and CMake defines native Allocator tests. Merged
+implementation status does not establish a verified package release or formal
+KAGARI qualification. Verification results must identify the exact source
+snapshot; the presence of tests alone is not evidence of execution. This
+documentation update does not claim that those checks have been run.
 
 ## Ownership and application control
 
@@ -38,7 +38,7 @@ VMA's externally synchronized mode.
 
 Caller-requested VMA creation flags and an explicit Vulkan API version are
 configuration inputs. An omitted API version follows the allocator's documented
-default policy (Vulkan 1.0 in this candidate), not an implicit request for the
+default policy (Vulkan 1.0), not an implicit request for the
 newest loader version. The
 effective version must be compatible with the instance and physical device.
 The request and effective configuration, including effective flags and native
@@ -75,16 +75,15 @@ the application. Integration must validate both ordinary project consumers and
 installed-package consumers, including VMA symbol ownership, header/dependency
 visibility, real linking, native creation/destruction, and configuration reporting.
 
-The candidate test uses GNU-compatible linker wrapping of `vmaCreateAllocator`
-and `vmaDestroyAllocator` (`--wrap=vmaCreateAllocator` and
-`--wrap=vmaDestroyAllocator`). The future test target must arrange for these
-references to be wrappable; static objects without cross-unit inlining are the
-intended setup. This is not installed-consumer configuration. Failure injection
-returns only errors; successful calls delegate to real VMA. Destruction counts
-check exclusive ownership through moves and scope exit. Actual project linking
-must establish that wrapping is effective; the test also checks consumption of
-each injected failure. No linker configuration is changed by this candidate.
-In this integration candidate, CMake compiles `allocator.cpp` twice with
+The root CMake configuration applies GNU-compatible linker wrapping to
+`terreate_graphics_allocator_tests` with private `target_link_options`:
+`-Wl,--wrap=vmaCreateAllocator` and `-Wl,--wrap=vmaDestroyAllocator`.
+These options are test-only, not installed-consumer usage requirements.
+Failure injection returns only errors; successful calls delegate to real VMA.
+Destruction counts check exclusive ownership through moves and scope exit,
+and the test checks consumption of each injected failure.
+
+The Graphics CMake configuration compiles `allocator.cpp` twice with
 distinct definitions: `terreate_graphics_vma_impl` includes the single
 `VMA_IMPLEMENTATION` object with
 `TERREATE_GRAPHICS_VMA_IMPLEMENTATION_ONLY=1`, while the normal
@@ -94,9 +93,12 @@ implementation objects are then archived in `Terreate::Graphics`. This makes
 GNU linker wrapping observable at the final test executable without changing
 the installed consumer API or adding an extra repository source file.
 
-The focused linked headless test must consume each injected failure, retain its
-native `VkResult` code, and verify exactly one destruction per successful
-owned allocator. It also exercises actual VMA native creation, budgets,
-statistics, move construction and move assignment. Project-wide CTest, package
-consumers and static checks must be run in the isolated integration clone;
-none of these source-level checks constitutes GitHub merge/release approval.
+The focused linked headless test is designed to consume each injected failure,
+retain its native `VkResult` code, and verify exactly one destruction per
+successful owned allocator. It also covers actual VMA native creation, budgets,
+statistics, move construction and move assignment. Effective wrapping, real
+linking, public-interface compatibility, and installed-package consumption still
+require executed checks against the relevant snapshot. Project-wide CTest,
+package-consumer and static checks are host-owned verification, not results
+claimed here. A merge alone establishes neither a verified package release nor
+formal KAGARI qualification.
