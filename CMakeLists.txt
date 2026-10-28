@@ -454,6 +454,16 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
     set_tests_properties(graphics.allocator PROPERTIES
       PASS_REGULAR_EXPRESSION "graphics\\.allocator: headless-allocator=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.allocator: assertion=FAIL")
+
+    add_executable(terreate_graphics_buffer_tests tests/test_graphics_buffer.cpp)
+    target_link_libraries(terreate_graphics_buffer_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_buffer_tests PRIVATE
+      "-Wl,--wrap=vmaCreateBuffer" "-Wl,--wrap=vmaDestroyBuffer")
+    terreate_configure_target(terreate_graphics_buffer_tests)
+    add_test(NAME graphics.buffer COMMAND terreate_graphics_buffer_tests)
+    set_tests_properties(graphics.buffer PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.buffer: headless-buffer=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.buffer: (assertion=FAIL|.*BLOCKED)")
   endif()
 
   add_test(

@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-           "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -126,6 +126,9 @@ function(terreate_package_configure_and_install name platform graphics)
   endif()
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
+  if(graphics AND NOT EXISTS "${_prefix}/include/terreate/graphics/buffer.hpp")
+    message(FATAL_ERROR "${name} install is missing public Graphics Buffer header")
+  endif()
   set(${name}_PREFIX "${_prefix}" PARENT_SCOPE)
   set(${name}_BUILD_CONFIG_DIR
     "${_fixture_build}/terreate" PARENT_SCOPE)
@@ -298,6 +301,7 @@ endforeach()
 
 set(_graphics_consumer_source [=[
 #include <terreate/graphics/allocator.hpp>
+#include <terreate/graphics/buffer.hpp>
 #include <terreate/graphics/device.hpp>
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
@@ -310,6 +314,10 @@ set(_graphics_consumer_source [=[
 static_assert(!std::is_default_constructible_v<terreate::graphics::Allocator>);
 static_assert(!std::is_copy_constructible_v<terreate::graphics::Allocator>);
 static_assert(std::is_move_constructible_v<terreate::graphics::Allocator>);
+static_assert(!std::is_copy_constructible_v<terreate::graphics::Buffer>);
+static_assert(!std::is_copy_assignable_v<terreate::graphics::Buffer>);
+static_assert(std::is_nothrow_move_constructible_v<terreate::graphics::Buffer>);
+static_assert(std::is_nothrow_move_assignable_v<terreate::graphics::Buffer>);
 static_assert(!std::is_default_constructible_v<terreate::graphics::Device>);
 static_assert(!std::is_copy_constructible_v<terreate::graphics::Device>);
 static_assert(std::is_move_constructible_v<terreate::graphics::Device>);
@@ -429,6 +437,13 @@ int main() {
       allocator->effectiveFlags() != 0) return 12;
   const auto budgets = allocator->budgets();
   const auto statistics = allocator->statistics();
+  terreate::graphics::BufferDescription buffer_description;
+  buffer_description.size = 256;
+  buffer_description.usage = vk::BufferUsageFlagBits::eTransferSrc;
+  auto buffer = terreate::graphics::createBuffer(*allocator, buffer_description);
+  if (!buffer || !buffer->valid() || buffer->nativeHandle() == vk::Buffer{}) return 14;
+  // No GPU work is submitted. Buffer dies before Allocator, Device and Instance;
+  // CPU ownership does not stand in for application-owned GPU completion.
   return budgets && statistics && device->plan() != nullptr &&
          device->queues().size() == 1 ? 0 : 13;
 }

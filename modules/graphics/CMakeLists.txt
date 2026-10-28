@@ -148,12 +148,15 @@ terreate_configure_target(terreate_graphics_vma_impl)
 
 # Graphics is intentionally independent of Platform.  Vulkan is the first
 # Graphics-owned native dependency; Window/GLFW, Surface presentation, and
-# Buffer/Image resources remain outside this component; the explicit VMA Allocator belongs to Graphics.  The Graphics API below owns
+# Image resources remain outside this component; explicit VMA Allocator and
+# Buffer ownership belong to Graphics. The Graphics API below owns
 # logical devices; physical devices remain borrowed from their parent Instance
 # and queues remain borrowed from Device.
 add_library(terreate_graphics STATIC
   $<TARGET_OBJECTS:terreate_graphics_vma_impl>
   src/allocator.cpp
+  src/buffer.cpp
+  include/terreate/graphics/buffer.hpp
   src/graphics.cpp
   src/graphics_diagnostics.cpp
   src/device.cpp
