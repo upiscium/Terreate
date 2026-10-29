@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -126,8 +126,12 @@ function(terreate_package_configure_and_install name platform graphics)
   endif()
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
-  if(graphics AND NOT EXISTS "${_prefix}/include/terreate/graphics/buffer.hpp")
-    message(FATAL_ERROR "${name} install is missing public Graphics Buffer header")
+  if(graphics)
+    foreach(_resource IN ITEMS buffer image image_view sampler)
+      if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
+        message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
+      endif()
+    endforeach()
   endif()
   set(${name}_PREFIX "${_prefix}" PARENT_SCOPE)
   set(${name}_BUILD_CONFIG_DIR
@@ -302,6 +306,9 @@ endforeach()
 set(_graphics_consumer_source [=[
 #include <terreate/graphics/allocator.hpp>
 #include <terreate/graphics/buffer.hpp>
+#include <terreate/graphics/image.hpp>
+#include <terreate/graphics/image_view.hpp>
+#include <terreate/graphics/sampler.hpp>
 #include <terreate/graphics/device.hpp>
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
@@ -318,6 +325,21 @@ static_assert(!std::is_copy_constructible_v<terreate::graphics::Buffer>);
 static_assert(!std::is_copy_assignable_v<terreate::graphics::Buffer>);
 static_assert(std::is_nothrow_move_constructible_v<terreate::graphics::Buffer>);
 static_assert(std::is_nothrow_move_assignable_v<terreate::graphics::Buffer>);
+static_assert(!std::is_default_constructible_v<terreate::graphics::Image>);
+static_assert(!std::is_copy_constructible_v<terreate::graphics::Image>);
+static_assert(!std::is_copy_assignable_v<terreate::graphics::Image>);
+static_assert(std::is_nothrow_move_constructible_v<terreate::graphics::Image>);
+static_assert(std::is_nothrow_move_assignable_v<terreate::graphics::Image>);
+static_assert(!std::is_default_constructible_v<terreate::graphics::ImageView>);
+static_assert(!std::is_copy_constructible_v<terreate::graphics::ImageView>);
+static_assert(!std::is_copy_assignable_v<terreate::graphics::ImageView>);
+static_assert(std::is_nothrow_move_constructible_v<terreate::graphics::ImageView>);
+static_assert(std::is_nothrow_move_assignable_v<terreate::graphics::ImageView>);
+static_assert(!std::is_default_constructible_v<terreate::graphics::Sampler>);
+static_assert(!std::is_copy_constructible_v<terreate::graphics::Sampler>);
+static_assert(!std::is_copy_assignable_v<terreate::graphics::Sampler>);
+static_assert(std::is_nothrow_move_constructible_v<terreate::graphics::Sampler>);
+static_assert(std::is_nothrow_move_assignable_v<terreate::graphics::Sampler>);
 static_assert(!std::is_default_constructible_v<terreate::graphics::Device>);
 static_assert(!std::is_copy_constructible_v<terreate::graphics::Device>);
 static_assert(std::is_move_constructible_v<terreate::graphics::Device>);
@@ -442,7 +464,31 @@ int main() {
   buffer_description.usage = vk::BufferUsageFlagBits::eTransferSrc;
   auto buffer = terreate::graphics::createBuffer(*allocator, buffer_description);
   if (!buffer || !buffer->valid() || buffer->nativeHandle() == vk::Buffer{}) return 14;
-  // No GPU work is submitted. Buffer dies before Allocator, Device and Instance;
+  terreate::graphics::ImageDescription image_description;
+  image_description.format = vk::Format::eR8G8B8A8Unorm;
+  image_description.extent = vk::Extent3D{4, 4, 1};
+  image_description.usage = vk::ImageUsageFlagBits::eSampled;
+  auto image = terreate::graphics::createImage(*allocator, image_description);
+  if (!image || !image->valid() || image->nativeHandle() == vk::Image{} ||
+      !image->configuration() || !image->allocationInfo()) return 15;
+  terreate::graphics::ImageViewDescription view_description;
+  view_description.format = image_description.format;
+  view_description.subresource_range = vk::ImageSubresourceRange{
+      vk::ImageAspectFlagBits::eColor, 0, VK_REMAINING_MIP_LEVELS,
+      0, VK_REMAINING_ARRAY_LAYERS};
+  auto view = terreate::graphics::createImageView(*device, *image, view_description);
+  if (!view || !view->valid() || view->nativeImageView() == VK_NULL_HANDLE ||
+      !view->correlatedWith(*image) || !view->correlatedWith(*device) ||
+      !view->configuration() || view->configuration()->effective.subresource_range.levelCount != 1)
+    return 16;
+  auto sampler = terreate::graphics::createSampler(*device);
+  if (!sampler || !sampler->valid() || sampler->nativeSampler() == VK_NULL_HANDLE ||
+      !sampler->configuration() || !sampler->correlatedWith(*device)) return 17;
+  auto moved_view = std::move(*view);
+  auto moved_sampler = std::move(*sampler);
+  if (view->valid() || view->configuration() || sampler->valid() || sampler->configuration() ||
+      !moved_view.valid() || !moved_sampler.valid()) return 18;
+  // No GPU work is submitted. View dies before Image; resources precede Allocator/Device/Instance.
   // CPU ownership does not stand in for application-owned GPU completion.
   return budgets && statistics && device->plan() != nullptr &&
          device->queues().size() == 1 ? 0 : 13;
