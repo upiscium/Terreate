@@ -464,6 +464,20 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
     set_tests_properties(graphics.buffer PROPERTIES
       PASS_REGULAR_EXPRESSION "graphics\\.buffer: headless-buffer=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.buffer: (assertion=FAIL|.*BLOCKED)")
+
+    add_executable(terreate_graphics_image_tests tests/test_graphics_image.cpp)
+    target_link_libraries(terreate_graphics_image_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_image_tests PRIVATE
+      "-Wl,--wrap=vmaCreateImage" "-Wl,--wrap=vmaDestroyImage"
+      "-Wl,--wrap=vkCreateImageView" "-Wl,--wrap=vkDestroyImageView"
+      "-Wl,--wrap=vkCreateSampler" "-Wl,--wrap=vkDestroySampler")
+    terreate_configure_target(terreate_graphics_image_tests)
+    add_test(NAME graphics.image COMMAND terreate_graphics_image_tests)
+    set_tests_properties(graphics.image PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.image: headless-image=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.image: (assertion=FAIL|.*BLOCKED)"
+      SKIP_RETURN_CODE 77
+      SKIP_REGULAR_EXPRESSION "graphics\\.image: capability-unavailable=SKIP")
   endif()
 
   add_test(
