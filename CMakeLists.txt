@@ -188,6 +188,8 @@ function(terreate_probe_vulkan_headers include_directories result_variable)
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
 #include <terreate/graphics/device.hpp>
+#include <terreate/graphics/command_pool.hpp>
+#include <terreate/graphics/command_buffer.hpp>
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_raii.hpp>
@@ -464,6 +466,20 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
     set_tests_properties(graphics.buffer PROPERTIES
       PASS_REGULAR_EXPRESSION "graphics\\.buffer: headless-buffer=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.buffer: (assertion=FAIL|.*BLOCKED)")
+
+    add_executable(terreate_graphics_command_tests tests/test_graphics_command.cpp)
+    target_link_libraries(terreate_graphics_command_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_command_tests PRIVATE
+      "-Wl,--wrap=vkCreateCommandPool" "-Wl,--wrap=vkDestroyCommandPool"
+      "-Wl,--wrap=vkAllocateCommandBuffers"
+      "-Wl,--wrap=vkBeginCommandBuffer" "-Wl,--wrap=vkEndCommandBuffer"
+      "-Wl,--wrap=vkResetCommandBuffer" "-Wl,--wrap=vkResetCommandPool"
+      "-Wl,--wrap=vkDeviceWaitIdle")
+    terreate_configure_target(terreate_graphics_command_tests)
+    add_test(NAME graphics.command COMMAND terreate_graphics_command_tests)
+    set_tests_properties(graphics.command PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.command: headless-command=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.command: (assertion=FAIL|.*BLOCKED)")
 
     add_executable(terreate_graphics_image_tests tests/test_graphics_image.cpp)
     target_link_libraries(terreate_graphics_image_tests PRIVATE Terreate::Graphics)

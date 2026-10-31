@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|completion|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,11 +127,18 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
     endforeach()
+    # The sibling #257 Completion API is optional in the standalone #263
+    # checkout, but MUST be present in an installed combined Wave A package.
+    if(EXISTS "${TERREATE_SOURCE_DIR}/modules/graphics/include/terreate/graphics/completion.hpp")
+      if(NOT EXISTS "${_prefix}/include/terreate/graphics/completion.hpp")
+        message(FATAL_ERROR "${name} install is missing public Graphics completion header")
+      endif()
+    endif()
   endif()
   set(${name}_PREFIX "${_prefix}" PARENT_SCOPE)
   set(${name}_BUILD_CONFIG_DIR
@@ -306,6 +313,13 @@ endforeach()
 set(_graphics_consumer_source [=[
 #include <terreate/graphics/allocator.hpp>
 #include <terreate/graphics/buffer.hpp>
+#include <terreate/graphics/command_pool.hpp>
+#include <terreate/graphics/command_buffer.hpp>
+// Optional sibling Wave A #257 public Completion header, present in combined verification.
+#if __has_include(<terreate/graphics/completion.hpp>)
+#include <terreate/graphics/completion.hpp>
+static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
+#endif
 #include <terreate/graphics/image.hpp>
 #include <terreate/graphics/image_view.hpp>
 #include <terreate/graphics/sampler.hpp>
@@ -488,6 +502,28 @@ int main() {
   auto moved_sampler = std::move(*sampler);
   if (view->valid() || view->configuration() || sampler->valid() || sampler->configuration() ||
       !moved_view.valid() || !moved_sampler.valid()) return 18;
+  // The installed Graphics archive also exposes the explicit CommandPool /
+  // CommandBuffer API. The application controls recording and no submit occurs.
+  terreate::graphics::CommandPoolDescription pool_description;
+  pool_description.queue_family_index = static_cast<std::uint32_t>(queue_family_index);
+  pool_description.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+  auto command_pool = terreate::graphics::createCommandPool(*device, pool_description);
+  if (!command_pool || !command_pool->valid() ||
+      command_pool->nativeHandle() == vk::CommandPool{} ||
+      !command_pool->effective() ||
+      command_pool->effective()->queue_family_index != pool_description.queue_family_index)
+    return 19;
+  auto command_buffer = command_pool->allocatePrimary();
+  if (!command_buffer || !command_buffer->valid() ||
+      command_buffer->nativeHandle() == vk::CommandBuffer{} ||
+      command_buffer->state() != terreate::graphics::CommandBufferState::initial)
+    return 20;
+  if (!command_buffer->begin() || !command_buffer->end() ||
+      command_buffer->state() != terreate::graphics::CommandBufferState::executable)
+    return 21;
+  if (!command_buffer->reset() ||
+      command_buffer->state() != terreate::graphics::CommandBufferState::initial)
+    return 22;
   // No GPU work is submitted. View dies before Image; resources precede Allocator/Device/Instance.
   // CPU ownership does not stand in for application-owned GPU completion.
   return budgets && statistics && device->plan() != nullptr &&

@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include <terreate/graphics/completion.hpp>
 #include <terreate/graphics/device.hpp>
 
 // The designated-initializer-heavy contract matrix is intentionally kept in
@@ -38,6 +39,13 @@ static_assert(std::is_nothrow_copy_constructible_v<Queue>);
 static_assert(std::is_trivially_copyable_v<Queue>);
 static_assert(!std::is_constructible_v<Queue, vk::Queue, const void *>);
 static_assert(!std::is_convertible_v<Queue, vk::Queue>);
+static_assert(std::default_initializable<Completion>);
+static_assert(std::is_trivially_copyable_v<Completion>);
+static_assert(std::is_nothrow_copy_constructible_v<Completion>);
+static_assert(std::is_nothrow_move_constructible_v<Completion>);
+static_assert(!std::is_convertible_v<Completion, bool>);
+static_assert(!std::is_convertible_v<Completion, vk::Fence>);
+static_assert(!CompletionIdentity{}.valid());
 template <typename Plan, typename InstanceType>
 concept has_reversed_create_device = requires(const Plan &plan, const InstanceType &instance) {
   createDevice(plan, instance);
@@ -776,6 +784,118 @@ first_usable_queue_family(const PhysicalDeviceCapabilities &capabilities) {
   return std::nullopt;
 }
 
+// Inert, never dereferenced or passed to Vulkan. Support pointer and integer
+// non-dispatchable handle configurations without creating synchronization objects.
+template <typename NativeHandle>
+[[nodiscard]] NativeHandle completion_handle_sentinel(std::uintptr_t value) {
+  if constexpr (std::is_pointer_v<NativeHandle>) {
+    // NOLINTNEXTLINE(performance-no-int-to-ptr) -- inert synthetic Vulkan handle in a non-submitting test.
+    return reinterpret_cast<NativeHandle>(value);
+  } else {
+    return static_cast<NativeHandle>(value);
+  }
+}
+
+[[nodiscard]] bool test_completion_contract(const Device &device, Queue queue) {
+  bool passed = true;
+  Completion empty;
+  passed &= check(empty.empty() && !empty.outcome() &&
+                      empty.outcome().error() == CompletionError::empty &&
+                      !empty.nativeResult() && empty.description().device == nullptr,
+                  "empty completion fabricated an outcome or parent");
+  const int domain = 0;
+  CompletionDescription description{
+      .requested = {&domain, 1},
+      .effective = {&domain, 2},
+      .device = &device,
+      .queue = queue,
+      .condition = FenceCompletionCondition{
+          vk::Fence{completion_handle_sentinel<VkFence>(1)}},
+  };
+  const auto unavailable = Completion::observeNative(description, CompletionOutcome::unavailable);
+  passed &= check(unavailable && !unavailable->empty() &&
+                      unavailable->outcome() == CompletionOutcome::unavailable &&
+                      !unavailable->nativeResult(),
+                  "handle possession fabricated pending or completed work");
+  const auto pending = Completion::observeNative(description, CompletionOutcome::pending,
+                                                vk::Result::eNotReady);
+  passed &= check(pending && pending->outcome() == CompletionOutcome::pending &&
+                      pending->description().requested == description.requested &&
+                      pending->description().effective == description.effective &&
+                      pending->description().device == &device &&
+                      pending->description().queue.correlatedWith(device),
+                  "fence observation lost identity, parent, queue or outcome");
+  if (pending) {
+    auto copy = *pending;
+    auto moved = copy; // Trivially copyable borrowed observation; move has the same semantics.
+    const auto *actual_fence = std::get_if<FenceCompletionCondition>(&moved.description().condition);
+    const auto *expected_fence = std::get_if<FenceCompletionCondition>(&description.condition);
+    passed &= check(copy.outcome() == pending->outcome() &&
+                        moved.outcome() == pending->outcome() &&
+                        moved.nativeResult() == vk::Result::eNotReady &&
+                        actual_fence && expected_fence &&
+                        actual_fence->fence == expected_fence->fence,
+                    "completion copy/move changed a borrow or consumed its source");
+  }
+  description.condition = TimelineCompletionCondition{
+      vk::Semaphore{completion_handle_sentinel<VkSemaphore>(2)}, 42};
+  const auto timeline = Completion::observeNative(description, CompletionOutcome::completed,
+                                                 vk::Result::eSuccess);
+  const auto *effective_timeline =
+      timeline ? std::get_if<TimelineCompletionCondition>(&timeline->description().condition)
+               : nullptr;
+  passed &= check(timeline && timeline->outcome() == CompletionOutcome::completed &&
+                      effective_timeline && effective_timeline->signal_value == 42,
+                  "timeline observation lost its explicit threshold");
+  description.condition = TimelineCompletionCondition{
+      vk::Semaphore{completion_handle_sentinel<VkSemaphore>(2)}, 0};
+  const auto zero = Completion::observeNative(description, CompletionOutcome::unavailable);
+  passed &= check(zero && zero->outcome() == CompletionOutcome::unavailable,
+                  "zero timeline threshold fabricated completion or was rejected");
+  constexpr std::array failures{
+      std::pair{CompletionOutcome::submit_failed, vk::Result::eErrorOutOfHostMemory},
+      std::pair{CompletionOutcome::device_lost, vk::Result::eErrorDeviceLost},
+      std::pair{CompletionOutcome::native_error, vk::Result::eErrorUnknown},
+  };
+  for (const auto &[outcome, result] : failures) {
+    const auto observation = Completion::observeNative(description, outcome, result);
+    passed &= check(observation && observation->outcome() == outcome &&
+                        observation->nativeResult() == result,
+                    "completion failure observation lost typed/native outcome");
+  }
+  const auto reject = [&](CompletionDescription invalid, CompletionError error) {
+    const auto result = Completion::observeNative(invalid, CompletionOutcome::pending);
+    return check(!result && result.error() == error,
+                 "invalid completion description was not explicitly rejected");
+  };
+  auto invalid = description;
+  invalid.requested = {};
+  passed &= reject(invalid, CompletionError::invalid_identity);
+  invalid = description;
+  invalid.effective.serial = 0;
+  passed &= reject(invalid, CompletionError::invalid_identity);
+  invalid = description;
+  invalid.device = nullptr;
+  passed &= reject(invalid, CompletionError::invalid_device);
+  invalid = description;
+  invalid.queue = {};
+  passed &= reject(invalid, CompletionError::invalid_queue);
+  for (const CompletionCondition &condition : std::array<CompletionCondition, 3>{
+           std::monostate{}, FenceCompletionCondition{}, TimelineCompletionCondition{}}) {
+    invalid = description;
+    invalid.condition = condition;
+    passed &= reject(invalid, CompletionError::invalid_condition);
+  }
+  const auto contradiction = Completion::observeNative(
+      description, CompletionOutcome::completed, vk::Result::eErrorDeviceLost);
+  const auto invalid_enum = Completion::observeNative(
+      description, static_cast<CompletionOutcome>(255));
+  passed &= check(!contradiction && contradiction.error() == CompletionError::invalid_outcome &&
+                      !invalid_enum && invalid_enum.error() == CompletionError::invalid_outcome,
+                  "inconsistent or unknown outcome was accepted");
+  return passed;
+}
+
 [[nodiscard]] bool test_headless_native_device() {
   const auto instance_capabilities = queryInstanceCapabilities();
   if (!check(instance_capabilities.has_value(),
@@ -879,6 +999,17 @@ first_usable_queue_family(const PhysicalDeviceCapabilities &capabilities) {
                       copied_queue.correlatedWith(moved),
                   "Device move did not preserve non-owning queue correlation");
   passed &= check(!moved.queue("unknown").valid(), "unknown queue caller ID returned a queue");
+  passed &= test_completion_contract(moved, borrowed);
+  // The moved-from Device is still alive but cannot be used as a parent.
+  const int completion_domain = 0;
+  const auto invalid_parent = Completion::observeNative(
+      CompletionDescription{.requested = {&completion_domain, 1},
+                            .effective = {&completion_domain, 1},
+                            .device = &*created,
+                            .queue = borrowed},
+      CompletionOutcome::unavailable);
+  passed &= check(!invalid_parent && invalid_parent.error() == CompletionError::invalid_device,
+                  "moved-from Device was accepted as a completion parent");
   return passed;
 }
 
