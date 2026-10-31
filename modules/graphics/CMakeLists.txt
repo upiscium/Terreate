@@ -157,6 +157,10 @@ add_library(terreate_graphics STATIC
   src/allocator.cpp
   src/buffer.cpp
   include/terreate/graphics/buffer.hpp
+  src/command_pool.cpp
+  include/terreate/graphics/command_pool.hpp
+  src/command_buffer.cpp
+  include/terreate/graphics/command_buffer.hpp
   src/image.cpp
   include/terreate/graphics/image.hpp
   src/image_view.cpp
