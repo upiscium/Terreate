@@ -59,8 +59,25 @@ bool CommandBuffer::valid() const noexcept { return record_ != nullptr; }
 vk::CommandBuffer CommandBuffer::nativeHandle() const noexcept {
   return record_ ? record_->handle : vk::CommandBuffer{};
 }
+vk::Device CommandBuffer::nativeDevice() const noexcept {
+  return record_ ? record_->device : vk::Device{};
+}
+std::uint32_t CommandBuffer::queueFamilyIndex() const noexcept {
+  return record_ ? record_->queue_family_index : VK_QUEUE_FAMILY_IGNORED;
+}
+bool CommandBuffer::isProtected() const noexcept {
+  return record_ &&
+         static_cast<bool>(record_->pool_flags & vk::CommandPoolCreateFlagBits::eProtected);
+}
+bool CommandBuffer::isPrimary() const noexcept {
+  // CommandPool exclusively allocates primary buffers.
+  return valid();
+}
 CommandBufferState CommandBuffer::state() const noexcept {
   return record_ ? record_->state : CommandBufferState::invalid;
+}
+bool CommandBuffer::isExecutable() const noexcept {
+  return state() == CommandBufferState::executable;
 }
 terreate::Result<void> CommandBuffer::begin(vk::CommandBufferUsageFlags flags) {
   if (!valid())

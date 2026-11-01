@@ -45,6 +45,8 @@ terreate::Result<CommandBuffer> CommandPool::allocatePrimary() {
   if (!valid())
     return failure(CommandError::invalid_pool, "allocatePrimary", "moved-from pool");
   auto record = std::make_unique<CommandBuffer::Record>();
+  record->device = vk::Device{implementation_->device};
+  record->queue_family_index = requested()->queue_family_index;
   record->pool_flags = requested()->flags;
   // Reserve before Vulkan so allocation failure cannot strand an untracked
   // native allocation. Every successful native allocation is pool-owned.

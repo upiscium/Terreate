@@ -161,6 +161,8 @@ add_library(terreate_graphics STATIC
   include/terreate/graphics/command_pool.hpp
   src/command_buffer.cpp
   include/terreate/graphics/command_buffer.hpp
+  src/submission.cpp
+  include/terreate/graphics/submission.hpp
   src/image.cpp
   include/terreate/graphics/image.hpp
   src/image_view.cpp

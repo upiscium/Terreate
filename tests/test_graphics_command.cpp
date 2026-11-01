@@ -157,6 +157,69 @@ extern "C" VkResult __wrap_vkDeviceWaitIdle(VkDevice device) {
 // NOLINTEND(bugprone-reserved-identifier)
 
 namespace {
+bool testCommandProvenance(Device &device, std::uint32_t family) {
+  CommandPoolDescription description;
+  description.queue_family_index = family;
+  description.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer |
+                      vk::CommandPoolCreateFlagBits::eTransient;
+  auto pool = createCommandPool(device, description);
+  if (!pool)
+    return blocked("provenance command pool unavailable");
+  auto buffer = pool->allocatePrimary();
+  auto destination = pool->allocatePrimary();
+  if (!buffer || !destination)
+    return blocked("provenance command buffers unavailable");
+
+  const auto hasProvenance = [&](const CommandBuffer &view) {
+    return view.valid() && view.nativeDevice() == device.nativeHandle() &&
+           view.queueFamilyIndex() == family && view.isPrimary() && !view.isProtected();
+  };
+  const auto isEmpty = [](const CommandBuffer &view) {
+    return !view.valid() && view.nativeHandle() == vk::CommandBuffer{} &&
+           view.nativeDevice() == vk::Device{} &&
+           view.queueFamilyIndex() == VK_QUEUE_FAMILY_IGNORED && !view.isProtected() &&
+           !view.isPrimary() && !view.isExecutable() && view.state() == CommandBufferState::invalid;
+  };
+  bool passed = check(hasProvenance(*buffer) && !buffer->isExecutable(),
+                      "initial buffer provenance or executable observation incorrect");
+  passed &= check(buffer->begin(vk::CommandBufferUsageFlagBits::eOneTimeSubmit) &&
+                      hasProvenance(*buffer) && !buffer->isExecutable(),
+                  "recording changed provenance or appeared executable");
+  passed &= check(buffer->end() && buffer->isExecutable() && hasProvenance(*buffer),
+                  "ONE_TIME_SUBMIT end did not expose CPU-observed executable state");
+
+  const auto handle = buffer->nativeHandle();
+  CommandBuffer moved = std::move(*buffer);
+  passed &= check(isEmpty(*buffer) && hasProvenance(moved) && moved.isExecutable() &&
+                      moved.nativeHandle() == handle,
+                  "move construction lost provenance/state or retained moved-from observations");
+  *destination = std::move(moved);
+  // The source-view invalidation contract was already exercised by the
+  // construction move above; here verify the destination receives its state.
+  passed &= check(hasProvenance(*destination) && destination->isExecutable() &&
+                      destination->nativeHandle() == handle,
+                  "move assignment lost provenance/state");
+
+  CommandPool movedPool = std::move(*pool);
+  passed &= check(hasProvenance(*destination) && destination->isExecutable(),
+                  "pool move changed buffer provenance or CPU state");
+  passed &=
+      check(movedPool.reset() && hasProvenance(*destination) && !destination->isExecutable() &&
+                destination->state() == CommandBufferState::initial,
+            "pool reset lost provenance or retained executable state");
+  begin_failure = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  const auto failedBegin = destination->begin();
+  passed &=
+      check(!failedBegin && !begin_failure && hasProvenance(*destination) &&
+                !destination->isExecutable() && destination->state() == CommandBufferState::invalid,
+            "native failure lost allocation provenance or appeared executable");
+  passed &=
+      check(destination->reset() && hasProvenance(*destination) && !destination->isExecutable() &&
+                destination->state() == CommandBufferState::initial,
+            "buffer reset did not restore CPU state while retaining provenance");
+  return passed;
+}
+
 bool testCommandLifecycle(Device &device, std::uint32_t family) {
   bool passed = true;
   CommandPoolDescription description;
@@ -428,7 +491,8 @@ bool runHeadless() {
       if (!device)
         continue;
       const auto beforeWait = device_waits;
-      const auto passed = testCommandLifecycle(*device, static_cast<std::uint32_t>(family));
+      const auto passed = testCommandLifecycle(*device, static_cast<std::uint32_t>(family)) &&
+                          testCommandProvenance(*device, static_cast<std::uint32_t>(family));
       return check(device_waits == beforeWait, "command cleanup invoked vkDeviceWaitIdle") &&
              passed;
     }
