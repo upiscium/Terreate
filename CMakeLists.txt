@@ -481,6 +481,22 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.command: headless-command=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.command: (assertion=FAIL|.*BLOCKED)")
 
+    add_executable(terreate_graphics_submission_tests tests/test_graphics_submission.cpp)
+    target_link_libraries(terreate_graphics_submission_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_submission_tests PRIVATE
+      "-Wl,--wrap=vkQueueSubmit2" "-Wl,--wrap=vkGetFenceStatus"
+      "-Wl,--wrap=vkWaitForFences" "-Wl,--wrap=vkGetSemaphoreCounterValue"
+      "-Wl,--wrap=vkWaitSemaphores")
+    terreate_configure_target(terreate_graphics_submission_tests)
+    add_test(NAME graphics.submission COMMAND terreate_graphics_submission_tests)
+    set_tests_properties(graphics.submission PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.submission: headless-fence=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.submission: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.submission.timeline COMMAND terreate_graphics_submission_tests timeline)
+    set_tests_properties(graphics.submission.timeline PROPERTIES
+      SKIP_RETURN_CODE 77
+      FAIL_REGULAR_EXPRESSION "graphics\\.submission: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_image_tests tests/test_graphics_image.cpp)
     target_link_libraries(terreate_graphics_image_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_image_tests PRIVATE

@@ -58,7 +58,23 @@ public:
   [[nodiscard]] bool valid() const noexcept;
   [[nodiscard]] explicit operator bool() const noexcept { return valid(); }
   [[nodiscard]] vk::CommandBuffer nativeHandle() const noexcept;
+  /// Borrowed allocating Device handle, not ownership or a parent-liveness check.
+  /// The caller keeps the Device and pool alive and externally synchronizes
+  /// these observations just like all other operations on the pool's buffers.
+  /// Moved-from views return a null Device and VK_QUEUE_FAMILY_IGNORED.
+  [[nodiscard]] vk::Device nativeDevice() const noexcept;
+  [[nodiscard]] std::uint32_t queueFamilyIndex() const noexcept;
+  /// True only for a live view allocated from a protected command pool.
+  [[nodiscard]] bool isProtected() const noexcept;
+  /// Allocation-level observation; false for an empty moved-from view.
+  [[nodiscard]] bool isPrimary() const noexcept;
   [[nodiscard]] CommandBufferState state() const noexcept;
+  /// CPU-observed executable state only, NOT permission to submit or reuse.
+  /// Submission does not change this observation. Pending execution, completion,
+  /// ONE_TIME_SUBMIT invalidation after execution, and simultaneous-use/reuse
+  /// validity are not tracked. The caller must enforce Vulkan submission rules,
+  /// host synchronization and completion, and reset/re-record when required.
+  [[nodiscard]] bool isExecutable() const noexcept;
 
   /// Only initial -> recording; no implicit reset of executable buffers.
   /// Accepts OneTimeSubmit or SimultaneousUse (or neither), not both.
@@ -73,6 +89,8 @@ public:
 private:
   struct Record {
     vk::CommandBuffer handle{};
+    vk::Device device{};
+    std::uint32_t queue_family_index = VK_QUEUE_FAMILY_IGNORED;
     vk::CommandPoolCreateFlags pool_flags{};
     CommandBufferState state = CommandBufferState::initial;
   };
