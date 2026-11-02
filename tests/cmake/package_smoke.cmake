@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|completion|submission|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer submission image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -316,6 +316,7 @@ set(_graphics_consumer_source [=[
 #include <terreate/graphics/command_pool.hpp>
 #include <terreate/graphics/command_buffer.hpp>
 #include <terreate/graphics/submission.hpp>
+#include <terreate/graphics/retirement.hpp>
 // Optional sibling Wave A #257 public Completion header, present in combined verification.
 #if __has_include(<terreate/graphics/completion.hpp>)
 #include <terreate/graphics/completion.hpp>
@@ -400,6 +401,10 @@ int main() {
   const auto submit_entry = &terreate::graphics::submit;
   const auto poll_entry = &terreate::graphics::SubmissionReceipt::poll;
   const auto wait_entry = &terreate::graphics::SubmissionReceipt::wait;
+  static_assert(!std::is_copy_constructible_v<terreate::graphics::RetirementQueue>);
+  static_assert(!std::is_move_constructible_v<terreate::graphics::RetirementQueue>);
+  terreate::graphics::RetirementQueue retirement;
+  if (!retirement.requireEmpty() || retirement.pendingCount() != 0) return 24;
   static_assert(!std::is_default_constructible_v<terreate::graphics::SubmissionReceipt>);
   if (!submit_entry || !poll_entry || !wait_entry ||
       terreate::graphics::make_error_code(

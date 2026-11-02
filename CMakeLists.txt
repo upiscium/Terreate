@@ -497,6 +497,32 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       SKIP_RETURN_CODE 77
       FAIL_REGULAR_EXPRESSION "graphics\\.submission: (assertion=FAIL|.*BLOCKED)")
 
+    add_executable(terreate_graphics_retirement_tests tests/test_graphics_retirement.cpp)
+    target_link_libraries(terreate_graphics_retirement_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_retirement_tests PRIVATE
+      "-Wl,--wrap=vkGetFenceStatus"
+      "-Wl,--wrap=vmaDestroyBuffer"
+      "-Wl,--wrap=vkGetSemaphoreCounterValue"
+      "-Wl,--wrap=vkDeviceWaitIdle")
+    terreate_configure_target(terreate_graphics_retirement_tests)
+    add_test(NAME graphics.retirement COMMAND terreate_graphics_retirement_tests)
+    set_tests_properties(graphics.retirement PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.retirement: headless-fence=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.retirement: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.retirement.timeline
+      COMMAND terreate_graphics_retirement_tests timeline)
+    set_tests_properties(graphics.retirement.timeline PROPERTIES
+      SKIP_RETURN_CODE 77
+      PASS_REGULAR_EXPRESSION "graphics\\.retirement: headless-timeline=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.retirement: (assertion=FAIL|.*BLOCKED)")
+
+    add_test(NAME graphics.retirement.multiqueue
+      COMMAND terreate_graphics_retirement_tests multiqueue)
+    set_tests_properties(graphics.retirement.multiqueue PROPERTIES
+      SKIP_RETURN_CODE 77
+      PASS_REGULAR_EXPRESSION "graphics\\.retirement: true-multi-queue=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.retirement: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_image_tests tests/test_graphics_image.cpp)
     target_link_libraries(terreate_graphics_image_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_image_tests PRIVATE
