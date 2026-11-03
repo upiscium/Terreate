@@ -57,10 +57,13 @@ public:
 
   /// All potentially throwing allocations occur before the noexcept move.
   /// On allocation or validation failure the caller still owns the resource.
+  /// Only noncopyable owners are accepted: a noexcept rvalue construction
+  /// alone could invoke a copy constructor and duplicate native ownership.
   /// Resource may be a move-only RAII aggregate: declare Image before ImageView
   /// within the aggregate so its destructor destroys View before Image.
   template <class Resource>
-    requires(std::is_nothrow_move_constructible_v<Resource> &&
+    requires(!std::is_copy_constructible_v<Resource> && !std::is_copy_assignable_v<Resource> &&
+             std::is_nothrow_move_constructible_v<Resource> &&
              std::is_nothrow_destructible_v<Resource> &&
              requires(const Resource &r) {
                { r.valid() } -> std::convertible_to<bool>;

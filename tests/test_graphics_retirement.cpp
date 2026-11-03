@@ -6,6 +6,7 @@
 #include <terreate/graphics/sampler.hpp>
 
 #include <array>
+#include <concepts>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -82,6 +83,50 @@ struct ImageAndViewGroup {
 };
 static_assert(std::is_nothrow_move_constructible_v<Owner>);
 static_assert(std::is_nothrow_move_constructible_v<ImageAndViewGroup>);
+
+// std::move is only a cast: an rvalue may bind to a noexcept copy constructor.
+struct CopyOnlyOwner {
+  CopyOnlyOwner() = default;
+  CopyOnlyOwner(const CopyOnlyOwner &) noexcept = default;
+  CopyOnlyOwner &operator=(const CopyOnlyOwner &) noexcept = default;
+  bool valid() const noexcept { return true; }
+};
+struct CopyAndMoveOwner {
+  CopyAndMoveOwner() = default;
+  CopyAndMoveOwner(const CopyAndMoveOwner &) noexcept = default;
+  CopyAndMoveOwner &operator=(const CopyAndMoveOwner &) noexcept = default;
+  CopyAndMoveOwner(CopyAndMoveOwner &&) noexcept = default;
+  CopyAndMoveOwner &operator=(CopyAndMoveOwner &&) noexcept = default;
+  bool valid() const noexcept { return true; }
+};
+struct CopyAssignableMoveOwner {
+  CopyAssignableMoveOwner() = default;
+  CopyAssignableMoveOwner(const CopyAssignableMoveOwner &) = delete;
+  CopyAssignableMoveOwner &operator=(const CopyAssignableMoveOwner &) noexcept = default;
+  CopyAssignableMoveOwner(CopyAssignableMoveOwner &&) noexcept = default;
+  CopyAssignableMoveOwner &operator=(CopyAssignableMoveOwner &&) noexcept = default;
+  bool valid() const noexcept { return true; }
+};
+template <class Resource>
+concept CanRetireOwner =
+    requires(RetirementQueue &queue, Resource &owner, std::span<const SubmissionReceipt> receipts) {
+      { queue.retire(owner, receipts) } -> std::same_as<terreate::Result<void>>;
+    };
+// The old nothrow-move trait alone incorrectly accepts this copy-only type.
+static_assert(std::is_copy_constructible_v<CopyOnlyOwner>);
+static_assert(std::is_nothrow_move_constructible_v<CopyOnlyOwner>);
+static_assert(!CanRetireOwner<CopyOnlyOwner>);
+static_assert(!CanRetireOwner<CopyAndMoveOwner>);
+static_assert(std::is_copy_assignable_v<CopyAssignableMoveOwner>);
+static_assert(!std::is_copy_constructible_v<CopyAssignableMoveOwner>);
+static_assert(!CanRetireOwner<CopyAssignableMoveOwner>);
+// Existing move-only resources and caller-owned aggregates remain supported.
+static_assert(CanRetireOwner<Owner>);
+static_assert(CanRetireOwner<ImageAndViewGroup>);
+static_assert(CanRetireOwner<Buffer>);
+static_assert(CanRetireOwner<Image>);
+static_assert(CanRetireOwner<ImageView>);
+static_assert(CanRetireOwner<Sampler>);
 
 struct Fences {
   VkDevice device = VK_NULL_HANDLE;
