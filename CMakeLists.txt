@@ -497,6 +497,18 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       SKIP_RETURN_CODE 77
       FAIL_REGULAR_EXPRESSION "graphics\\.submission: (assertion=FAIL|.*BLOCKED)")
 
+    add_executable(terreate_graphics_transfer_commands_tests tests/test_graphics_transfer_commands.cpp)
+    target_link_libraries(terreate_graphics_transfer_commands_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_transfer_commands_tests PRIVATE
+      "-Wl,--wrap=vkCmdPipelineBarrier2" "-Wl,--wrap=vkCmdCopyBuffer2"
+      "-Wl,--wrap=vkCmdCopyImage2" "-Wl,--wrap=vkCmdCopyBufferToImage2"
+      "-Wl,--wrap=vkCmdCopyImageToBuffer2" "-Wl,--wrap=vkDeviceWaitIdle")
+    terreate_configure_target(terreate_graphics_transfer_commands_tests)
+    add_test(NAME graphics.transfer_commands COMMAND terreate_graphics_transfer_commands_tests)
+    set_tests_properties(graphics.transfer_commands PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.transfer_commands: headless-transfer=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.transfer_commands: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_retirement_tests tests/test_graphics_retirement.cpp)
     target_link_libraries(terreate_graphics_retirement_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_retirement_tests PRIVATE
