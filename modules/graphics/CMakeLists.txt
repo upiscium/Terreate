@@ -163,6 +163,8 @@ add_library(terreate_graphics STATIC
   include/terreate/graphics/command_buffer.hpp
   src/transfer_commands.cpp
   include/terreate/graphics/transfer_commands.hpp
+  src/upload_batch.cpp
+  include/terreate/graphics/upload_batch.hpp
   src/submission.cpp
   include/terreate/graphics/submission.hpp
   src/retirement.cpp
