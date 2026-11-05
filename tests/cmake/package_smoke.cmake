@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -316,6 +316,7 @@ set(_graphics_consumer_source [=[
 #include <terreate/graphics/command_pool.hpp>
 #include <terreate/graphics/command_buffer.hpp>
 #include <terreate/graphics/transfer_commands.hpp>
+#include <terreate/graphics/upload_batch.hpp>
 #include <terreate/graphics/submission.hpp>
 #include <terreate/graphics/retirement.hpp>
 // Optional sibling Wave A #257 public Completion header, present in combined verification.
@@ -398,6 +399,14 @@ static_assert(!std::is_assignable_v<
               terreate::graphics::PhysicalDeviceCapabilities>);
 
 int main() {
+  // Verify installed upload preparation/recording signatures without GPU work.
+  const auto upload_prepare = &terreate::graphics::prepareUploadBatch;
+  const auto upload_record = &terreate::graphics::recordUploadBatch;
+  static_assert(!std::is_copy_constructible_v<terreate::graphics::PreparedUploadBatch>);
+  static_assert(std::is_nothrow_move_constructible_v<terreate::graphics::PreparedUploadBatch>);
+  if (!upload_prepare || !upload_record ||
+      terreate::graphics::make_error_code(
+          terreate::graphics::UploadError::invalid_batch).value() == 0) return 26;
   // Verify installed transfer recording API links without command execution.
   const auto transfer_barriers = &terreate::graphics::recordBarriers;
   const auto transfer_copy_buffer = &terreate::graphics::recordCopyBuffer;
