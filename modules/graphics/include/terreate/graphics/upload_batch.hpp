@@ -8,6 +8,7 @@
 #include <system_error>
 #include <terreate/graphics/buffer.hpp>
 #include <terreate/graphics/command_buffer.hpp>
+#include <terreate/graphics/image.hpp>
 #include <utility>
 #include <vector>
 
@@ -30,6 +31,12 @@ enum class UploadError : std::uint8_t {
   not_recording,
   parent_mismatch,
   protected_recording,
+  unsupported_image,
+  unsupported_layout,
+  invalid_image_region,
+  invalid_image_footprint,
+  overlapping_image_regions,
+  conflicting_image_layouts,
 };
 
 [[nodiscard]] const std::error_category &upload_error_category() noexcept;
@@ -52,11 +59,27 @@ struct BufferUploadItem {
   return result;
 }
 
+/// Bounded Phase B: R8G8B8A8_UNORM, 2D, sample-count 1, one layer per
+/// operation, with explicit VkBufferImageCopy2 texel pitch and mip/extent.
+/// The input region's bufferOffset must be zero: prepare assigns its own
+/// staging offset. No image layout transition is invented or recorded.
+/// Destination is borrowed and must survive recording + all GPU use.
+struct ImageUploadItem {
+  const Image *destination = nullptr;
+  vk::ImageLayout copy_layout = vk::ImageLayout::eTransferDstOptimal;
+  VkBufferImageCopy2 region{VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
+  // Exact accessible footprint, including any inter-row padding; copied
+  // during prepare and never retained.
+  std::span<const std::byte> bytes{};
+};
+
 struct UploadBatchDescription {
   std::span<const BufferUploadItem> buffers{};
   // Caller-overridable; the chosen description and actual memory properties
   // are observable on PreparedUploadBatch and its staging Buffer.
   BufferAllocationDescription staging_allocation = defaultUploadStagingAllocation();
+  // Appended to preserve existing Phase A positional aggregate initialization.
+  std::span<const ImageUploadItem> images{};
 };
 
 struct PreparedBufferUpload {
@@ -64,6 +87,16 @@ struct PreparedBufferUpload {
   vk::DeviceSize staging_offset = 0;
   vk::DeviceSize destination_offset = 0;
   vk::DeviceSize size = 0;
+};
+
+struct PreparedImageUpload {
+  const Image *destination = nullptr;
+  // Detect accidental replacement of a borrowed Image wrapper after prepare.
+  VkImage expected_image = VK_NULL_HANDLE;
+  vk::ImageLayout copy_layout = vk::ImageLayout::eTransferDstOptimal;
+  // Snapshotted native region; bufferOffset is the EFFECTIVE staging offset.
+  VkBufferImageCopy2 region{VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
+  vk::DeviceSize payload_bytes = 0;
 };
 
 /// Move-only owner of the Staging Buffer plus snapshots of the copy commands.
@@ -87,18 +120,22 @@ public:
   ~PreparedUploadBatch() = default;
 
   [[nodiscard]] bool valid() const noexcept {
-    return staging_ && staging_->valid() && !copies_.empty();
+    return staging_ && staging_->valid() && (!copies_.empty() || !images_.empty());
   }
   [[nodiscard]] explicit operator bool() const noexcept { return valid(); }
   [[nodiscard]] const Buffer *stagingBuffer() const noexcept {
     if (!staging_.has_value())
       return nullptr;
     const Buffer *buffer = &*staging_;
-    return buffer->valid() && !copies_.empty() ? buffer : nullptr;
+    return buffer->valid() && (!copies_.empty() || !images_.empty()) ? buffer : nullptr;
   }
   [[nodiscard]] std::span<const PreparedBufferUpload> copies() const noexcept {
     return valid() ? std::span<const PreparedBufferUpload>{copies_}
                    : std::span<const PreparedBufferUpload>{};
+  }
+  [[nodiscard]] std::span<const PreparedImageUpload> images() const noexcept {
+    return valid() ? std::span<const PreparedImageUpload>{images_}
+                   : std::span<const PreparedImageUpload>{};
   }
   [[nodiscard]] const BufferAllocationDescription *requestedStagingAllocation() const noexcept {
     return valid() ? &requested_allocation_ : nullptr;
@@ -106,19 +143,22 @@ public:
 
 private:
   PreparedUploadBatch(Buffer &&staging, std::vector<PreparedBufferUpload> &&copies,
+                      std::vector<PreparedImageUpload> &&images,
                       BufferAllocationDescription requested) noexcept
       : staging_(std::in_place, std::move(staging)), copies_(std::move(copies)),
-        requested_allocation_(requested) {}
+        images_(std::move(images)), requested_allocation_(requested) {}
 
   std::optional<Buffer> staging_{};
   std::vector<PreparedBufferUpload> copies_{};
+  std::vector<PreparedImageUpload> images_{};
   BufferAllocationDescription requested_allocation_{};
 
   friend auto prepareUploadBatch(const Allocator &, const UploadBatchDescription &)
       -> terreate::Result<PreparedUploadBatch>;
 };
 
-/// Validates all Buffer ranges/4-byte Vulkan copy alignment before allocating.
+/// Validates Buffer and bounded RGBA8 Image regions and exact Image byte
+/// footprints before allocating. Staging offsets are generated explicitly.
 /// Copies every byte span into one host-visible VMA staging Buffer and performs
 /// explicit map -> copy -> flush -> unmap; no input span is retained.
 /// Native Buffer creation, mapping and flush failures propagate unchanged;
@@ -127,8 +167,9 @@ private:
                                       const UploadBatchDescription &description)
     -> terreate::Result<PreparedUploadBatch>;
 
-/// Prevalidates the complete batch, then records one vkCmdCopyBuffer2 per item
-/// through the #264 helper. No barriers, queue selection, submit or waiting.
+/// Prevalidates the complete batch, then records one vkCmdCopyBuffer2 per
+/// Buffer item and one vkCmdCopyBufferToImage2 per Image item through #264.
+/// No layout transitions, barriers, queue selection, submit or waiting.
 /// All destination Buffer wrappers must remain stable between prepare/record.
 /// Device ownership of Buffers is not observable through Buffer::nativeDevice:
 /// the application must supply the correct Device and compatible Queue.

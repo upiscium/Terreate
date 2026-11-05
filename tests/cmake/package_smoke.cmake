@@ -407,6 +407,13 @@ int main() {
   if (!upload_prepare || !upload_record ||
       terreate::graphics::make_error_code(
           terreate::graphics::UploadError::invalid_batch).value() == 0) return 26;
+  // Phase B public Image upload surface is usable by installed consumers.
+  static_assert(std::is_standard_layout_v<terreate::graphics::ImageUploadItem>);
+  static_assert(std::is_trivially_copyable_v<terreate::graphics::PreparedImageUpload>);
+  using PhaseBImages = decltype(std::declval<const terreate::graphics::PreparedUploadBatch &>().images());
+  static_assert(std::is_same_v<PhaseBImages, std::span<const terreate::graphics::PreparedImageUpload>>);
+  if (terreate::graphics::make_error_code(
+          terreate::graphics::UploadError::invalid_image_footprint).value() == 0) return 27;
   // Verify installed transfer recording API links without command execution.
   const auto transfer_barriers = &terreate::graphics::recordBarriers;
   const auto transfer_copy_buffer = &terreate::graphics::recordCopyBuffer;
