@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -317,6 +317,7 @@ set(_graphics_consumer_source [=[
 #include <terreate/graphics/command_buffer.hpp>
 #include <terreate/graphics/transfer_commands.hpp>
 #include <terreate/graphics/upload_batch.hpp>
+#include <terreate/graphics/readback_batch.hpp>
 #include <terreate/graphics/submission.hpp>
 #include <terreate/graphics/retirement.hpp>
 // Optional sibling Wave A #257 public Completion header, present in combined verification.
@@ -400,6 +401,13 @@ static_assert(!std::is_assignable_v<
 
 int main() {
   // Verify installed upload preparation/recording signatures without GPU work.
+  // Phase A public Readback convenience API is usable by installed consumers.
+  static_assert(!std::is_copy_constructible_v<terreate::graphics::PreparedReadbackBatch>);
+  static_assert(std::is_nothrow_move_constructible_v<terreate::graphics::PreparedReadbackBatch>);
+  const auto readback_prepare = &terreate::graphics::prepareReadbackBatch;
+  const auto readback_record = &terreate::graphics::recordReadbackBatch;
+  const auto readback_copy = &terreate::graphics::tryCopyCompletedReadbackBatch;
+  if (!readback_prepare || !readback_record || !readback_copy) return 28;
   const auto upload_prepare = &terreate::graphics::prepareUploadBatch;
   const auto upload_record = &terreate::graphics::recordUploadBatch;
   static_assert(!std::is_copy_constructible_v<terreate::graphics::PreparedUploadBatch>);

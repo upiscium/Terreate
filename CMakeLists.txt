@@ -522,6 +522,19 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.upload_batch: headless-buffer-upload=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.upload_batch: (assertion=FAIL|.*BLOCKED)")
 
+    add_executable(terreate_graphics_readback_batch_tests tests/test_graphics_readback_batch.cpp)
+    target_link_libraries(terreate_graphics_readback_batch_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_readback_batch_tests PRIVATE
+      "-Wl,--wrap=vkCmdCopyBuffer2" "-Wl,--wrap=vkQueueSubmit2"
+      "-Wl,--wrap=vkGetFenceStatus" "-Wl,--wrap=vkDeviceWaitIdle"
+      "-Wl,--wrap=vmaMapMemory" "-Wl,--wrap=vmaInvalidateAllocation"
+      "-Wl,--wrap=vmaDestroyBuffer")
+    terreate_configure_target(terreate_graphics_readback_batch_tests)
+    add_test(NAME graphics.readback_batch COMMAND terreate_graphics_readback_batch_tests)
+    set_tests_properties(graphics.readback_batch PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.readback_batch: headless-buffer-readback=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.readback_batch: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_image_upload_batch_tests
       tests/test_graphics_image_upload_batch.cpp)
     target_link_libraries(terreate_graphics_image_upload_batch_tests PRIVATE Terreate::Graphics)
