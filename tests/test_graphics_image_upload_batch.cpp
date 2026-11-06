@@ -48,6 +48,45 @@ bool check(bool expression, const char *description) {
   }
   return expression;
 }
+
+// VkQueueFamilyProperties::minImageTransferGranularity applies to each image
+// transfer. A non-multiple extent is valid if it reaches that mip's edge.
+constexpr bool allowedTransferAxis(std::int32_t offset, std::uint32_t extent,
+                                   std::uint32_t mip_extent, std::uint32_t granularity) noexcept {
+  if (offset < 0 || !granularity || !extent)
+    return false;
+  const auto start = static_cast<std::uint32_t>(offset);
+  if (start > mip_extent || extent > mip_extent - start)
+    return false;
+  return (start % granularity) == 0 &&
+         ((extent % granularity) == 0 || extent == mip_extent - start);
+}
+
+constexpr bool allowedImageTransfer(VkExtent3D granularity, VkOffset3D offset, VkExtent3D extent,
+                                    VkExtent3D mip_extent) noexcept {
+  if (!granularity.width && !granularity.height && !granularity.depth) {
+    // (0,0,0) allows only whole mip-level transfers with zero offsets.
+    return offset.x == 0 && offset.y == 0 && offset.z == 0 && extent.width == mip_extent.width &&
+           extent.height == mip_extent.height && extent.depth == mip_extent.depth;
+  }
+  return allowedTransferAxis(offset.x, extent.width, mip_extent.width, granularity.width) &&
+         allowedTransferAxis(offset.y, extent.height, mip_extent.height, granularity.height) &&
+         allowedTransferAxis(offset.z, extent.depth, mip_extent.depth, granularity.depth);
+}
+
+// Compile-time regression: a 4x2x1 split upload is valid for (8,1,2),
+// because its x/z dimensions reach the corresponding 4x4x1 mip edge.
+static_assert(allowedImageTransfer({8, 1, 2}, {0, 0, 0}, {4, 2, 1}, {4, 4, 1}));
+static_assert(allowedImageTransfer({8, 1, 2}, {0, 2, 0}, {4, 2, 1}, {4, 4, 1}));
+static_assert(allowedImageTransfer({1, 1, 1}, {0, 2, 0}, {4, 2, 1}, {4, 4, 1}));
+static_assert(!allowedImageTransfer({1, 4, 1}, {0, 0, 0}, {4, 2, 1}, {4, 4, 1}));
+static_assert(!allowedImageTransfer({1, 4, 1}, {0, 2, 0}, {4, 2, 1}, {4, 4, 1}));
+static_assert(!allowedImageTransfer({8, 1, 2}, {1, 0, 0}, {3, 2, 1}, {4, 4, 1}));
+static_assert(!allowedImageTransfer({1, 1, 1}, {0, 3, 0}, {4, 2, 1}, {4, 4, 1}));
+static_assert(!allowedImageTransfer({0, 0, 0}, {0, 0, 0}, {4, 2, 1}, {4, 4, 1}));
+static_assert(allowedImageTransfer({0, 0, 0}, {0, 0, 0}, {4, 4, 1}, {4, 4, 1}));
+static_assert(!allowedImageTransfer({0, 1, 1}, {0, 0, 0}, {4, 2, 1}, {4, 4, 1}));
+
 int blocked(const char *reason) {
   std::fprintf(stderr, "graphics.image_upload_batch: validation=BLOCKED: %s\n", reason);
   return EXIT_FAILURE;
@@ -477,12 +516,13 @@ int run() {
       const auto &family = candidate.capabilities().queue_families[i];
       if (!family.queueCount || !(family.queueFlags & vk::QueueFlagBits::eTransfer))
         continue;
-      // Both 4x2 transfers (at y=0 and y=2) must satisfy the selected
-      // transfer family's minImageTransferGranularity, including offsets.
+      // Both 4x2 Image uploads (at y=0 and y=2) must satisfy the
+      // transfer family's granularity, including image-edge exceptions.
       const auto &granularity = family.minImageTransferGranularity;
-      if (!granularity.width || !granularity.height || !granularity.depth ||
-          (4U % granularity.width) != 0 || (2U % granularity.height) != 0 ||
-          (1U % granularity.depth) != 0)
+      const VkExtent3D mip_extent{4, 4, 1};
+      const VkExtent3D upload_extent{4, 2, 1};
+      if (!allowedImageTransfer(granularity, {0, 0, 0}, upload_extent, mip_extent) ||
+          !allowedImageTransfer(granularity, {0, 2, 0}, upload_extent, mip_extent))
         continue;
       DeviceDescription device_description;
       device_description.required_features_13.synchronization2 = VK_TRUE;
