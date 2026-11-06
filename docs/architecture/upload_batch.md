@@ -1,7 +1,9 @@
-# Explicit Buffer staging/upload batches (#338 Phase A)
+# Explicit Buffer and Image staging/upload batches (#338 Phases A/B)
 
-This module implements **only** the bounded Buffer Upload MVI. It is not an
-image uploader, transfer scheduler, or alternative queue-submission system.
+This module provides Phase A Buffer Upload and a **bounded Phase B** Image
+Upload path. The Image path deliberately supports only RGBA8 2D single-sample
+Images and explicitly described subresources/pitch. Neither path is a transfer
+scheduler, background uploader or alternative queue-submission system.
 The application owns and triggers every operation:
 
 1. Prepare a set of explicit destination Buffer ranges and CPU byte spans.
@@ -89,8 +91,8 @@ as permitted by Vulkan. There is no hidden rollback.
 No implicit Queue selection, Queue-family transfer, barriers, target
 cache flush/invalidate, submission, fence creation, completion polling,
 retirement, mipmap generation or Image layout inference is supplied.
-Images, pitch, format and subresource rules belong to separately gated
-#338 Phase B. #339 Readback is an independent Issue.
+Phase B adds explicit Image upload *recording* but no implicit transitions.
+#339 Readback remains a separate Issue.
 
 ## Test and packaging expectations
 
@@ -107,3 +109,69 @@ memory requirements are unavailable. GNU linker wrappers observe Vulkan
 and VMA entrypoints; they do not establish portability to other linkers.
 Installed package smoke compiles/links the new public header from an
 external consumer. This document defines the contract, not proof of tests.
+
+## Bounded Phase B: explicit RGBA8 Image upload
+
+An ImageUploadItem borrows a destination Image, specifies a VkBufferImageCopy2
+region (correct sType, null pNext, and **request bufferOffset == 0**), an
+explicit copy_layout (TRANSFER_DST_OPTIMAL or GENERAL), and a byte span.
+Its region chooses the actual Image aspect, mip level, array layer, 2D
+texel offset and copy extent; these are not inferred or rewritten.
+Preparation assigns an **effective** staging bufferOffset (which will
+usually be nonzero for mixed Buffer/Image batches), snaps the native
+region/layout/borrowed Image handle and copies the CPU bytes. These
+values are available through PreparedUploadBatch::images().
+
+The bounded convenience path accepts only VK_FORMAT_R8G8B8A8_UNORM,
+VK_IMAGE_TYPE_2D, VK_SAMPLE_COUNT_1_BIT, COLOR aspect, depth 1, and
+exactly **one layer per operation**; a caller may explicitly upload
+separate mip levels or distinct nonoverlapping regions. All regions of
+one Image mip/layer in the same batch MUST declare the same copy_layout;
+conflicting layouts are rejected before native recording because there is
+no place to insert a per-region transition. The image
+must be TRANSFER_DST capable and use the same VMA Allocator as the
+staging Buffer. The Image's parent logical Device is checked again
+at record time. Unsupported formats, samples, 3D, compressed/
+multiplanar/depth/stencil or overlapping writes to the same image
+mip/layer are rejected rather than processed under false assumptions.
+
+The native bufferRowLength and bufferImageHeight fields are in
+**texels, not bytes**, per the Vulkan Copy Commands specification.
+Either may be zero (tight packing) or must meet the corresponding
+region extent. For one RGBA8 2D layer, the highest byte accessed in
+the staging region ends at:
+
+    (((imageExtent.height - 1) * effectiveRowLength) + imageExtent.width) * 4
+
+where effectiveRowLength = bufferRowLength or imageExtent.width if zero.
+The byte span must have **exactly** that length, including inter-row
+padding but not inventing unused trailing-row padding. All products
+and combined batch offsets are overflow-checked; the row stride
+obeys Vulkan's signed-31-bit row-size limit. Each requested native
+region has bufferOffset 0 because the batch owns its stage offsets.
+
+The application records oldLayout -> copy_layout transitions explicitly
+through #264 recordBarriers *before* recordUploadBatch, with true
+stage/access masks, ownership and subresource scopes. It records any
+post-copy transition explicitly too. recordUploadBatch records one
+vkCmdCopyBufferToImage2 per ImageUploadItem, no barriers and no implicit
+mipmap generation, Queue selection, submit or waits. As in Phase A, the
+staging batch is one move-only RAII owner; application-controlled #258
+SubmissionReceipt and #259 RetirementQueue govern its GPU lifetime.
+
+Vulkan format transfer features, Queue transfer granularity, any other
+native validity preconditions, and actual prior Image layout/ownership
+remain caller responsibilities. This is not a state tracker or a
+substitute for native Vulkan escape hatches.
+
+### Phase B native validation
+
+The isolated graphics.image_upload_batch test covers mixed Buffer +
+multiple RGBA8 Image region staging, row-padded two-region Image copy,
+explicit pre/post Synchronization2 layout transitions, native argument
+observations, host readback content, nontrivial effective staging
+offsets, invalid pitches/footprints/subresources/layouts/formats,
+prevalidation before *any* native copies, conflicting-layout rejection,
+compatible Queue minImageTransferGranularity selection, explicit submit/fence
+completion, and deferred staging destruction. Unsupported devices
+must return BLOCKED and fail, never be counted as a fake PASS.
