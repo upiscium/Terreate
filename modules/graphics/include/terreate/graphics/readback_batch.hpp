@@ -8,6 +8,7 @@
 #include <system_error>
 #include <terreate/graphics/buffer.hpp>
 #include <terreate/graphics/command_buffer.hpp>
+#include <terreate/graphics/image.hpp>
 #include <terreate/graphics/submission.hpp>
 #include <utility>
 #include <vector>
@@ -32,6 +33,11 @@ enum class ReadbackError : std::uint8_t {
   invalid_completion,
   completion_pending,
   unsupported_host_access,
+  unsupported_image,
+  unsupported_layout,
+  invalid_image_region,
+  invalid_image_footprint,
+  conflicting_image_layouts,
 };
 
 [[nodiscard]] const std::error_category &readback_error_category() noexcept;
@@ -53,9 +59,21 @@ struct BufferReadbackItem {
   return value;
 }
 
+/// Bounded RGBA8 2D single-sample color copy, exactly one mip/layer per item.
+/// region.bufferOffset MUST be zero in the request; prepare assigns the
+/// 4-byte-aligned destination offset in the privately owned staging Buffer.
+/// The caller owns explicit source layout/transitions and Image GPU lifetime.
+struct ImageReadbackItem {
+  const Image *source = nullptr;
+  vk::ImageLayout copy_layout = vk::ImageLayout::eTransferSrcOptimal;
+  VkBufferImageCopy2 region{VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
+};
+
 struct ReadbackBatchDescription {
   std::span<const BufferReadbackItem> buffers{};
   BufferAllocationDescription staging_allocation = defaultReadbackStagingAllocation();
+  // Appended so Phase A positional aggregate initialization remains valid.
+  std::span<const ImageReadbackItem> images{};
 };
 
 struct PreparedBufferReadback {
@@ -66,10 +84,30 @@ struct PreparedBufferReadback {
   vk::DeviceSize size = 0;
 };
 
+struct PreparedImageReadback {
+  const Image *source = nullptr; // borrowed through recording and GPU execution
+  VkImage expected_image = VK_NULL_HANDLE;
+  vk::ImageLayout copy_layout = vk::ImageLayout::eTransferSrcOptimal;
+  VkBufferImageCopy2 region{VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2}; // effective staging offset
+  vk::DeviceSize payload_bytes = 0; // copy-touched footprint, including row strides
+};
+
 struct CompletedBufferReadback {
   vk::DeviceSize source_offset = 0;
   std::size_t data_offset = 0;
   std::size_t size = 0;
+};
+
+/// Region and copy-layout snapshots. row_pitch_bytes describes the returned
+/// zero-padded Image buffer; only active RGBA8 texels are copied from staging.
+/// The region's bufferOffset is the effective original staging offset.
+struct CompletedImageReadback {
+  vk::Format format = vk::Format::eUndefined;
+  vk::ImageLayout copy_layout = vk::ImageLayout::eTransferSrcOptimal;
+  VkBufferImageCopy2 region{VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
+  std::size_t data_offset = 0;
+  std::size_t payload_bytes = 0;
+  std::size_t row_pitch_bytes = 0;
 };
 
 /// CPU-owned bytes, never a borrow of mapped staging memory.
@@ -79,19 +117,28 @@ public:
   [[nodiscard]] std::span<const CompletedBufferReadback> buffers() const noexcept {
     return buffers_;
   }
+  [[nodiscard]] std::span<const CompletedImageReadback> images() const noexcept { return images_; }
   [[nodiscard]] std::span<const std::byte> dataFor(std::size_t index) const noexcept {
     if (index >= buffers_.size())
       return {};
     const auto &region = buffers_[index];
     return {data_.data() + region.data_offset, region.size};
   }
+  [[nodiscard]] std::span<const std::byte> imageDataFor(std::size_t index) const noexcept {
+    if (index >= images_.size())
+      return {};
+    const auto &region = images_[index];
+    return {data_.data() + region.data_offset, region.payload_bytes};
+  }
 
 private:
   CompletedReadbackBatch(std::vector<std::byte> &&data,
-                         std::vector<CompletedBufferReadback> &&buffers) noexcept
-      : data_(std::move(data)), buffers_(std::move(buffers)) {}
+                         std::vector<CompletedBufferReadback> &&buffers,
+                         std::vector<CompletedImageReadback> &&images) noexcept
+      : data_(std::move(data)), buffers_(std::move(buffers)), images_(std::move(images)) {}
   std::vector<std::byte> data_;
   std::vector<CompletedBufferReadback> buffers_;
+  std::vector<CompletedImageReadback> images_;
   friend auto tryCopyCompletedReadbackBatch(const Device &, class PreparedReadbackBatch &,
                                             std::span<const SubmissionReceipt>)
       -> terreate::Result<CompletedReadbackBatch>;
@@ -111,7 +158,7 @@ public:
   ~PreparedReadbackBatch() = default;
 
   [[nodiscard]] bool valid() const noexcept {
-    return staging_ && staging_->valid() && !copies_.empty();
+    return staging_ && staging_->valid() && (!copies_.empty() || !images_.empty());
   }
   [[nodiscard]] explicit operator bool() const noexcept { return valid(); }
   [[nodiscard]] vk::DeviceSize stagingSize() const noexcept { return valid() ? size_ : 0; }
@@ -119,26 +166,33 @@ public:
     return valid() ? std::span<const PreparedBufferReadback>{copies_}
                    : std::span<const PreparedBufferReadback>{};
   }
+  [[nodiscard]] std::span<const PreparedImageReadback> images() const noexcept {
+    return valid() ? std::span<const PreparedImageReadback>{images_}
+                   : std::span<const PreparedImageReadback>{};
+  }
   [[nodiscard]] const BufferAllocationDescription *requestedStagingAllocation() const noexcept {
     return valid() ? &requested_allocation_ : nullptr;
   }
   [[nodiscard]] const BufferConfiguration *stagingConfiguration() const noexcept {
     if (!staging_)
       return nullptr;
-    return staging_->valid() && !copies_.empty() ? staging_->configuration() : nullptr;
+    return staging_->valid() && (!copies_.empty() || !images_.empty()) ? staging_->configuration()
+                                                                       : nullptr;
   }
   [[nodiscard]] terreate::Result<BufferAllocationObservation> stagingAllocationInfo() const;
 
 private:
   PreparedReadbackBatch(Buffer &&staging, vk::DeviceSize size,
                         std::vector<PreparedBufferReadback> &&copies,
+                        std::vector<PreparedImageReadback> &&images,
                         BufferAllocationDescription requested) noexcept
       : staging_(std::in_place, std::move(staging)), size_(size), copies_(std::move(copies)),
-        requested_allocation_(requested) {}
+        images_(std::move(images)), requested_allocation_(requested) {}
 
   std::optional<Buffer> staging_{};
   vk::DeviceSize size_ = 0;
   std::vector<PreparedBufferReadback> copies_{};
+  std::vector<PreparedImageReadback> images_{};
   BufferAllocationDescription requested_allocation_{};
 
   friend auto prepareReadbackBatch(const Allocator &, const ReadbackBatchDescription &)
@@ -156,8 +210,9 @@ private:
                                         const ReadbackBatchDescription &description)
     -> terreate::Result<PreparedReadbackBatch>;
 
-/// Record one vkCmdCopyBuffer2 per source range, via #264. Fully prevalidates
-/// the batch before the first native command; no barriers/Submit/Queue/wait.
+/// Record one vkCmdCopyBuffer2 per Buffer range and one
+/// vkCmdCopyImageToBuffer2 per Image region, via #264. Fully prevalidates
+/// all entries before the first native command; no barriers/Submit/Queue/wait.
 [[nodiscard]] auto recordReadbackBatch(const Device &device, const CommandBuffer &command,
                                        const PreparedReadbackBatch &batch)
     -> terreate::Result<void>;

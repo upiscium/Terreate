@@ -408,6 +408,23 @@ int main() {
   const auto readback_record = &terreate::graphics::recordReadbackBatch;
   const auto readback_copy = &terreate::graphics::tryCopyCompletedReadbackBatch;
   if (!readback_prepare || !readback_record || !readback_copy) return 28;
+  // Phase B public Image Readback is compatible with the installed Graphics package.
+  static_assert(std::is_standard_layout_v<terreate::graphics::ImageReadbackItem>);
+  static_assert(std::is_trivially_copyable_v<terreate::graphics::PreparedImageReadback>);
+  static_assert(std::is_trivially_copyable_v<terreate::graphics::CompletedImageReadback>);
+  using ReadbackPreparedImages =
+      decltype(std::declval<const terreate::graphics::PreparedReadbackBatch &>().images());
+  using ReadbackCompletedImages =
+      decltype(std::declval<const terreate::graphics::CompletedReadbackBatch &>().images());
+  using ImageReadbackCPUBytes =
+      decltype(std::declval<const terreate::graphics::CompletedReadbackBatch &>().imageDataFor(0));
+  static_assert(std::is_same_v<ReadbackPreparedImages,
+                               std::span<const terreate::graphics::PreparedImageReadback>>);
+  static_assert(std::is_same_v<ReadbackCompletedImages,
+                               std::span<const terreate::graphics::CompletedImageReadback>>);
+  static_assert(std::is_same_v<ImageReadbackCPUBytes, std::span<const std::byte>>);
+  if (terreate::graphics::make_error_code(
+          terreate::graphics::ReadbackError::invalid_image_footprint).value() == 0) return 29;
   const auto upload_prepare = &terreate::graphics::prepareUploadBatch;
   const auto upload_record = &terreate::graphics::recordUploadBatch;
   static_assert(!std::is_copy_constructible_v<terreate::graphics::PreparedUploadBatch>);
