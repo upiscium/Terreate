@@ -605,6 +605,21 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.retirement: true-multi-queue=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.retirement: (assertion=FAIL|.*BLOCKED)")
 
+    add_executable(terreate_graphics_shader_module_tests
+      tests/test_graphics_shader_module.cpp)
+    target_link_libraries(terreate_graphics_shader_module_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_shader_module_tests PRIVATE
+      "-Wl,--wrap=vkCreateShaderModule" "-Wl,--wrap=vkDestroyShaderModule")
+    terreate_configure_target(terreate_graphics_shader_module_tests)
+    add_test(NAME graphics.spirv_binary COMMAND terreate_graphics_shader_module_tests cpu)
+    set_tests_properties(graphics.spirv_binary PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.spirv_binary: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.shader_module: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.shader_module COMMAND terreate_graphics_shader_module_tests gpu)
+    set_tests_properties(graphics.shader_module PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.shader_module: headless-native=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.shader_module: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_image_tests tests/test_graphics_image.cpp)
     target_link_libraries(terreate_graphics_image_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_image_tests PRIVATE
