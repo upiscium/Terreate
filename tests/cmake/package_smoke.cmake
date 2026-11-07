@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -328,12 +328,16 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <terreate/graphics/image.hpp>
 #include <terreate/graphics/image_view.hpp>
 #include <terreate/graphics/sampler.hpp>
+#include <terreate/graphics/spirv_binary.hpp>
+#include <terreate/graphics/shader_module.hpp>
 #include <terreate/graphics/device.hpp>
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
 #include <vulkan/vulkan_raii.hpp>
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <type_traits>
 #include <utility>
 
@@ -400,6 +404,25 @@ static_assert(!std::is_assignable_v<
               terreate::graphics::PhysicalDeviceCapabilities>);
 
 int main() {
+  // Verify public, installed ShaderModule and CPU-only SPIR-V symbols link
+  // without a runtime shader compiler or reflection backend.
+  using terreate::graphics::SpirvBinary;
+  using terreate::graphics::ShaderModule;
+  static_assert(!std::is_default_constructible_v<SpirvBinary>);
+  static_assert(std::is_copy_constructible_v<SpirvBinary>);
+  static_assert(!std::is_copy_constructible_v<ShaderModule>);
+  static_assert(std::is_nothrow_move_constructible_v<ShaderModule>);
+  const std::array<std::uint32_t, 5> spirv_words{
+      0x07230203U, 0x00010000U, 0, 1, 0};
+  auto spirv = SpirvBinary::fromWords(spirv_words);
+  if (!spirv || !spirv->valid() || spirv->byteSize() != 20) return 40;
+  auto spirv_bytes = spirv->toBytes();
+  if (!spirv_bytes || !SpirvBinary::fromBytes(*spirv_bytes)) return 41;
+  const auto create_module = &terreate::graphics::createShaderModule;
+  if (!create_module ||
+      terreate::graphics::make_error_code(
+          terreate::graphics::ShaderModuleError::invalid_device).value() == 0) return 42;
+
   // Verify installed upload preparation/recording signatures without GPU work.
   // Phase A public Readback convenience API is usable by installed consumers.
   static_assert(!std::is_copy_constructible_v<terreate::graphics::PreparedReadbackBatch>);

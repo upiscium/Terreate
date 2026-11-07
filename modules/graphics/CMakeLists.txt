@@ -167,6 +167,10 @@ add_library(terreate_graphics STATIC
   include/terreate/graphics/upload_batch.hpp
   src/readback_batch.cpp
   include/terreate/graphics/readback_batch.hpp
+  src/spirv_binary.cpp
+  include/terreate/graphics/spirv_binary.hpp
+  src/shader_module.cpp
+  include/terreate/graphics/shader_module.hpp
   src/submission.cpp
   include/terreate/graphics/submission.hpp
   src/retirement.cpp
