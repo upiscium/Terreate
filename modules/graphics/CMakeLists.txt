@@ -171,6 +171,10 @@ add_library(terreate_graphics STATIC
   include/terreate/graphics/spirv_binary.hpp
   src/shader_module.cpp
   include/terreate/graphics/shader_module.hpp
+  src/pipeline_layout.cpp
+  include/terreate/graphics/pipeline_layout.hpp
+  src/compute_pipeline.cpp
+  include/terreate/graphics/compute_pipeline.hpp
   src/submission.cpp
   include/terreate/graphics/submission.hpp
   src/retirement.cpp

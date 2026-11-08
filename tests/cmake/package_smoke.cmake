@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|pipeline_layout|compute_pipeline|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module pipeline_layout compute_pipeline submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -330,6 +330,8 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <terreate/graphics/sampler.hpp>
 #include <terreate/graphics/spirv_binary.hpp>
 #include <terreate/graphics/shader_module.hpp>
+#include <terreate/graphics/pipeline_layout.hpp>
+#include <terreate/graphics/compute_pipeline.hpp>
 #include <terreate/graphics/device.hpp>
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
@@ -422,6 +424,26 @@ int main() {
   if (!create_module ||
       terreate::graphics::make_error_code(
           terreate::graphics::ShaderModuleError::invalid_device).value() == 0) return 42;
+
+  using terreate::graphics::PipelineLayout;
+  using terreate::graphics::ComputePipeline;
+  static_assert(!std::is_default_constructible_v<PipelineLayout>);
+  static_assert(!std::is_copy_constructible_v<PipelineLayout>);
+  static_assert(!std::is_copy_assignable_v<PipelineLayout>);
+  static_assert(std::is_nothrow_move_constructible_v<PipelineLayout>);
+  static_assert(std::is_nothrow_move_assignable_v<PipelineLayout>);
+  static_assert(!std::is_default_constructible_v<ComputePipeline>);
+  static_assert(!std::is_copy_constructible_v<ComputePipeline>);
+  static_assert(!std::is_copy_assignable_v<ComputePipeline>);
+  static_assert(std::is_nothrow_move_constructible_v<ComputePipeline>);
+  static_assert(std::is_nothrow_move_assignable_v<ComputePipeline>);
+  if (!terreate::graphics::validatePipelineLayoutDescription({}, 0) ||
+      !terreate::graphics::validateComputePipelineDescription({"main"}) ||
+      terreate::graphics::validateComputePipelineDescription({}) ||
+      terreate::graphics::make_error_code(
+          terreate::graphics::PipelineLayoutError::invalid_description).value() == 0 ||
+      terreate::graphics::make_error_code(
+          terreate::graphics::ComputePipelineError::invalid_entry_point).value() == 0) return 43;
 
   // Verify installed upload preparation/recording signatures without GPU work.
   // Phase A public Readback convenience API is usable by installed consumers.
@@ -591,6 +613,50 @@ int main() {
   auto moved_sampler = std::move(*sampler);
   if (view->valid() || view->configuration() || sampler->valid() || sampler->configuration() ||
       !moved_view.valid() || !moved_sampler.valid()) return 18;
+
+  // Exercise installed pipeline factories and observers, not just header
+  // declarations or optimizable function-address checks. The fixture is the
+  // same offline-compiled SPIR-V 1.0 compute main used by the native tests.
+  const std::array<std::uint32_t, 70> compute_words{
+      0x07230203, 0x00010000, 0x0008000b, 0x0000000a, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+      0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+      0x0005000f, 0x00000005, 0x00000004, 0x6e69616d, 0x00000000, 0x00060010, 0x00000004, 0x00000011,
+      0x00000001, 0x00000001, 0x00000001, 0x00030003, 0x00000002, 0x000001c2, 0x00040005, 0x00000004,
+      0x6e69616d, 0x00000000, 0x00040047, 0x00000009, 0x0000000b, 0x00000019, 0x00020013, 0x00000002,
+      0x00030021, 0x00000003, 0x00000002, 0x00040015, 0x00000006, 0x00000020, 0x00000000, 0x00040017,
+      0x00000007, 0x00000006, 0x00000003, 0x0004002b, 0x00000006, 0x00000008, 0x00000001, 0x0006002c,
+      0x00000007, 0x00000009, 0x00000008, 0x00000008, 0x00000008, 0x00050036, 0x00000002, 0x00000004,
+      0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x000100fd, 0x00010038,
+  };
+  auto compute_binary = SpirvBinary::fromWords(compute_words);
+  if (!compute_binary) return 44;
+  auto pipeline_layout = terreate::graphics::createPipelineLayout(
+      *device, {{vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, 16}}});
+  auto compute_shader = terreate::graphics::createShaderModule(*device, *compute_binary);
+  if (!pipeline_layout || !compute_shader || !pipeline_layout->configuration() ||
+      pipeline_layout->nativePipelineLayout() == VK_NULL_HANDLE ||
+      pipeline_layout->nativeHandle() == vk::PipelineLayout{} ||
+      pipeline_layout->nativeDevice() != device->nativeHandle() ||
+      pipeline_layout->nativeVkDevice() != static_cast<VkDevice>(device->nativeHandle()) ||
+      !pipeline_layout->correlatedWith(*device)) return 45;
+  auto compute_pipeline = terreate::graphics::createComputePipeline(
+      *device, *compute_shader, *pipeline_layout, {"main"});
+  if (!compute_pipeline || !compute_pipeline->configuration() ||
+      compute_pipeline->nativePipeline() == VK_NULL_HANDLE ||
+      compute_pipeline->nativeHandle() == vk::Pipeline{} ||
+      compute_pipeline->nativeDevice() != device->nativeHandle() ||
+      compute_pipeline->nativeVkDevice() != static_cast<VkDevice>(device->nativeHandle()) ||
+      compute_pipeline->nativeLayout() != pipeline_layout->nativeHandle() ||
+      !compute_pipeline->correlatedWith(*device) ||
+      !compute_pipeline->correlatedWith(*pipeline_layout) ||
+      compute_pipeline->configuration()->requested.entry_point != "main" ||
+      compute_pipeline->configuration()->effective.entry_point != "main" ||
+      compute_pipeline->configuration()->stage != vk::ShaderStageFlagBits::eCompute) return 46;
+  auto moved_pipeline = std::move(*compute_pipeline);
+  if (compute_pipeline->valid() || compute_pipeline->configuration() ||
+      !moved_pipeline.valid()) return 47;
+  // Pipeline dies before its layout; no compute work is submitted.
+
   // The installed Graphics archive also exposes the explicit CommandPool /
   // CommandBuffer API. The application controls recording and no submit occurs.
   terreate::graphics::CommandPoolDescription pool_description;
