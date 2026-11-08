@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|pipeline_layout|compute_pipeline|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|pipeline_layout|compute_pipeline|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module pipeline_layout compute_pipeline submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout pipeline_layout compute_pipeline submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -330,6 +330,7 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <terreate/graphics/sampler.hpp>
 #include <terreate/graphics/spirv_binary.hpp>
 #include <terreate/graphics/shader_module.hpp>
+#include <terreate/graphics/descriptor_set_layout.hpp>
 #include <terreate/graphics/pipeline_layout.hpp>
 #include <terreate/graphics/compute_pipeline.hpp>
 #include <terreate/graphics/device.hpp>
@@ -340,6 +341,7 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <type_traits>
 #include <utility>
 
@@ -405,6 +407,26 @@ static_assert(!std::is_assignable_v<
               decltype(std::declval<terreate::graphics::PhysicalDeviceCandidate &>().capabilities()),
               terreate::graphics::PhysicalDeviceCapabilities>);
 
+// Selection is only an explicit test-consumer choice; Terreate does not choose
+// a Device, request features or own queue scheduling on behalf of applications.
+struct ComputeQueueSelection {
+  std::size_t candidate_index;
+  std::size_t family_index;
+};
+template <typename GetFamilies>
+std::optional<ComputeQueueSelection> firstComputeQueue(std::size_t candidate_count,
+                                                       GetFamilies &&families_for_candidate) {
+  for (std::size_t candidate_index = 0; candidate_index < candidate_count; ++candidate_index) {
+    const auto &families = families_for_candidate(candidate_index);
+    for (std::size_t family_index = 0; family_index < families.size(); ++family_index) {
+      const auto &family = families[family_index];
+      if (family.queueCount > 0 && (family.queueFlags & vk::QueueFlagBits::eCompute))
+        return ComputeQueueSelection{candidate_index, family_index};
+    }
+  }
+  return std::nullopt;
+}
+
 int main() {
   // Verify public, installed ShaderModule and CPU-only SPIR-V symbols link
   // without a runtime shader compiler or reflection backend.
@@ -427,6 +449,16 @@ int main() {
 
   using terreate::graphics::PipelineLayout;
   using terreate::graphics::ComputePipeline;
+  using terreate::graphics::DescriptorSetLayout;
+  static_assert(!std::is_default_constructible_v<DescriptorSetLayout>);
+  static_assert(!std::is_copy_constructible_v<DescriptorSetLayout>);
+  static_assert(!std::is_copy_assignable_v<DescriptorSetLayout>);
+  static_assert(std::is_nothrow_move_constructible_v<DescriptorSetLayout>);
+  static_assert(std::is_nothrow_move_assignable_v<DescriptorSetLayout>);
+  static_assert(std::is_nothrow_destructible_v<DescriptorSetLayout>);
+  if (!terreate::graphics::validateDescriptorSetLayoutDescription({}, {}) ||
+      terreate::graphics::make_error_code(
+          terreate::graphics::DescriptorSetLayoutError::invalid_description).value() == 0) return 50;
   static_assert(!std::is_default_constructible_v<PipelineLayout>);
   static_assert(!std::is_copy_constructible_v<PipelineLayout>);
   static_assert(!std::is_copy_assignable_v<PipelineLayout>);
@@ -506,6 +538,32 @@ int main() {
   if (!submit_entry || !poll_entry || !wait_entry ||
       terreate::graphics::make_error_code(
           terreate::graphics::SubmissionError::invalid_batch).value() == 0) return 23;
+  // Deterministic regression: GPU[0] has no compute queue, while GPU[1]
+  // does. A family advertising compute with queueCount=0 is not usable.
+  // Check the selector without requiring multiple physical GPUs on CI.
+  std::array<std::array<vk::QueueFamilyProperties, 2>, 3> synthetic_families{};
+  synthetic_families[0][0].queueCount = 1;
+  synthetic_families[0][0].queueFlags = vk::QueueFlagBits::eTransfer;
+  synthetic_families[0][1].queueCount = 0;
+  synthetic_families[0][1].queueFlags = vk::QueueFlagBits::eCompute;
+  synthetic_families[1][0].queueCount = 1;
+  synthetic_families[1][0].queueFlags = vk::QueueFlagBits::eTransfer;
+  synthetic_families[1][1].queueCount = 1;
+  synthetic_families[1][1].queueFlags = vk::QueueFlagBits::eCompute;
+  synthetic_families[2][0].queueCount = 1;
+  synthetic_families[2][0].queueFlags = vk::QueueFlagBits::eCompute;
+  const auto synthetic_queues = [&](std::size_t index) -> const auto & {
+    return synthetic_families[index];
+  };
+  const auto selected = firstComputeQueue(synthetic_families.size(), synthetic_queues);
+  if (!selected || selected->candidate_index != 1 || selected->family_index != 1) return 55;
+  // If the earlier usable compute queue disappears, the next GPU must win.
+  synthetic_families[1][1].queueCount = 0;
+  const auto later = firstComputeQueue(synthetic_families.size(), synthetic_queues);
+  if (!later || later->candidate_index != 2 || later->family_index != 0) return 56;
+  synthetic_families[2][0].queueFlags = vk::QueueFlagBits::eTransfer;
+  if (firstComputeQueue(synthetic_families.size(), synthetic_queues)) return 57;
+
   const auto capabilities = terreate::graphics::queryInstanceCapabilities();
   if (!capabilities) {
     return 1;
@@ -614,9 +672,64 @@ int main() {
   if (view->valid() || view->configuration() || sampler->valid() || sampler->configuration() ||
       !moved_view.valid() || !moved_sampler.valid()) return 18;
 
+  // Exercise the installed factory, borrowed handles and owned configuration,
+  // not merely declarations or function addresses. Layout creation is host work
+  // and does not require this Device's selected queue to support shader stages.
+  {
+    terreate::graphics::DescriptorSetLayoutDescription layout_description{
+        {{3, vk::DescriptorType::eUniformBuffer, 1,
+          vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eCompute},
+         {0, vk::DescriptorType::eCombinedImageSampler, 2,
+          vk::ShaderStageFlagBits::eFragment}}};
+    const auto requested = layout_description;
+    const auto &limits = device->plan()->capabilities().properties.limits;
+    if (!terreate::graphics::validateDescriptorSetLayoutDescription(layout_description, limits))
+      return 51;
+    auto descriptor_layout = terreate::graphics::createDescriptorSetLayout(*device, layout_description);
+    if (!descriptor_layout || !descriptor_layout->valid() || !static_cast<bool>(*descriptor_layout) ||
+        descriptor_layout->nativeDescriptorSetLayout() == VK_NULL_HANDLE ||
+        descriptor_layout->nativeHandle() !=
+            vk::DescriptorSetLayout{descriptor_layout->nativeDescriptorSetLayout()} ||
+        descriptor_layout->nativeDevice() != device->nativeHandle() ||
+        descriptor_layout->nativeVkDevice() != static_cast<VkDevice>(device->nativeHandle()) ||
+        !descriptor_layout->correlatedWith(*device)) return 52;
+    layout_description.bindings.clear();
+    const auto *configuration = descriptor_layout->configuration();
+    if (!configuration || configuration->requested.bindings != requested.bindings ||
+        configuration->effective.bindings != requested.bindings || configuration->limits != limits)
+      return 53;
+    auto moved_descriptor_layout = std::move(*descriptor_layout);
+    if (descriptor_layout->valid() || descriptor_layout->configuration() ||
+        descriptor_layout->nativeDescriptorSetLayout() != VK_NULL_HANDLE ||
+        descriptor_layout->nativeVkDevice() != VK_NULL_HANDLE ||
+        !moved_descriptor_layout.correlatedWith(*device) || !moved_descriptor_layout.configuration())
+      return 54;
+    // No descriptor sets or GPU work. Owner dies here, before the borrowed Device.
+  }
+
   // Exercise installed pipeline factories and observers, not just header
   // declarations or optimizable function-address checks. The fixture is the
   // same offline-compiled SPIR-V 1.0 compute main used by the native tests.
+  // Resolve an explicit compute Device independently from the full discovered
+  // PhysicalDevice inventory: the first candidate may be transfer-only.
+  // The earlier package-main Device and its queue request remain unchanged.
+  const auto compute_selection = firstComputeQueue(
+      devices->size(), [&](std::size_t index) -> const auto & {
+        return (*devices)[index].capabilities().queue_families;
+      });
+  if (!compute_selection) return 48;
+  const auto &compute_candidate = (*devices)[compute_selection->candidate_index];
+  terreate::graphics::DeviceDescription pipeline_device_description;
+  pipeline_device_description.queue_requests.push_back(terreate::graphics::DeviceQueueRequest{
+      .caller_id = "package-compute",
+      .required_flags = vk::QueueFlagBits::eCompute,
+      .allowed_family_indices = {compute_selection->family_index},
+  });
+  const auto pipeline_device_plan =
+      terreate::graphics::resolveDevice(compute_candidate, pipeline_device_description);
+  if (!pipeline_device_plan) return 49;
+  auto pipeline_device = terreate::graphics::createDevice(*instance, *pipeline_device_plan);
+  if (!pipeline_device || !pipeline_device->queue("package-compute")) return 49;
   const std::array<std::uint32_t, 70> compute_words{
       0x07230203, 0x00010000, 0x0008000b, 0x0000000a, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
       0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
@@ -631,23 +744,23 @@ int main() {
   auto compute_binary = SpirvBinary::fromWords(compute_words);
   if (!compute_binary) return 44;
   auto pipeline_layout = terreate::graphics::createPipelineLayout(
-      *device, {{vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, 16}}});
-  auto compute_shader = terreate::graphics::createShaderModule(*device, *compute_binary);
+      *pipeline_device, {{vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, 16}}});
+  auto compute_shader = terreate::graphics::createShaderModule(*pipeline_device, *compute_binary);
   if (!pipeline_layout || !compute_shader || !pipeline_layout->configuration() ||
       pipeline_layout->nativePipelineLayout() == VK_NULL_HANDLE ||
       pipeline_layout->nativeHandle() == vk::PipelineLayout{} ||
-      pipeline_layout->nativeDevice() != device->nativeHandle() ||
-      pipeline_layout->nativeVkDevice() != static_cast<VkDevice>(device->nativeHandle()) ||
-      !pipeline_layout->correlatedWith(*device)) return 45;
+      pipeline_layout->nativeDevice() != pipeline_device->nativeHandle() ||
+      pipeline_layout->nativeVkDevice() != static_cast<VkDevice>(pipeline_device->nativeHandle()) ||
+      !pipeline_layout->correlatedWith(*pipeline_device)) return 45;
   auto compute_pipeline = terreate::graphics::createComputePipeline(
-      *device, *compute_shader, *pipeline_layout, {"main"});
+      *pipeline_device, *compute_shader, *pipeline_layout, {"main"});
   if (!compute_pipeline || !compute_pipeline->configuration() ||
       compute_pipeline->nativePipeline() == VK_NULL_HANDLE ||
       compute_pipeline->nativeHandle() == vk::Pipeline{} ||
-      compute_pipeline->nativeDevice() != device->nativeHandle() ||
-      compute_pipeline->nativeVkDevice() != static_cast<VkDevice>(device->nativeHandle()) ||
+      compute_pipeline->nativeDevice() != pipeline_device->nativeHandle() ||
+      compute_pipeline->nativeVkDevice() != static_cast<VkDevice>(pipeline_device->nativeHandle()) ||
       compute_pipeline->nativeLayout() != pipeline_layout->nativeHandle() ||
-      !compute_pipeline->correlatedWith(*device) ||
+      !compute_pipeline->correlatedWith(*pipeline_device) ||
       !compute_pipeline->correlatedWith(*pipeline_layout) ||
       compute_pipeline->configuration()->requested.entry_point != "main" ||
       compute_pipeline->configuration()->effective.entry_point != "main" ||

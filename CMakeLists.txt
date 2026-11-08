@@ -620,6 +620,24 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.shader_module: headless-native=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.shader_module: (assertion=FAIL|.*BLOCKED)")
 
+    add_executable(terreate_graphics_descriptor_set_layout_tests
+      tests/test_graphics_descriptor_set_layout.cpp)
+    target_link_libraries(terreate_graphics_descriptor_set_layout_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_descriptor_set_layout_tests PRIVATE
+      "-Wl,--wrap=vkCreateDescriptorSetLayout" "-Wl,--wrap=vkDestroyDescriptorSetLayout")
+    terreate_configure_target(terreate_graphics_descriptor_set_layout_tests)
+    add_test(NAME graphics.descriptor_set_layout.cpu
+      COMMAND terreate_graphics_descriptor_set_layout_tests cpu)
+    set_tests_properties(graphics.descriptor_set_layout.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.descriptor_set_layout\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.descriptor_set_layout.*: (assertion=FAIL|.*BLOCKED|.*SKIP)")
+    add_test(NAME graphics.descriptor_set_layout
+      COMMAND terreate_graphics_descriptor_set_layout_tests gpu)
+    set_tests_properties(graphics.descriptor_set_layout PROPERTIES
+      PASS_REGULAR_EXPRESSION
+        "graphics\\.descriptor_set_layout: headless-native=PASS validation-layer=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.descriptor_set_layout.*: (assertion=FAIL|.*BLOCKED|.*SKIP)")
+
     add_executable(terreate_graphics_pipeline_tests tests/test_graphics_pipeline.cpp)
     target_link_libraries(terreate_graphics_pipeline_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_pipeline_tests PRIVATE
