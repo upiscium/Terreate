@@ -341,6 +341,7 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <type_traits>
 #include <utility>
 
@@ -405,6 +406,26 @@ static_assert(!std::is_assignable_v<
 static_assert(!std::is_assignable_v<
               decltype(std::declval<terreate::graphics::PhysicalDeviceCandidate &>().capabilities()),
               terreate::graphics::PhysicalDeviceCapabilities>);
+
+// Selection is only an explicit test-consumer choice; Terreate does not choose
+// a Device, request features or own queue scheduling on behalf of applications.
+struct ComputeQueueSelection {
+  std::size_t candidate_index;
+  std::size_t family_index;
+};
+template <typename GetFamilies>
+std::optional<ComputeQueueSelection> firstComputeQueue(std::size_t candidate_count,
+                                                       GetFamilies &&families_for_candidate) {
+  for (std::size_t candidate_index = 0; candidate_index < candidate_count; ++candidate_index) {
+    const auto &families = families_for_candidate(candidate_index);
+    for (std::size_t family_index = 0; family_index < families.size(); ++family_index) {
+      const auto &family = families[family_index];
+      if (family.queueCount > 0 && (family.queueFlags & vk::QueueFlagBits::eCompute))
+        return ComputeQueueSelection{candidate_index, family_index};
+    }
+  }
+  return std::nullopt;
+}
 
 int main() {
   // Verify public, installed ShaderModule and CPU-only SPIR-V symbols link
@@ -517,6 +538,32 @@ int main() {
   if (!submit_entry || !poll_entry || !wait_entry ||
       terreate::graphics::make_error_code(
           terreate::graphics::SubmissionError::invalid_batch).value() == 0) return 23;
+  // Deterministic regression: GPU[0] has no compute queue, while GPU[1]
+  // does. A family advertising compute with queueCount=0 is not usable.
+  // Check the selector without requiring multiple physical GPUs on CI.
+  std::array<std::array<vk::QueueFamilyProperties, 2>, 3> synthetic_families{};
+  synthetic_families[0][0].queueCount = 1;
+  synthetic_families[0][0].queueFlags = vk::QueueFlagBits::eTransfer;
+  synthetic_families[0][1].queueCount = 0;
+  synthetic_families[0][1].queueFlags = vk::QueueFlagBits::eCompute;
+  synthetic_families[1][0].queueCount = 1;
+  synthetic_families[1][0].queueFlags = vk::QueueFlagBits::eTransfer;
+  synthetic_families[1][1].queueCount = 1;
+  synthetic_families[1][1].queueFlags = vk::QueueFlagBits::eCompute;
+  synthetic_families[2][0].queueCount = 1;
+  synthetic_families[2][0].queueFlags = vk::QueueFlagBits::eCompute;
+  const auto synthetic_queues = [&](std::size_t index) -> const auto & {
+    return synthetic_families[index];
+  };
+  const auto selected = firstComputeQueue(synthetic_families.size(), synthetic_queues);
+  if (!selected || selected->candidate_index != 1 || selected->family_index != 1) return 55;
+  // If the earlier usable compute queue disappears, the next GPU must win.
+  synthetic_families[1][1].queueCount = 0;
+  const auto later = firstComputeQueue(synthetic_families.size(), synthetic_queues);
+  if (!later || later->candidate_index != 2 || later->family_index != 0) return 56;
+  synthetic_families[2][0].queueFlags = vk::QueueFlagBits::eTransfer;
+  if (firstComputeQueue(synthetic_families.size(), synthetic_queues)) return 57;
+
   const auto capabilities = terreate::graphics::queryInstanceCapabilities();
   if (!capabilities) {
     return 1;
@@ -663,24 +710,23 @@ int main() {
   // Exercise installed pipeline factories and observers, not just header
   // declarations or optimizable function-address checks. The fixture is the
   // same offline-compiled SPIR-V 1.0 compute main used by the native tests.
-  // Resolve an explicit compute Device independently: package-main may select
-  // a transfer-only family, which must not become an implicit compute request.
-  std::size_t compute_family_index = candidate.capabilities().queue_families.size();
-  for (std::size_t index = 0; index < candidate.capabilities().queue_families.size(); ++index) {
-    const auto &family = candidate.capabilities().queue_families[index];
-    if (family.queueCount != 0 && (family.queueFlags & vk::QueueFlagBits::eCompute)) {
-      compute_family_index = index;
-      break;
-    }
-  }
-  if (compute_family_index == candidate.capabilities().queue_families.size()) return 48;
+  // Resolve an explicit compute Device independently from the full discovered
+  // PhysicalDevice inventory: the first candidate may be transfer-only.
+  // The earlier package-main Device and its queue request remain unchanged.
+  const auto compute_selection = firstComputeQueue(
+      devices->size(), [&](std::size_t index) -> const auto & {
+        return (*devices)[index].capabilities().queue_families;
+      });
+  if (!compute_selection) return 48;
+  const auto &compute_candidate = (*devices)[compute_selection->candidate_index];
   terreate::graphics::DeviceDescription pipeline_device_description;
   pipeline_device_description.queue_requests.push_back(terreate::graphics::DeviceQueueRequest{
       .caller_id = "package-compute",
       .required_flags = vk::QueueFlagBits::eCompute,
-      .allowed_family_indices = {compute_family_index},
+      .allowed_family_indices = {compute_selection->family_index},
   });
-  const auto pipeline_device_plan = terreate::graphics::resolveDevice(candidate, pipeline_device_description);
+  const auto pipeline_device_plan =
+      terreate::graphics::resolveDevice(compute_candidate, pipeline_device_description);
   if (!pipeline_device_plan) return 49;
   auto pipeline_device = terreate::graphics::createDevice(*instance, *pipeline_device_plan);
   if (!pipeline_device || !pipeline_device->queue("package-compute")) return 49;
