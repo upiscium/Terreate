@@ -620,6 +620,25 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.shader_module: headless-native=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.shader_module: (assertion=FAIL|.*BLOCKED)")
 
+    add_executable(terreate_graphics_pipeline_tests tests/test_graphics_pipeline.cpp)
+    target_link_libraries(terreate_graphics_pipeline_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_pipeline_tests PRIVATE
+      "-Wl,--wrap=vkCreatePipelineLayout" "-Wl,--wrap=vkDestroyPipelineLayout"
+      "-Wl,--wrap=vkCreateComputePipelines" "-Wl,--wrap=vkDestroyPipeline")
+    terreate_configure_target(terreate_graphics_pipeline_tests)
+    add_test(NAME graphics.pipeline.cpu COMMAND terreate_graphics_pipeline_tests cpu)
+    set_tests_properties(graphics.pipeline.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.pipeline\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.pipeline\\.cpu: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.pipeline_layout COMMAND terreate_graphics_pipeline_tests layout)
+    set_tests_properties(graphics.pipeline_layout PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.pipeline_layout: headless-native=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.pipeline_layout: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.compute_pipeline COMMAND terreate_graphics_pipeline_tests compute)
+    set_tests_properties(graphics.compute_pipeline PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.compute_pipeline: headless-native=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.compute_pipeline: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_image_tests tests/test_graphics_image.cpp)
     target_link_libraries(terreate_graphics_image_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_image_tests PRIVATE
