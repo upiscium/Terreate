@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|pipeline_layout|compute_pipeline|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|pipeline_layout|compute_pipeline|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout pipeline_layout compute_pipeline submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set pipeline_layout compute_pipeline submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -331,6 +331,8 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <terreate/graphics/spirv_binary.hpp>
 #include <terreate/graphics/shader_module.hpp>
 #include <terreate/graphics/descriptor_set_layout.hpp>
+#include <terreate/graphics/descriptor_pool.hpp>
+#include <terreate/graphics/descriptor_set.hpp>
 #include <terreate/graphics/pipeline_layout.hpp>
 #include <terreate/graphics/compute_pipeline.hpp>
 #include <terreate/graphics/device.hpp>
@@ -704,7 +706,22 @@ int main() {
         descriptor_layout->nativeVkDevice() != VK_NULL_HANDLE ||
         !moved_descriptor_layout.correlatedWith(*device) || !moved_descriptor_layout.configuration())
       return 54;
-    // No descriptor sets or GPU work. Owner dies here, before the borrowed Device.
+    terreate::graphics::DescriptorPoolDescription descriptor_pool_description{
+        1, vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+        {{vk::DescriptorType::eUniformBuffer, 1},
+         {vk::DescriptorType::eCombinedImageSampler, 2}}};
+    auto descriptor_pool = terreate::graphics::createDescriptorPool(*device, descriptor_pool_description);
+    if (!descriptor_pool || !descriptor_pool->correlatedWith(*device) ||
+        !descriptor_pool->configuration() ||
+        descriptor_pool->configuration()->effective != descriptor_pool_description) return 58;
+    auto descriptor_set = descriptor_pool->allocate(moved_descriptor_layout);
+    if (!descriptor_set || !descriptor_set->valid() ||
+        !descriptor_set->correlatedWith(*descriptor_pool) ||
+        descriptor_set->nativeLayout() != moved_descriptor_layout.nativeHandle()) return 59;
+    if (!descriptor_pool->free(*descriptor_set) || descriptor_set->valid() ||
+        !descriptor_pool->reset() ||
+        descriptor_pool->state() != terreate::graphics::DescriptorPoolState::ready) return 60;
+    // Pool and layout die here before Device; no GPU work or implicit waits.
   }
 
   // Exercise installed pipeline factories and observers, not just header

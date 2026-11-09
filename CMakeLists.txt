@@ -638,6 +638,22 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
         "graphics\\.descriptor_set_layout: headless-native=PASS validation-layer=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.descriptor_set_layout.*: (assertion=FAIL|.*BLOCKED|.*SKIP)")
 
+    add_executable(terreate_graphics_descriptor_pool_tests tests/test_graphics_descriptor_pool.cpp)
+    target_link_libraries(terreate_graphics_descriptor_pool_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_descriptor_pool_tests PRIVATE
+      "-Wl,--wrap=vkCreateDescriptorPool" "-Wl,--wrap=vkDestroyDescriptorPool"
+      "-Wl,--wrap=vkAllocateDescriptorSets" "-Wl,--wrap=vkFreeDescriptorSets"
+      "-Wl,--wrap=vkResetDescriptorPool")
+    terreate_configure_target(terreate_graphics_descriptor_pool_tests)
+    add_test(NAME graphics.descriptor_pool.cpu COMMAND terreate_graphics_descriptor_pool_tests cpu)
+    set_tests_properties(graphics.descriptor_pool.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.descriptor_pool\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.descriptor_pool.*: (assertion=FAIL|.*BLOCKED|.*SKIP)")
+    add_test(NAME graphics.descriptor_pool COMMAND terreate_graphics_descriptor_pool_tests gpu)
+    set_tests_properties(graphics.descriptor_pool PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.descriptor_pool: headless-native=PASS validation-layer=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.descriptor_pool.*: (assertion=FAIL|.*BLOCKED|.*SKIP)")
+
     add_executable(terreate_graphics_pipeline_tests tests/test_graphics_pipeline.cpp)
     target_link_libraries(terreate_graphics_pipeline_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_pipeline_tests PRIVATE
