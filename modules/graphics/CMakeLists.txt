@@ -173,6 +173,9 @@ add_library(terreate_graphics STATIC
   include/terreate/graphics/shader_module.hpp
   src/descriptor_set_layout.cpp
   include/terreate/graphics/descriptor_set_layout.hpp
+  src/descriptor_pool.cpp
+  include/terreate/graphics/descriptor_pool.hpp
+  include/terreate/graphics/descriptor_set.hpp
   src/pipeline_layout.cpp
   include/terreate/graphics/pipeline_layout.hpp
   src/compute_pipeline.cpp
