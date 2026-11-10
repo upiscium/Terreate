@@ -23,6 +23,8 @@ std::array<NativeOwner, 16> live_owners{};
 unsigned creation_calls = 0;
 unsigned destruction_calls = 0;
 bool ownership_violation = false;
+bool prerequisite_blocked = false;
+bool assertion_failed = false;
 std::optional<VkResult> injected_failure;
 VkBufferCreateInfo observed_buffer_info{};
 VmaAllocationCreateInfo observed_allocation_info{};
@@ -91,20 +93,44 @@ static_assert(!std::is_copy_assignable_v<Buffer>);
 static_assert(std::movable<Buffer>);
 static_assert(std::is_nothrow_move_constructible_v<Buffer>);
 static_assert(std::is_nothrow_move_assignable_v<Buffer>);
+static_assert(noexcept(std::declval<const Buffer &>().nativeDevice()));
+static_assert(
+    noexcept(std::declval<const Buffer &>().correlatedWith(std::declval<const Device &>())));
 
 [[nodiscard]] bool check(bool condition, const char *message) {
   if (!condition) {
+    assertion_failed = true;
     std::fprintf(stderr, "graphics.buffer: assertion=FAIL: %s\n", message);
   }
   return condition;
 }
 
 [[nodiscard]] bool blocked(const char *message) {
+  prerequisite_blocked = true;
   std::fprintf(stderr, "graphics.buffer: validation=BLOCKED: %s\n", message);
   return false;
 }
 
-[[nodiscard]] bool test_buffers(Allocator &allocator) {
+[[nodiscard]] bool blocked(const char *message, const terreate::Error &error) {
+  std::fprintf(stderr, "graphics.buffer: prerequisite error category=%s code=%d\n",
+               error.code().category().name(), error.code().value());
+  return blocked(message);
+}
+
+enum class TestOutcome : std::uint8_t { pass, fail, blocked };
+
+[[nodiscard]] TestOutcome classifyOutcome(bool passed, bool blocked_setup,
+                                          bool failed_assertion) noexcept {
+  if (passed)
+    return TestOutcome::pass;
+  if (failed_assertion || !blocked_setup)
+    return TestOutcome::fail;
+  return TestOutcome::blocked;
+}
+
+[[nodiscard]] bool test_buffers(const Instance &instance, const PhysicalDeviceCandidate &candidate,
+                                Device &device, const DevicePlan &device_plan,
+                                Allocator &allocator) {
   bool passed = true;
   BufferDescription request;
   request.size = 256;
@@ -145,11 +171,15 @@ static_assert(std::is_nothrow_move_assignable_v<Buffer>);
     auto first = createBuffer(allocator, request);
     auto second = createBuffer(allocator, request);
     if (!first || !second) {
-      return blocked("real host-visible Buffer allocation unavailable");
+      return check(false, "subject Buffer creation failed after Vulkan prerequisites");
     }
     passed &= check(first->valid() && second->valid() && first->nativeHandle() != vk::Buffer{} &&
                         first->nativeHandle() != second->nativeHandle(),
                     "explicit creation did not produce distinct native owners");
+    passed &= check(first->nativeDevice() == device.nativeHandle() &&
+                        second->nativeDevice() == device.nativeHandle() &&
+                        first->correlatedWith(device) && second->correlatedWith(device),
+                    "Buffer native provenance differs from owning logical Device");
     const auto *configuration = first->configuration();
     if (!check(configuration != nullptr, "live Buffer has no configuration")) {
       return false;
@@ -197,7 +227,7 @@ static_assert(std::is_nothrow_move_assignable_v<Buffer>);
     // All accesses below happen while the owner and every parent remain live.
     auto mapping = first->map();
     if (!mapping) {
-      return blocked("genuine host-visible mapping unavailable");
+      return check(false, "subject Buffer host-visible mapping failed after creation");
     }
     auto *bytes = static_cast<unsigned char *>(*mapping);
     if (!check(bytes != nullptr, "successful map returned null")) {
@@ -235,21 +265,23 @@ static_assert(std::is_nothrow_move_assignable_v<Buffer>);
     // view after the move; the new owner must be able to release that mapping.
     const auto handle = first->nativeHandle();
     Buffer moved = std::move(*first);
-    passed &=
-        check(!first->valid() && first->nativeHandle() == vk::Buffer{} &&
-                  first->nativeAllocation() == VK_NULL_HANDLE &&
-                  first->configuration() == nullptr && moved.nativeHandle() == handle &&
-                  moved.nativeAllocation() == allocation && destruction_calls == before_destroy,
-              "move construction duplicated/destroyed coupled ownership");
+    passed &= check(!first->valid() && first->nativeHandle() == vk::Buffer{} &&
+                        first->nativeAllocation() == VK_NULL_HANDLE &&
+                        first->nativeDevice() == vk::Device{} && !first->correlatedWith(device) &&
+                        first->configuration() == nullptr && moved.nativeHandle() == handle &&
+                        moved.correlatedWith(device) && moved.nativeAllocation() == allocation &&
+                        destruction_calls == before_destroy,
+                    "move construction duplicated/destroyed coupled ownership");
     passed &= check(moved.unmap().has_value(), "mapped ownership did not follow move construction");
     passed &= check(!first->map() && !first->unmap() && !first->flush() && !first->invalidate(),
                     "moved-from operations did not return errors");
     *second = std::move(moved);
     // Moved-from observations/operations are explicitly part of the contract.
     // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
-    passed &= check(!moved.valid() && second->nativeHandle() == handle &&
+    passed &= check(!moved.valid() && moved.nativeDevice() == vk::Device{} &&
+                        !moved.correlatedWith(device) && second->nativeHandle() == handle &&
                         second->nativeAllocation() == allocation &&
-                        destruction_calls == before_destroy + 1,
+                        second->correlatedWith(device) && destruction_calls == before_destroy + 1,
                     "move assignment failed to destroy only the displaced owner");
   }
   VmaTotalStatistics after{};
@@ -286,6 +318,75 @@ static_assert(std::is_nothrow_move_assignable_v<Buffer>);
     std::puts("graphics.buffer: non-host-visible=UNAVAILABLE (optional memory topology)");
   }
   passed &= check(!ownership_violation, "native Buffer/allocation ownership pair mismatch");
+  // Distinct VMA allocators can share one logical Device. Conversely, another
+  // logical Device created from the same physical GPU must not correlate.
+  const auto before_provenance_destroy = destruction_calls;
+  {
+    auto sibling_allocator = createAllocator(instance, candidate, device);
+    if (!sibling_allocator) {
+      return blocked("sibling Allocator unavailable for Device provenance",
+                     sibling_allocator.error());
+    }
+    auto primary = createBuffer(allocator, request);
+    auto sibling = createBuffer(*sibling_allocator, request);
+    if (!check(primary.has_value() && sibling.has_value(),
+               "Buffer creation across same-Device allocators failed")) {
+      return false;
+    }
+    VmaAllocatorInfo primary_origin{};
+    VmaAllocatorInfo sibling_origin{};
+    vmaGetAllocatorInfo(allocator.nativeHandle(), &primary_origin);
+    vmaGetAllocatorInfo(sibling_allocator->nativeHandle(), &sibling_origin);
+    passed &= check(primary->nativeAllocator() != sibling->nativeAllocator() &&
+                        primary_origin.device == sibling_origin.device &&
+                        primary->nativeDevice() == device.nativeHandle() &&
+                        sibling->nativeDevice() == device.nativeHandle() &&
+                        primary->correlatedWith(device) && sibling->correlatedWith(device),
+                    "same-Device provenance was mistaken for allocator identity");
+
+    const auto native_device = device.nativeHandle();
+    Device moved_device = std::move(device);
+    // A wrapper move preserves the native Device used by live VMA children.
+    // Intentionally test the moved-from Device contract.
+    // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+    passed &= check(
+        !device.valid() && !primary->correlatedWith(device) && !sibling->correlatedWith(device) &&
+            moved_device.nativeHandle() == native_device && primary->correlatedWith(moved_device) &&
+            sibling->correlatedWith(moved_device),
+        "Device wrapper move changed native Buffer provenance");
+    // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+    device = std::move(moved_device);
+    // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+    passed &= check(!moved_device.valid() && primary->correlatedWith(device) &&
+                        sibling->correlatedWith(device),
+                    "Device wrapper move-back did not preserve Buffer correlation");
+
+    auto foreign_device = createDevice(instance, device_plan);
+    if (!foreign_device) {
+      return blocked("second logical Device unavailable for Device provenance",
+                     foreign_device.error());
+    }
+    passed &= check(foreign_device->nativeHandle() != device.nativeHandle(),
+                    "same-physical-GPU logical Devices unexpectedly share a handle");
+    auto foreign_allocator = createAllocator(instance, candidate, *foreign_device);
+    if (!foreign_allocator) {
+      return blocked("foreign Allocator unavailable for Device provenance",
+                     foreign_allocator.error());
+    }
+    auto foreign = createBuffer(*foreign_allocator, request);
+    if (!check(foreign.has_value(), "foreign logical Device Buffer creation failed")) {
+      return false;
+    }
+    passed &=
+        check(foreign->nativeDevice() == foreign_device->nativeHandle() &&
+                  foreign->correlatedWith(*foreign_device) && !foreign->correlatedWith(device) &&
+                  !primary->correlatedWith(*foreign_device) &&
+                  !sibling->correlatedWith(*foreign_device) &&
+                  primary->nativeDevice() != foreign->nativeDevice(),
+              "cross-Device provenance was not rejected");
+  }
+  passed &= check(!ownership_violation && destruction_calls == before_provenance_destroy + 3,
+                  "provenance fixture lost or double-destroyed Buffer owners");
   // Moving a parent is only exercised after every child and mapping is gone.
   // A borrowed, moved-from allocator must be rejected before reaching VMA.
   Allocator moved_allocator = std::move(allocator);
@@ -362,19 +463,33 @@ static_assert(std::is_nothrow_move_assignable_v<Buffer>);
     // the callee before Allocator, Device, inventory and Instance die here.
     // A CPU move/destructor cannot establish completion of application GPU use;
     // callers must establish that separately. No waitIdle/retirement is needed.
-    return test_buffers(*allocator);
+    return test_buffers(*instance, candidate, *device, *device_plan, *allocator);
   }
   return blocked("no usable device with essential host-visible memory");
 }
 } // namespace
 
 int main() {
-  const bool passed = test_headless();
-  if (passed) {
+  // Deterministic classification matrix, including failure-before-blockage.
+  // This runs even when Vulkan prerequisites are unavailable.
+  const bool classification_ok =
+      check(classifyOutcome(true, false, false) == TestOutcome::pass &&
+                classifyOutcome(false, true, false) == TestOutcome::blocked &&
+                classifyOutcome(false, false, true) == TestOutcome::fail &&
+                classifyOutcome(false, true, true) == TestOutcome::fail,
+            "FAIL/BLOCKED outcome precedence is incorrect");
+  const bool native_passed = test_headless();
+  const bool passed = classification_ok && native_passed;
+  switch (classifyOutcome(passed, prerequisite_blocked, assertion_failed)) {
+  case TestOutcome::pass:
     std::puts("graphics.buffer: headless-buffer=PASS");
-  } else {
-    std::fputs("graphics.buffer: headless-buffer=BLOCKED; native coverage not established\n",
-               stderr);
+    break;
+  case TestOutcome::blocked:
+    std::fputs("graphics.buffer: headless-buffer=BLOCKED; prerequisite unavailable\n", stderr);
+    break;
+  case TestOutcome::fail:
+    std::fputs("graphics.buffer: headless-buffer=FAIL; assertion=FAIL\n", stderr);
+    break;
   }
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

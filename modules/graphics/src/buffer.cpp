@@ -50,6 +50,7 @@ std::error_code make_error_code(BufferError error) noexcept {
 
 struct Buffer::Impl {
   VmaAllocator allocator = VK_NULL_HANDLE;
+  VkDevice device = VK_NULL_HANDLE;
   VkBuffer buffer = VK_NULL_HANDLE;
   VmaAllocation allocation = VK_NULL_HANDLE;
   BufferConfiguration configuration{};
@@ -79,6 +80,12 @@ VmaAllocator Buffer::nativeAllocator() const noexcept {
 }
 VmaAllocation Buffer::nativeAllocation() const noexcept {
   return implementation_ ? implementation_->allocation : VK_NULL_HANDLE;
+}
+vk::Device Buffer::nativeDevice() const noexcept {
+  return vk::Device{implementation_ ? implementation_->device : VK_NULL_HANDLE};
+}
+bool Buffer::correlatedWith(const Device &device) const noexcept {
+  return valid() && device.valid() && nativeDevice() == device.nativeHandle();
 }
 const BufferConfiguration *Buffer::configuration() const noexcept {
   return implementation_ ? &implementation_->configuration : nullptr;
@@ -217,8 +224,13 @@ auto createBuffer(const Allocator &allocator, const BufferDescription &descripti
       ~supported_properties)
     return failure(BufferError::unsupported_configuration, "createBuffer",
                    "unsupported memory properties");
+  // VMA exposes the actual logical Device used to construct the allocator.
+  // Cache native identity, never an address of a movable Device wrapper.
+  VmaAllocatorInfo parent{};
+  vmaGetAllocatorInfo(allocator.nativeHandle(), &parent);
   auto impl = std::make_unique<Buffer::Impl>();
   impl->allocator = allocator.nativeHandle();
+  impl->device = parent.device;
   impl->configuration = {description, description.size, description.usage, allocation};
   VkBufferCreateInfo buffer_info{};
   buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
