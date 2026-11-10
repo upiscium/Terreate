@@ -654,6 +654,20 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.descriptor_pool: headless-native=PASS validation-layer=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.descriptor_pool.*: (assertion=FAIL|.*BLOCKED|.*SKIP)")
 
+    add_executable(terreate_graphics_descriptor_write_tests tests/test_graphics_descriptor_write.cpp)
+    target_link_libraries(terreate_graphics_descriptor_write_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_descriptor_write_tests PRIVATE
+      "-Wl,--wrap=vkUpdateDescriptorSets")
+    terreate_configure_target(terreate_graphics_descriptor_write_tests)
+    add_test(NAME graphics.descriptor_write.cpu COMMAND terreate_graphics_descriptor_write_tests cpu)
+    set_tests_properties(graphics.descriptor_write.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.descriptor_write\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.descriptor_write.*: (assertion=FAIL|.*BLOCKED|.*SKIP)")
+    add_test(NAME graphics.descriptor_write COMMAND terreate_graphics_descriptor_write_tests gpu)
+    set_tests_properties(graphics.descriptor_write PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.descriptor_write: headless-native=PASS validation-layer=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.descriptor_write.*: (assertion=FAIL|.*BLOCKED|.*SKIP)")
+
     add_executable(terreate_graphics_pipeline_tests tests/test_graphics_pipeline.cpp)
     target_link_libraries(terreate_graphics_pipeline_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_pipeline_tests PRIVATE
