@@ -66,6 +66,10 @@ public:
   [[nodiscard]] VkBuffer nativeBuffer() const noexcept;
   [[nodiscard]] VmaAllocator nativeAllocator() const noexcept;
   [[nodiscard]] VmaAllocation nativeAllocation() const noexcept;
+  /// Borrowed native logical Device identity captured from the allocating VMA.
+  [[nodiscard]] vk::Device nativeDevice() const noexcept;
+  /// Compares native Device identities, never parent lifetime or wrapper addresses.
+  [[nodiscard]] bool correlatedWith(const Device &device) const noexcept;
   [[nodiscard]] const BufferConfiguration *configuration() const noexcept;
   [[nodiscard]] terreate::Result<BufferAllocationObservation> allocationInfo() const;
   [[nodiscard]] bool mapped() const noexcept;

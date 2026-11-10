@@ -52,13 +52,23 @@ Self-move follows `unique_ptr` ownership semantics and does not duplicate owners
 
 `nativeHandle()` returns borrowed `vk::Buffer`; `nativeBuffer()` returns `VkBuffer`;
 `nativeAllocation()` and `nativeAllocator()` expose the borrowed VMA handles.
+`nativeDevice()` exposes the borrowed logical `vk::Device` from the actual
+`VmaAllocatorInfo.device` used to construct the allocator. This identity is
+cached in the move-only Buffer PImpl during construction, not inferred from an
+opaque allocator handle or the address of a movable Device wrapper.
+`correlatedWith(const Device&)` requires valid Buffer and Device wrappers
+and equal native Device handles; it is not a parent-liveness check. Two
+moved-from/null handles cannot correlate. Buffers from different VMA allocators
+on one logical Device correlate; Buffers on different logical Devices do not,
+even when the Devices use the same physical GPU.
 `allocationInfo()` provides allocation/native-memory escape hatches, not ownership.
 Do not destroy/free those handles, separately destroy the buffer, change its binding,
 defragment the allocation, or use native map/unmap to alter wrapper map state.
 Native access does not authorize concurrent operations or extend any lifetime.
 
-Moved-from values are invalid: handles/pointers are null, `mapped()` and `valid()`
-are false, `configuration()` is null, and fallible operations return `invalid_buffer`
+Moved-from values are invalid: handles/pointers including `nativeDevice()` are null,
+`mapped()`, `correlatedWith()` and `valid()` are false,
+`configuration()` is null, and fallible operations return `invalid_buffer`
 without entering VMA. Configuration borrows should be reacquired after moves.
 
 The native allocator and its Device/Instance parents must outlive every Buffer and
@@ -103,6 +113,11 @@ operations as required by VMA. Cache maintenance can cover atom-rounded bytes; o
 the associated synchronization constraints, not merely the requested byte interval.
 
 ## Failures and scope boundaries
+
+This B1-P provenance addition does not update DescriptorSets, bind descriptors,
+retain resource references, change Buffer ownership or infer application
+semantics. The caller retains full responsibility for native parent and GPU-use
+lifetimes even when native Device identities match.
 
 Semantic failures use `BufferError` in `terreate.graphics.buffer`, with Core
 `Error` operation/context. Failed VMA create/map/flush/invalidate calls preserve the
