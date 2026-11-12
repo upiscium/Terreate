@@ -89,6 +89,7 @@ caller vector nor the temporary native array is retained by pointer.
 
 For example, with a live application-owned `Device &device`:
 
+<!-- {% raw %} -->
 ```cpp
 terreate::graphics::DescriptorSetLayoutDescription description{
     {{7, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eVertex},
@@ -104,6 +105,7 @@ if (!layout) {
   // Do not destroy native. Keep device alive until this owner is destroyed.
 }
 ```
+<!-- {% endraw %} -->
 
 ## Ownership, parent correlation, and failure policy
 
@@ -230,6 +232,7 @@ are **borrowed escape hatches**, not permission to call direct
 unsupported. All pool host external synchronization and GPU completion before
 free, reset, destruction or move displacement remain application-owned.
 
+<!-- {% raw %} -->
 ```cpp
 using namespace terreate::graphics;
 // device and layout are live, same-Device objects; no GPU use in this example.
@@ -248,6 +251,7 @@ else {
   if (!reset) { /* handle reset.error() */ }
 } // pool destroyed before Device; no implicit waits
 ```
+<!-- {% endraw %} -->
 
 `graphics.descriptor_pool.cpu` covers structural validation and count endpoints.
 `graphics.descriptor_pool` uses real headless Vulkan, required validation/debug
@@ -389,6 +393,7 @@ handle re-recording. The helper neither inspects nor changes command-buffer stat
 
 For a live matching layout/set with a uniform binding 3 and uniform-usage Buffer:
 
+<!-- {% raw %} -->
 ```cpp
 using namespace terreate::graphics;
 const std::array<DescriptorWriteDescription, 1> writes{{
@@ -398,6 +403,7 @@ auto updated = updateDescriptorSet(device, layout, set, writes);
 if (!updated) { /* handle updated.error(); no native update occurred */ }
 // No submit/wait/ownership transfer; keep native resources alive for later use.
 ```
+<!-- {% endraw %} -->
 
 ### B1-A test and installed-package boundaries
 
