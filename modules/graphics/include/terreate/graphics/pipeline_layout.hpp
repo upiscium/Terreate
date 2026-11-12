@@ -4,9 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <system_error>
 #include <vector>
 
+#include <terreate/graphics/descriptor_set_layout.hpp>
 #include <terreate/graphics/device.hpp>
 
 namespace terreate::graphics {
@@ -15,8 +17,8 @@ namespace terreate::graphics {
 /// Extension stages and eAll are deliberately not accepted.
 inline constexpr std::size_t max_pipeline_layout_push_constant_ranges = 6;
 
-/// Explicit descriptor-free layout: setLayoutCount is always zero. This does
-/// not allocate descriptors or infer a layout from a shader. Range order and
+/// Pointer-free push constant description. Set layouts are separate call inputs.
+/// Does not allocate descriptors or infer a layout from a shader. Range order and
 /// masks are preserved; overlapping bytes are allowed only for disjoint stages.
 struct PipelineLayoutDescription {
   std::vector<vk::PushConstantRange> push_constant_ranges{};
@@ -27,6 +29,11 @@ struct PipelineLayoutConfiguration {
   PipelineLayoutDescription effective{};
   /// Capability evidence from the creating Device's retained DevicePlan.
   std::uint32_t max_push_constants_size = 0;
+  /// Ordered observation-only identities, potentially stale after creation.
+  /// These handles neither retain layouts nor permit their destruction.
+  std::vector<VkDescriptorSetLayout> set_layout_handles{};
+  std::vector<DescriptorSetLayoutDescription> set_layout_descriptions{};
+  vk::PhysicalDeviceLimits limits{};
 };
 
 enum class PipelineLayoutError : std::uint8_t {
@@ -35,6 +42,8 @@ enum class PipelineLayoutError : std::uint8_t {
   unsupported_configuration,
   native_null_handle,
   allocation_failed,
+  invalid_set_layout,
+  device_mismatch,
 };
 
 [[nodiscard]] const std::error_category &pipeline_layout_error_category() noexcept;
@@ -45,6 +54,12 @@ enum class PipelineLayoutError : std::uint8_t {
 [[nodiscard]] auto validatePipelineLayoutDescription(const PipelineLayoutDescription &description,
                                                      std::uint32_t max_push_constants_size)
     -> terreate::Result<void>;
+
+/// CPU-only aggregate A0 accounting against synthetic or retained limits.
+/// Each description is one set, including empty/repeated descriptions.
+[[nodiscard]] auto
+validatePipelineLayoutSetLayouts(std::span<const DescriptorSetLayoutDescription> set_layouts,
+                                 const vk::PhysicalDeviceLimits &limits) -> terreate::Result<void>;
 
 /// Exclusive owner of one VkPipelineLayout. Device is borrowed by native handle
 /// and must outlive this owner, including move-assignment displacement. Moving
@@ -76,12 +91,23 @@ private:
   std::unique_ptr<Impl> implementation_;
   friend auto createPipelineLayout(const Device &, const PipelineLayoutDescription &)
       -> terreate::Result<PipelineLayout>;
+  friend auto createPipelineLayout(const Device &, std::span<const DescriptorSetLayout *const>,
+                                   const PipelineLayoutDescription &)
+      -> terreate::Result<PipelineLayout>;
 };
 
 /// Creates a descriptor-free layout with precisely the requested ranges.
 /// Description is copied, not retained by reference. Native VkResult failures
 /// are preserved; success with a null handle is an error.
 [[nodiscard]] auto createPipelineLayout(const Device &device,
+                                        const PipelineLayoutDescription &description)
+    -> terreate::Result<PipelineLayout>;
+
+/// Span index is the set number; repeated layouts are legal, null holes are not.
+/// Wrappers/native layouts are borrowed only through this synchronous call.
+/// No pointers are retained. Device must outlive the resulting PipelineLayout.
+[[nodiscard]] auto createPipelineLayout(const Device &device,
+                                        std::span<const DescriptorSetLayout *const> set_layouts,
                                         const PipelineLayoutDescription &description)
     -> terreate::Result<PipelineLayout>;
 

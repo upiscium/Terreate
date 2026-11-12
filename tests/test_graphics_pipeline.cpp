@@ -1,5 +1,7 @@
 #include <terreate/graphics/compute_pipeline.hpp>
+#include <terreate/graphics/descriptor_set_layout.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <concepts>
@@ -10,10 +12,12 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace {
 using namespace terreate::graphics;
@@ -41,6 +45,16 @@ static_assert(!std::is_copy_assignable_v<PipelineLayout>);
 static_assert(std::is_nothrow_move_constructible_v<PipelineLayout>);
 static_assert(std::is_nothrow_move_assignable_v<PipelineLayout>);
 static_assert(std::is_nothrow_destructible_v<PipelineLayout>);
+using OrderedLayoutFactory = terreate::Result<PipelineLayout> (*)(
+    const Device &, std::span<const DescriptorSetLayout *const>, const PipelineLayoutDescription &);
+using EmptyLayoutFactory = terreate::Result<PipelineLayout> (*)(const Device &,
+                                                                const PipelineLayoutDescription &);
+static_assert(std::same_as<decltype(static_cast<OrderedLayoutFactory>(&createPipelineLayout)),
+                           OrderedLayoutFactory>);
+static_assert(std::same_as<decltype(static_cast<EmptyLayoutFactory>(&createPipelineLayout)),
+                           EmptyLayoutFactory>);
+static_assert(std::is_copy_constructible_v<PipelineLayoutDescription>);
+static_assert(std::is_copy_constructible_v<PipelineLayoutConfiguration>);
 static_assert(!std::default_initializable<ComputePipeline>);
 static_assert(!std::copy_constructible<ComputePipeline>);
 static_assert(!std::is_copy_assignable_v<ComputePipeline>);
@@ -125,6 +139,7 @@ struct LayoutObservation {
   VkDevice device = VK_NULL_HANDLE;
   bool exact_header = false;
   bool zero_descriptors = false;
+  std::vector<VkDescriptorSetLayout> sets;
   bool range_pointer_matches_count = false;
   std::uint32_t range_count = 0;
   std::array<VkPushConstantRange, max_pipeline_layout_push_constant_ranges> ranges{};
@@ -186,6 +201,8 @@ extern "C" VkResult __wrap_vkCreatePipelineLayout(VkDevice device,
   observed_layout.exact_header = info->sType == VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO &&
                                  !info->pNext && info->flags == 0 && !alloc;
   observed_layout.zero_descriptors = info->setLayoutCount == 0 && !info->pSetLayouts;
+  if (info->pSetLayouts)
+    observed_layout.sets.assign(info->pSetLayouts, info->pSetLayouts + info->setLayoutCount);
   observed_layout.range_count = info->pushConstantRangeCount;
   observed_layout.range_pointer_matches_count =
       (info->pushConstantRangeCount == 0) == (info->pPushConstantRanges == nullptr);
@@ -307,8 +324,98 @@ auto invalidEntries() {
 
 bool cpuTest() {
   bool passed = true;
+  const std::error_code invalid_set = PipelineLayoutError::invalid_set_layout;
+  const std::error_code mismatch = PipelineLayoutError::device_mismatch;
+  passed &= check(invalid_set.value() != 0 && mismatch.value() != 0 && invalid_set != mismatch &&
+                      invalid_set.category() == pipeline_layout_error_category() &&
+                      mismatch.category() == pipeline_layout_error_category(),
+                  "set-layout errors are distinct typed pipeline-layout errors");
+  // Exercise the production aggregate validator with genuinely small budgets,
+  // then UINT32_MAX endpoints to expose unchecked addition/wraparound.
+  using Limit = std::uint32_t vk::PhysicalDeviceLimits::*;
+  const std::array<Limit, 13> budgets{
+      &vk::PhysicalDeviceLimits::maxDescriptorSetSamplers,
+      &vk::PhysicalDeviceLimits::maxDescriptorSetUniformBuffers,
+      &vk::PhysicalDeviceLimits::maxDescriptorSetUniformBuffersDynamic,
+      &vk::PhysicalDeviceLimits::maxDescriptorSetStorageBuffers,
+      &vk::PhysicalDeviceLimits::maxDescriptorSetStorageBuffersDynamic,
+      &vk::PhysicalDeviceLimits::maxDescriptorSetSampledImages,
+      &vk::PhysicalDeviceLimits::maxDescriptorSetStorageImages,
+      &vk::PhysicalDeviceLimits::maxPerStageDescriptorSamplers,
+      &vk::PhysicalDeviceLimits::maxPerStageDescriptorUniformBuffers,
+      &vk::PhysicalDeviceLimits::maxPerStageDescriptorStorageBuffers,
+      &vk::PhysicalDeviceLimits::maxPerStageDescriptorSampledImages,
+      &vk::PhysicalDeviceLimits::maxPerStageDescriptorStorageImages,
+      &vk::PhysicalDeviceLimits::maxPerStageResources};
+  const std::array types{
+      vk::DescriptorType::eCombinedImageSampler, vk::DescriptorType::eUniformBufferDynamic,
+      vk::DescriptorType::eUniformBufferDynamic, vk::DescriptorType::eStorageBufferDynamic,
+      vk::DescriptorType::eStorageBufferDynamic, vk::DescriptorType::eCombinedImageSampler,
+      vk::DescriptorType::eStorageImage,         vk::DescriptorType::eCombinedImageSampler,
+      vk::DescriptorType::eUniformBufferDynamic, vk::DescriptorType::eStorageBufferDynamic,
+      vk::DescriptorType::eCombinedImageSampler, vk::DescriptorType::eStorageImage,
+      vk::DescriptorType::eCombinedImageSampler};
+  for (std::size_t index = 0; index < budgets.size(); ++index) {
+    for (const auto count : {std::uint32_t{2}, std::numeric_limits<std::uint32_t>::max()}) {
+      vk::PhysicalDeviceLimits limits{};
+      limits.maxBoundDescriptorSets = 2;
+      for (auto member : budgets)
+        limits.*member = std::numeric_limits<std::uint32_t>::max();
+      limits.*budgets[index] = count;
+      DescriptorSetLayoutDescription one{
+          {{0, types[index], count, vk::ShaderStageFlagBits::eCompute}}};
+      passed &= check(validateDescriptorSetLayoutDescription(one, limits).has_value(),
+                      "individual set fits exact synthetic budget");
+      const std::array single{one};
+      passed &= check(validatePipelineLayoutSetLayouts(single, limits).has_value(),
+                      "pipeline aggregate validator accepts exact single-set endpoint");
+      auto extra = one;
+      extra.bindings[0].descriptor_count = 1;
+      const std::array combined{one, extra};
+      passed &= check(hasError(validatePipelineLayoutSetLayouts(combined, limits),
+                               PipelineLayoutError::unsupported_configuration),
+                      "aggregate exceeds each set/stage/resource budget without uint32 wrap");
+    }
+  }
   passed &= check(validatePipelineLayoutDescription({}, 0).has_value(),
                   "explicit empty layout requires no push constant capability");
+  vk::PhysicalDeviceLimits small{};
+  for (auto member : budgets)
+    small.*member = 4;
+  small.maxBoundDescriptorSets = 2;
+  for (const auto dynamic :
+       {vk::DescriptorType::eUniformBufferDynamic, vk::DescriptorType::eStorageBufferDynamic}) {
+    const auto ordinary = dynamic == vk::DescriptorType::eUniformBufferDynamic
+                              ? vk::DescriptorType::eUniformBuffer
+                              : vk::DescriptorType::eStorageBuffer;
+    std::array<DescriptorSetLayoutDescription, 2> sets{
+        DescriptorSetLayoutDescription{{{0, ordinary, 3, vk::ShaderStageFlagBits::eCompute}}},
+        DescriptorSetLayoutDescription{{{0, dynamic, 1, vk::ShaderStageFlagBits::eCompute}}}};
+    passed &= check(validatePipelineLayoutSetLayouts(sets, small).has_value(),
+                    "ordinary plus dynamic descriptors share exact aggregate endpoint");
+    sets[1].bindings[0].descriptor_count = 2;
+    passed &= check(hasError(validatePipelineLayoutSetLayouts(sets, small),
+                             PipelineLayoutError::unsupported_configuration),
+                    "ordinary plus dynamic descriptors exceed shared ordinary budget");
+  }
+  std::array<DescriptorSetLayoutDescription, 2> stages{
+      DescriptorSetLayoutDescription{
+          {{0, vk::DescriptorType::eStorageImage, 2, vk::ShaderStageFlagBits::eVertex}}},
+      DescriptorSetLayoutDescription{
+          {{0, vk::DescriptorType::eStorageImage, 2, vk::ShaderStageFlagBits::eFragment}}}};
+  small.maxPerStageDescriptorStorageImages = 2;
+  small.maxPerStageResources = 2;
+  passed &= check(validatePipelineLayoutSetLayouts(stages, small).has_value(),
+                  "disjoint stages are not added together for per-stage budgets");
+  stages[1].bindings[0].stage_flags = vk::ShaderStageFlagBits::eVertex;
+  passed &= check(hasError(validatePipelineLayoutSetLayouts(stages, small),
+                           PipelineLayoutError::unsupported_configuration),
+                  "same-stage contributions across distinct sets are added");
+  const std::array<DescriptorSetLayoutDescription, 3> empty_sets{};
+  passed &= check(hasError(validatePipelineLayoutSetLayouts(empty_sets, small),
+                           PipelineLayoutError::unsupported_configuration) &&
+                      validatePipelineLayoutSetLayouts({}, {}).has_value(),
+                  "empty sets consume set slots; no sets need no descriptor capabilities");
   for (const auto &description : invalidLayouts())
     passed &= check(hasError(validatePipelineLayoutDescription(description, 128),
                              PipelineLayoutError::invalid_description),
@@ -474,6 +581,102 @@ bool layoutTest(const Device &device, const Device &moved_from, const Device &ot
   passed &= check(layouts.creates == creates_before + 4 &&
                       layouts.destroys == destroys_before + 2 && layouts.empty(),
                   "all real layouts destroyed exactly once without submission or waits");
+  return passed && failures == 0;
+}
+
+bool descriptorLayoutTest(Device &device, const Device &moved_from, Device &other) {
+  const auto &limits = device.plan()->capabilities().properties.limits;
+  DescriptorSetLayoutDescription a{
+      {{7, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eCompute}}};
+  DescriptorSetLayoutDescription b{
+      {{2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eFragment}}};
+  auto first = createDescriptorSetLayout(device, a);
+  auto second = createDescriptorSetLayout(device, b);
+  auto foreign = createDescriptorSetLayout(other, a);
+  if (!check(first && second && foreign, "real descriptor layouts on two logical Devices"))
+    return false;
+  bool passed = true;
+  const PipelineLayoutDescription ranges{{{vk::ShaderStageFlagBits::eCompute, 0, 16}}};
+  std::array<const DescriptorSetLayout *, 3> ordered{&*second, &*first, &*second};
+  auto pipeline = createPipelineLayout(device, ordered, ranges);
+  if (!check(pipeline.has_value(), "multiple ordered descriptor sets plus push constants"))
+    return false;
+  passed &= check(observed_layout.exact_header &&
+                      observed_layout.sets ==
+                          std::vector<VkDescriptorSetLayout>{second->nativeDescriptorSetLayout(),
+                                                             first->nativeDescriptorSetLayout(),
+                                                             second->nativeDescriptorSetLayout()} &&
+                      observed_layout.range_count == 1 && observed_layout.ranges[0].size == 16,
+                  "native set indices preserve caller order and repeated layout handles");
+  const auto snapshot = *pipeline->configuration();
+  passed &= check(snapshot.set_layout_handles ==
+                          std::vector<VkDescriptorSetLayout>{second->nativeDescriptorSetLayout(),
+                                                             first->nativeDescriptorSetLayout(),
+                                                             second->nativeDescriptorSetLayout()} &&
+                      snapshot.set_layout_descriptions.size() == 3 && snapshot.limits == limits &&
+                      snapshot.requested.push_constant_ranges == ranges.push_constant_ranges &&
+                      snapshot.effective.push_constant_ranges == ranges.push_constant_ranges,
+                  "configuration owns ordered observation-only handles and retained limits");
+  if (snapshot.set_layout_descriptions.size() == 3)
+    passed &= check(snapshot.set_layout_descriptions[0].bindings == b.bindings &&
+                        snapshot.set_layout_descriptions[1].bindings == a.bindings &&
+                        snapshot.set_layout_descriptions[2].bindings == b.bindings,
+                    "snapshot copies every effective description including repeated sets");
+  ordered.fill(nullptr);
+  a.bindings.clear();
+  b.bindings.clear();
+  DescriptorSetLayout moved = std::move(*first);
+  passed &= check(pipeline->configuration()->set_layout_handles == snapshot.set_layout_handles &&
+                      pipeline->configuration()->set_layout_descriptions.size() == 3 &&
+                      pipeline->configuration()->set_layout_descriptions[1].bindings ==
+                          moved.configuration()->effective.bindings,
+                  "snapshot is independent of caller pointers, descriptions and wrapper moves");
+  auto zero = createPipelineLayout(device, std::span<const DescriptorSetLayout *const>{}, {});
+  auto legacy = createPipelineLayout(device, {});
+  passed &= check(zero && legacy && observed_layout.zero_descriptors &&
+                      zero->configuration()->set_layout_handles.empty() &&
+                      legacy->configuration()->set_layout_descriptions.empty(),
+                  "explicit empty span and unchanged zero-set overload remain compatible");
+  const auto before = layouts.creates;
+  layouts.forbid_create = true;
+  const std::array<const DescriptorSetLayout *, 1> null_set{nullptr};
+  const std::array<const DescriptorSetLayout *, 1> foreign_set{&*foreign};
+  // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  const std::array<const DescriptorSetLayout *, 1> invalid_set{&*first};
+  passed &= check(hasError(createPipelineLayout(device, invalid_set, {}),
+                           PipelineLayoutError::invalid_set_layout),
+                  "invalid moved-from descriptor layout is rejected");
+  // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  passed &= check(hasError(createPipelineLayout(device, null_set, {}),
+                           PipelineLayoutError::invalid_set_layout) &&
+                      hasError(createPipelineLayout(device, foreign_set, {}),
+                               PipelineLayoutError::device_mismatch) &&
+                      hasError(createPipelineLayout(moved_from, foreign_set, {}),
+                               PipelineLayoutError::invalid_device),
+                  "null, foreign logical Device and invalid parent rejected before Vulkan");
+  const std::vector<const DescriptorSetLayout *> excessive(
+      static_cast<std::size_t>(limits.maxBoundDescriptorSets) + 1, &moved);
+  passed &= check(hasError(createPipelineLayout(device, excessive, {}),
+                           PipelineLayoutError::unsupported_configuration),
+                  "actual maxBoundDescriptorSets rejects excessive caller set count");
+  layouts.forbid_create = false;
+  // A real individually legal layout at the tightest uniform-buffer budget.
+  // Referencing it twice must exceed that budget, even on very capable GPUs.
+  const auto count =
+      std::min({limits.maxDescriptorSetUniformBuffers, limits.maxPerStageDescriptorUniformBuffers,
+                limits.maxPerStageResources});
+  auto full = createDescriptorSetLayout(device, {{{0, vk::DescriptorType::eUniformBuffer, count,
+                                                   vk::ShaderStageFlagBits::eCompute}}});
+  if (!check(full.has_value(), "real full-budget descriptor layout prerequisite"))
+    return false;
+  layouts.forbid_create = true;
+  const std::array<const DescriptorSetLayout *, 2> aggregate{&*full, &*full};
+  passed &=
+      check(hasError(createPipelineLayout(device, aggregate, {}),
+                     PipelineLayoutError::unsupported_configuration) &&
+                layouts.creates == before,
+            "individually valid repeated sets exceed aggregate DevicePlan limits before Vulkan");
+  layouts.forbid_create = false;
   return passed && failures == 0;
 }
 
@@ -661,7 +864,8 @@ int exerciseDevices(Instance &instance, bool compute) {
               "existing child follows native Device ownership through a wrapper move");
       }
       const bool passed = compute ? computeTest(moved_device, *device, *other)
-                                  : layoutTest(moved_device, *device, *other);
+                                  : (layoutTest(moved_device, *device, *other) &&
+                                     descriptorLayoutTest(moved_device, *device, *other));
       // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
       verifyAndCleanNativeObjects();
       return passed && failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
@@ -701,8 +905,8 @@ int nativeTest(bool compute) {
     has_validation |= layer == "VK_LAYER_KHRONOS_validation";
   for (const auto &extension : caps->available_extensions)
     has_debug |= extension == VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
-  if (has_validation && !has_debug)
-    return blocked("Validation Layer available but Debug Utils unavailable");
+  if (!has_validation || !has_debug)
+    return blocked("Validation Layer and Debug Utils are required");
   InstanceDescription description;
   description.api_version = VK_API_VERSION_1_3;
   description.optional_layers = {"VK_LAYER_KHRONOS_validation"};
@@ -733,10 +937,7 @@ int nativeTest(bool compute) {
   if (!check(recorder.warnings_or_errors.load(std::memory_order_relaxed) == 0,
              "no real Vulkan Validation Layer warnings/errors, including teardown"))
     return EXIT_FAILURE;
-  if (has_validation)
-    std::printf("%s: validation-layer=PASS\n", test_name);
-  else
-    std::printf("%s: validation-layer=SKIP reason=layer-unavailable\n", test_name);
+  std::printf("%s: validation-layer=PASS\n", test_name);
   if (failures != 0)
     return EXIT_FAILURE;
   std::printf("%s: headless-native=PASS\n", test_name);
