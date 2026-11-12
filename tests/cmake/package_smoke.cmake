@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|pipeline_layout|compute_pipeline|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|pipeline_layout|compute_pipeline|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set pipeline_layout compute_pipeline submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write pipeline_layout compute_pipeline submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -197,6 +197,12 @@ set_target_properties(package_consumer PROPERTIES
   if(NOT _run_result EQUAL 0)
     message(FATAL_ERROR
       "${name} consumer failed at runtime\n"
+      "${_run_output}\n${_run_error}")
+  endif()
+  if("${component}" STREQUAL "Graphics" AND
+     NOT "${_run_output}" MATCHES "package\\.descriptor_write: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise installed descriptor writes\n"
       "${_run_output}\n${_run_error}")
   endif()
 endfunction()
@@ -333,6 +339,7 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <terreate/graphics/descriptor_set_layout.hpp>
 #include <terreate/graphics/descriptor_pool.hpp>
 #include <terreate/graphics/descriptor_set.hpp>
+#include <terreate/graphics/descriptor_write.hpp>
 #include <terreate/graphics/pipeline_layout.hpp>
 #include <terreate/graphics/compute_pipeline.hpp>
 #include <terreate/graphics/device.hpp>
@@ -343,9 +350,11 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 static_assert(!std::is_default_constructible_v<terreate::graphics::Allocator>);
 static_assert(!std::is_copy_constructible_v<terreate::graphics::Allocator>);
@@ -649,6 +658,12 @@ int main() {
   buffer_description.usage = vk::BufferUsageFlagBits::eTransferSrc;
   auto buffer = terreate::graphics::createBuffer(*allocator, buffer_description);
   if (!buffer || !buffer->valid() || buffer->nativeHandle() == vk::Buffer{}) return 14;
+  terreate::graphics::BufferDescription uniform_description;
+  uniform_description.size = 256;
+  uniform_description.usage = vk::BufferUsageFlagBits::eUniformBuffer;
+  auto uniform_buffer = terreate::graphics::createBuffer(*allocator, uniform_description);
+  if (!uniform_buffer || !uniform_buffer->valid() ||
+      uniform_buffer->nativeDevice() != device->nativeHandle()) return 61;
   terreate::graphics::ImageDescription image_description;
   image_description.format = vk::Format::eR8G8B8A8Unorm;
   image_description.extent = vk::Extent3D{4, 4, 1};
@@ -718,6 +733,18 @@ int main() {
     if (!descriptor_set || !descriptor_set->valid() ||
         !descriptor_set->correlatedWith(*descriptor_pool) ||
         descriptor_set->nativeLayout() != moved_descriptor_layout.nativeHandle()) return 59;
+    const std::array<terreate::graphics::DescriptorWriteDescription, 2> writes{{
+        {3, 0, vk::DescriptorType::eUniformBuffer,
+         std::vector<terreate::graphics::DescriptorBufferWriteElement>{{&*uniform_buffer, 0, 256}}},
+        {0, 0, vk::DescriptorType::eCombinedImageSampler,
+         std::vector<terreate::graphics::DescriptorImageWriteElement>{
+             {&*image, &moved_view, &moved_sampler, vk::ImageLayout::eShaderReadOnlyOptimal},
+             {&*image, &moved_view, &moved_sampler, vk::ImageLayout::eGeneral}}}
+    }};
+    // Declares access-time layouts only; no GPU access or transition occurs.
+    if (!terreate::graphics::updateDescriptorSet(
+            *device, moved_descriptor_layout, *descriptor_set, writes)) return 62;
+    std::puts("package.descriptor_write: runtime=PASS");
     if (!descriptor_pool->free(*descriptor_set) || descriptor_set->valid() ||
         !descriptor_pool->reset() ||
         descriptor_pool->state() != terreate::graphics::DescriptorPoolState::ready) return 60;

@@ -1,10 +1,11 @@
-# Descriptor API — Issue #266, Phases A0 and B0
+# Descriptor API — Issue #266, Phases A0, B0 and B1-A
 
 Phase A0 provides **DescriptorSetLayout**; B0 adds **DescriptorPool** and borrowed
-**DescriptorSet** views, not resource updates or pipeline binding. The installed
+**DescriptorSet** views. B1-A adds synchronous, typed resource writes, not pipeline binding. The installed
 entry points are `<terreate/graphics/descriptor_set_layout.hpp>`,
-`<terreate/graphics/descriptor_pool.hpp>` and
-`<terreate/graphics/descriptor_set.hpp>` in `Terreate::Graphics`. They do not add
+`<terreate/graphics/descriptor_pool.hpp>`,
+`<terreate/graphics/descriptor_set.hpp>` and
+`<terreate/graphics/descriptor_write.hpp>` in `Terreate::Graphics`. They do not add
 a dependency to Core-only consumers.
 
 ## Explicit, owned descriptions
@@ -256,18 +257,179 @@ and nonzero exit, never PASS/SKIP. Installed-package smoke includes both new
 headers and actually creates a FREE-enabled pool, allocates/frees a set, resets
 and destroys the pool. Core-only package independence remains unchanged.
 
+## B1-A: explicit synchronous descriptor writes
+
+`updateDescriptorSet(const Device&, const DescriptorSetLayout& original_live_layout,
+const DescriptorSet&, span<const DescriptorWriteDescription>)` preflights an entire
+ordered batch for **one set**, then invokes `vkUpdateDescriptorSets` exactly once.
+It does not copy descriptors between sets, infer bindings, reflect shaders, retain
+resources, record commands, transition images, submit work, wait, or opt into
+update-after-bind. The application retains its execution loop and synchronization.
+
+Descriptions own their element vectors but borrow the wrappers named by elements:
+
+| Type | Payload vector | Required creation usage / resources |
+| --- | --- | --- |
+| `eUniformBuffer` | `DescriptorBufferWriteElement` | Buffer `eUniformBuffer` |
+| `eUniformBufferDynamic` | `DescriptorBufferWriteElement` | Buffer `eUniformBuffer`, finite range |
+| `eStorageBuffer` | `DescriptorBufferWriteElement` | Buffer `eStorageBuffer` |
+| `eStorageBufferDynamic` | `DescriptorBufferWriteElement` | Buffer `eStorageBuffer`, finite range |
+| `eSampler` | `DescriptorSamplerWriteElement` | nonnull live Sampler |
+| `eSampledImage` | `DescriptorImageWriteElement` | Image `eSampled`, matching ImageView, null sampler |
+| `eStorageImage` | `DescriptorImageWriteElement` | Image `eStorage`, matching ImageView, null sampler |
+| `eCombinedImageSampler` | `DescriptorImageWriteElement` | Image `eSampled`, matching ImageView, live normalized Sampler |
+
+`DescriptorBufferWriteElement` contains `buffer` (default null), `offset` (0),
+and `range` (0, deliberately invalid). `DescriptorImageWriteElement` contains
+`image`, `view`, `sampler` (all default null), and `image_layout` (`eUndefined`,
+deliberately invalid). `DescriptorSamplerWriteElement` contains `sampler` (null).
+`DescriptorWritePayload` is a variant of vectors of these three element types.
+`DescriptorWriteDescription` supplies `binding`, `first_array_element` (both 0),
+`descriptor_type` (invalid MAX_ENUM sentinel), and `elements` (empty buffer vector).
+Default descriptions never silently mean a valid write.
+
+### Original live layout and native provenance
+
+The helper needs the original **live** allocation-time layout to inspect its
+effective bindings. It requires valid Device/plan, layout and set, nonnull native
+identities, matching logical Devices, and equality with the set's cached native
+layout identity. Equal handles cannot prove historical identity or liveness:
+caller attests the original layout remains live, the set/pool has not been freed,
+reset or destroyed, and all wrappers remain live through the call. This helper
+precondition is not a Vulkan rule that layouts must always outlive sets; native
+escape hatches remain available for writing after layout destruction.
+
+B1-P (PR #394) exposes `Buffer::nativeDevice()` and `correlatedWith(Device)` using
+the actual creating VMA Allocator's Device identity. B1-A uses that provenance,
+not a guessed raw-buffer origin, allocator equality, or wrapper address. Different
+Allocators on the **same logical Device** are admissible; another logical Device
+on the same PhysicalDevice is not. Images, views and samplers likewise must have
+the same native Device, and `view.correlatedWith(image)` must hold. These borrowed
+observations do not detect external native destruction or retain any owner.
+
+### Whole-batch preflight and native ordering
+
+`validateDescriptorWriteCount(size_t) noexcept` is a pure CPU, strictly
+allocation-free seam: accept `0 < count <= UINT32_MAX`, otherwise return code-only
+`Error{make_error_code(DescriptorUpdateError::invalid_write_count)}` with empty
+context/detail. A representable count is not an allocation guarantee. The helper
+checks the outer count before temporary storage allocation or integer narrowing.
+Each write requires a supported type, an existing **binding number** (not vector
+index), an exact layout type match, the correct variant alternative, a nonempty
+representable element count and an array range wholly inside that binding.
+Checked subtraction prevents overflow. Even compatible consecutive-binding spill
+is rejected. Sparse/unsorted bindings, repeated bindings and ordered overlapping
+writes are legal; later writes overwrite earlier overlapping elements. No sorting,
+merging, deduplication or cross-binding normalization occurs.
+
+Every resource and every write, including the last, is validated before any native
+update. Aggregate temporary counts, arithmetic and vector capacities are checked.
+All buffer/image/native-write vectors reach final size before native pointers are
+formed; no subsequent growth invalidates backing storage. Each native write has
+null `pNext`/texel pointer and only its appropriate buffer or image pointer.
+Sampler-only native image infos have null view and undefined layout. One C native
+call receives writes in caller order with zero copies and a null copies pointer.
+Rejected batches make **zero native updates**, never partial updates.
+
+### Buffer and image limitations
+
+Buffers require live native allocations and configuration, matching usage, logical
+`offset < size`, positive range, and finite `range <= size - offset`. Base offsets
+must satisfy `minUniformBufferOffsetAlignment` or `minStorageBufferOffsetAlignment`;
+**range need not be an alignment multiple**. Effective range must not exceed the
+corresponding core `maxUniformBufferRange` / `maxStorageBufferRange` in the Device
+plan, conservatively even if extensions permit more. Non-dynamic `VK_WHOLE_SIZE`
+is checked as `size - offset` and preserved verbatim for Vulkan. Both dynamic
+types reject `VK_WHOLE_SIZE`; bind-time dynamic offsets, alignment and effective
+offset/range bounds are the caller's responsibility and belong to #265.
+
+Views must have effective aspect **exactly `eColor`**. This initial helper excludes
+otherwise valid depth/stencil views without changing ImageView factory rules.
+Storage-image views require every component to be `eIdentity`: explicit R/G/B/A
+identity mappings are Vulkan-valid but outside this conservative helper subset.
+Image/View format and subresource pairing are already validated at view creation.
+Sampled/combined writes allow only `eGeneral` or `eShaderReadOnlyOptimal`; storage
+allows only `eGeneral`. This is a restrictive API allowlist, not a claim that all
+other Vulkan layouts are invalid. The supplied layout declares the layout **at
+descriptor access time**, not host update time. It is not compared to the Image's
+initial layout, queried, or transitioned. Combined unnormalized-coordinate
+samplers are excluded; standalone unnormalized samplers are accepted, with
+shader use-time compatibility remaining caller-owned.
+
+### Errors, lifetime and execution obligations
+
+`DescriptorUpdateError` uses category `terreate.graphics.descriptor_update`, with
+`make_error_code` and `std::is_error_code_enum` support. Errors distinguish
+`invalid_device`, `invalid_set`, `invalid_layout`, `layout_mismatch`,
+`device_mismatch`, `invalid_write_count`, `invalid_binding`,
+`descriptor_type_mismatch`, `invalid_payload`, `invalid_array_range`,
+`invalid_resource`, `invalid_buffer_range`, `invalid_image_layout`,
+`unsupported_configuration`, and `allocation_failed`. Ordinary helper failures
+carry operation context `updateDescriptorSet` and bounded detail when allocation
+succeeds. If diagnostic allocation throws `bad_alloc`, return the **original**
+category/code with empty text, not an unrelated allocation error. Count errors
+decorated by the helper preserve their code; the pure seam itself never decorates.
+Temporary-storage `bad_alloc`/`length_error` or detected impossible aggregate
+capacity maps to `allocation_failed` without an escaped allocation exception or
+native update. Native update returns **void**, has no `VkResult`, cannot be rolled
+back, and provides no GPU-completion proof.
+
+Input descriptions/vectors and referenced C++ wrappers need survive only the
+synchronous call. Referenced native Buffers, VMA allocations, Images, views,
+samplers and parent Device/Allocator remain application-owned and must survive
+all relevant descriptor use and Vulkan lifetime obligations. Moving a wrapper
+while preserving its native object differs from move assignment that destroys a
+displaced object. There is no shared ownership, registry, automatic retirement or
+liveness detection. `DescriptorSet::valid()` is still only a cached-handle check.
+
+Caller serializes conflicting host updates/free/reset/pool destruction and
+completes GPU consumption before ordinary mutation. Updates may invalidate
+**recording or executable** command buffers even when not pending; caller must
+handle re-recording. The helper neither inspects nor changes command-buffer state.
+
+For a live matching layout/set with a uniform binding 3 and uniform-usage Buffer:
+
+```cpp
+using namespace terreate::graphics;
+const std::array<DescriptorWriteDescription, 1> writes{{
+    {3, 0, vk::DescriptorType::eUniformBuffer,
+     std::vector<DescriptorBufferWriteElement>{{&buffer, 0, 64}}}}};
+auto updated = updateDescriptorSet(device, layout, set, writes);
+if (!updated) { /* handle updated.error(); no native update occurred */ }
+// No submit/wait/ownership transfer; keep native resources alive for later use.
+```
+
+### B1-A test and installed-package boundaries
+
+`graphics.descriptor_write.cpu` covers 0, UINT32_MAX and UINT32_MAX+1 when
+representable, under a deterministic allocation-attempt prohibition, including
+code-only failure diagnostics. It never constructs enormous spans or vectors.
+`graphics.descriptor_write` requires a real loader, validation layer and Debug
+Utils with a probed callback, real Devices/resources/layout/pool/set, all eight
+types, arrays, sparse bindings and ordered overlap. A test-private C linker
+wrapper observes stable native payloads, exact ordering, one forwarded call per
+valid batch and zero for malformed batches. Narrow test-local allocation failures
+cover first/later temporary allocations and original-code diagnostic fallback,
+disarmed before forwarding to Vulkan. Complete teardown must have no validation
+warnings/errors; missing prerequisites are nonzero **BLOCKED**, never PASS/SKIP.
+No GPU work is submitted. Two strict CTests are registered (expected suite total
+35). Installed-package smoke requires the public header and a runtime marker
+after actual uniform and combined-image-sampler writes using moved live view and
+sampler objects, before explicit set free/reset. Core-only independence remains
+unchanged. These describe coverage, **not executed test results**; source-only
+editing leaves formatting/build/CTest/package verification to the supervisor.
+
 ## Deferred phases and design questions
 
-- **B1:** descriptor writes/updates, explicit buffer/image/sampler validation,
-  and resource provenance. No writes, updates, or binds exist in A0/B0.
+- **B1 expansion:** destroyed-original-layout convenience writes, depth/stencil,
+  extended image layouts, combined unnormalized samplers, advanced format-feature
+  checks, descriptor copies, immutable samplers, indexing, update-after-bind,
+  consecutive-binding spill, push descriptors, descriptor-buffer extensions and
+  custom `pNext`. No automatic pool, reflection, RenderGraph or pipeline coupling.
 - **#267 integration:** the existing Phase A `PipelineLayout` remains
   descriptor-free and unchanged. Passing set layouts into it, aggregate limit
   validation, and descriptor binding are deferred. Native Vulkan consumers can
   already borrow `VkDescriptorSetLayout` under their own explicit contracts.
 
-Before B1, discuss `Buffer`'s lack of public native Device provenance: it exposes
-its native Allocator and Buffer, but no `nativeDevice()` / Device correlation.
-A future write API must not infer Device identity from a raw buffer, equate an
-Allocator handle with a Device, or silently accept cross-Device writes. Resolve
-that provenance contract explicitly in a separately approved change; A0 neither
-changes Buffer nor pretends that complete resource-write validation exists.
+- **#265:** bind/draw/dispatch, dynamic bind-time offsets and bounds, scheduling
+  and GPU completion remain separate. B1-A does not close overall #266 or #243.

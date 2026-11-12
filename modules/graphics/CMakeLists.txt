@@ -176,6 +176,8 @@ add_library(terreate_graphics STATIC
   src/descriptor_pool.cpp
   include/terreate/graphics/descriptor_pool.hpp
   include/terreate/graphics/descriptor_set.hpp
+  src/descriptor_write.cpp
+  include/terreate/graphics/descriptor_write.hpp
   src/pipeline_layout.cpp
   include/terreate/graphics/pipeline_layout.hpp
   src/compute_pipeline.cpp
