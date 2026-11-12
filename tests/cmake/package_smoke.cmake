@@ -205,6 +205,12 @@ set_target_properties(package_consumer PROPERTIES
       "${name} consumer did not exercise installed descriptor writes\n"
       "${_run_output}\n${_run_error}")
   endif()
+  if("${component}" STREQUAL "Graphics" AND
+     NOT "${_run_output}" MATCHES "package\\.pipeline_layout_descriptors: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise installed descriptor-referencing pipeline layouts\n"
+      "${_run_output}\n${_run_error}")
+  endif()
 endfunction()
 
 function(terreate_expect_compile_failure name source diagnostics)
@@ -721,6 +727,20 @@ int main() {
         descriptor_layout->nativeVkDevice() != VK_NULL_HANDLE ||
         !moved_descriptor_layout.correlatedWith(*device) || !moved_descriptor_layout.configuration())
       return 54;
+    const std::array<const DescriptorSetLayout *, 1> pipeline_sets{&moved_descriptor_layout};
+    auto referencing_pipeline_layout = terreate::graphics::createPipelineLayout(
+        *device, pipeline_sets,
+        {{vk::PushConstantRange{vk::ShaderStageFlagBits::eCompute, 0, 16}}});
+    if (!referencing_pipeline_layout || !referencing_pipeline_layout->valid() ||
+        !referencing_pipeline_layout->correlatedWith(*device) ||
+        !referencing_pipeline_layout->configuration() ||
+        referencing_pipeline_layout->configuration()->set_layout_handles !=
+            std::vector<VkDescriptorSetLayout>{moved_descriptor_layout.nativeDescriptorSetLayout()} ||
+        referencing_pipeline_layout->configuration()->set_layout_descriptions.size() != 1 ||
+        referencing_pipeline_layout->configuration()->set_layout_descriptions[0].bindings !=
+            requested.bindings ||
+        referencing_pipeline_layout->configuration()->limits != limits) return 63;
+    std::puts("package.pipeline_layout_descriptors: runtime=PASS");
     terreate::graphics::DescriptorPoolDescription descriptor_pool_description{
         1, vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
         {{vk::DescriptorType::eUniformBuffer, 1},

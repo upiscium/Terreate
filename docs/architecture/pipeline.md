@@ -1,4 +1,4 @@
-# Explicit pipeline layout and compute pipeline (#267, Phase A R1)
+# Explicit pipeline layout and compute pipeline (#267, Phase B1)
 
 `Terreate::Graphics` provides two exclusive, move-only RAII values:
 `PipelineLayout` and `ComputePipeline`. The application owns device selection,
@@ -12,8 +12,9 @@ shader compiler, reflection backend or shared ownership.
 Include `<terreate/graphics/pipeline_layout.hpp>` and pass an explicit
 `PipelineLayoutDescription` to `createPipelineLayout(device, description)`.
 An empty description means **zero descriptor set layouts and zero push constant
-ranges**, not an inferred layout. Phase A has no public descriptor type and does
-not support descriptor allocation, binding or descriptor-backed shaders.
+ranges**, not an inferred layout. This existing two-argument overload remains
+descriptor-free. B1 adds a separate explicit set-layout overload; neither overload
+allocates or binds descriptor sets.
 
 The description optionally owns `std::vector<vk::PushConstantRange>` values.
 Validation supports explicit masks composed of the six core stages: vertex,
@@ -40,6 +41,59 @@ descriptions, plus the actual `max_push_constants_size` capability used during
 creation. Requested and effective ranges are identical, including order and
 masks: nothing is normalized, guessed or reflected. Native creation uses zero
 flags, null `pNext`, `setLayoutCount = 0` and null `pSetLayouts`.
+
+## B1: ordered descriptor set layouts
+
+`createPipelineLayout(const Device&, std::span<const DescriptorSetLayout *const>,
+const PipelineLayoutDescription&)` accepts an explicit ordered sequence of live
+layouts. Span index defines the set number. Repeated layouts are legal and count
+once for each occurrence; null holes are not legal. To represent an unused set
+position, supply an explicit live empty layout. Sparse binding numbers within a
+layout remain legal under the descriptor A0 contract. `PipelineLayoutDescription`
+remains pointer-free and push constant validation is unchanged.
+
+Before any native call, the factory rejects null, invalid/moved-from or null-native
+layouts (`invalid_set_layout`) and another logical Device (`device_mismatch`).
+It checks the set count against both the Vulkan ABI and retained DevicePlan
+`maxBoundDescriptorSets`, then validates the aggregate across **all** sets against
+core `maxDescriptorSet*`, `maxPerStageDescriptor*` and `maxPerStageResources` limits.
+Limit violations use `PipelineLayoutError::unsupported_configuration`.
+
+The public CPU seam `validatePipelineLayoutSetLayouts(span<const
+DescriptorSetLayoutDescription>, const vk::PhysicalDeviceLimits&)` performs the
+same aggregate checks without a Device or native calls, including structural A0
+validation of each description. Synthetic limits do not establish real Device
+capabilities. Checked subtraction before addition prevents overflow, even at
+`UINT32_MAX`. Following [descriptor A0 accounting](descriptor_api.md), dynamic
+buffers consume both ordinary and dynamic aggregate limits and the ordinary
+per-stage buffer limit. Combined image samplers consume sampler and sampled-image
+budgets but only one per-stage resource; standalone samplers consume no per-stage
+resources. Stage budgets accumulate independently for each visible stage.
+
+All temporary storage and configuration copies are prepared before the single
+`vkCreatePipelineLayout` call. Allocation failure returns `allocation_failed` with
+zero native calls. Native handles are passed in caller order; an empty span uses
+zero count and null `pSetLayouts`. Flags remain zero and `pNext` null: graphics
+pipeline libraries, update-after-bind and push descriptors are not supported or
+implicitly enabled. Native `VkResult` failures and success-with-null handling are
+preserved, including when diagnostic text allocation fails.
+
+`PipelineLayoutConfiguration::set_layout_handles` contains ordered native identity
+copies and `set_layout_descriptions` contains independent effective description
+copies in the same order. `limits` snapshots the actual DevicePlan limits used;
+the existing requested/effective push constants and `max_push_constants_size`
+remain available. This configuration is pointer-free (apart from opaque native
+handle representations): no wrapper or input-array pointers survive the call.
+Stored handles are **observation-only and potentially stale**, not liveness proofs,
+ownership, or permission to destroy or reuse a native layout.
+
+Set-layout wrappers and their native layouts need survive only the synchronous
+factory call, not the resulting PipelineLayout. The Device must outlive the
+PipelineLayout, including move-assignment displacement. Callers own conflicting
+host synchronization, GPU completion and later bound-descriptor-set compatibility
+(#265). B1 performs no shader reflection (#262), shader/name inference, shared
+ownership or hidden execution control, and adds no RenderGraph or CommandBuffer
+dependency. Descriptor allocation, writes and later binding are separate APIs.
 
 ## Explicit compute stage and entry point
 
@@ -82,7 +136,7 @@ pipeline and a null pipeline cache. The configuration retains independent
 requested/effective entry-point strings and the actual compute stage.
 
 The caller must supply a real compute entry point whose shader interface is
-compatible with the descriptor-free layout and push constant ranges. Neither
+compatible with the explicit set layouts and push constant ranges. Neither
 factory validates SPIR-V instructions, entry-point existence, shader interface,
 workgroup limits, capabilities, extensions, or **SPIR-V version versus the
 effective Vulkan Device API version**. The structural acceptance provided by
@@ -169,9 +223,10 @@ The existing Vulkan-free Core-only consumer and isolation checks remain intact.
 
 ## Deferred surface
 
-Phase B graphics pipelines and descriptor integration (#266) remain separate
-work. Pipeline cache input is deferred: a raw borrowed `vk::PipelineCache`
+Graphics pipelines and later descriptor binding (#265) remain separate
+work; B1 only integrates explicit layouts from #266. Pipeline cache input is deferred:
+a raw borrowed `vk::PipelineCache`
 cannot be correlated with a Device through the current public API. Extension
 stages/chains, specialization constants, descriptor allocation, reflection,
 pipeline compilation tooling, recording conveniences and execution scheduling
-are not silently provided by this descriptor-free minimum.
+are not silently provided by these synchronous creation APIs.
