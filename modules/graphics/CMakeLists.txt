@@ -182,6 +182,8 @@ add_library(terreate_graphics STATIC
   include/terreate/graphics/pipeline_layout.hpp
   src/compute_pipeline.cpp
   include/terreate/graphics/compute_pipeline.hpp
+  src/graphics_pipeline.cpp
+  include/terreate/graphics/graphics_pipeline.hpp
   src/submission.cpp
   include/terreate/graphics/submission.hpp
   src/retirement.cpp
