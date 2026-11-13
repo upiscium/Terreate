@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|pipeline_layout|compute_pipeline|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|pipeline_layout|compute_pipeline|graphics_pipeline|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write pipeline_layout compute_pipeline submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write pipeline_layout compute_pipeline graphics_pipeline submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -209,6 +209,12 @@ set_target_properties(package_consumer PROPERTIES
      NOT "${_run_output}" MATCHES "package\\.pipeline_layout_descriptors: runtime=PASS")
     message(FATAL_ERROR
       "${name} consumer did not exercise installed descriptor-referencing pipeline layouts\n"
+      "${_run_output}\n${_run_error}")
+  endif()
+  if("${component}" STREQUAL "Graphics" AND
+     NOT "${_run_output}" MATCHES "package\\.graphics_pipeline: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise installed graphics pipeline creation\n"
       "${_run_output}\n${_run_error}")
   endif()
 endfunction()
@@ -348,6 +354,7 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <terreate/graphics/descriptor_write.hpp>
 #include <terreate/graphics/pipeline_layout.hpp>
 #include <terreate/graphics/compute_pipeline.hpp>
+#include <terreate/graphics/graphics_pipeline.hpp>
 #include <terreate/graphics/device.hpp>
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
@@ -636,6 +643,8 @@ int main() {
     return 9;
   }
   terreate::graphics::DeviceDescription device_description;
+  // Pipeline creation below requires explicit enablement, not just feature support.
+  device_description.required_features_13.dynamicRendering = VK_TRUE;
   device_description.queue_requests.push_back(terreate::graphics::DeviceQueueRequest{
       .caller_id = "package-main",
       .strength = terreate::graphics::RequirementStrength::required,
@@ -769,6 +778,79 @@ int main() {
         !descriptor_pool->reset() ||
         descriptor_pool->state() != terreate::graphics::DescriptorPoolState::ready) return 60;
     // Pool and layout die here before Device; no GPU work or implicit waits.
+  }
+
+  // Offline, hand-encoded minimal SPIR-V 1.0, with no runtime compiler dependency.
+  // Equivalent GLSL sources (the vertex output is encoded as a standalone BuiltIn):
+  // package.vert: #version 450
+  //              void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }
+  // package.frag: #version 450
+  //              void main() {}
+  // Compiler commands for equivalent modules (not byte-identical hand encoding):
+  // glslangValidator -V --target-env vulkan1.0 -S vert package.vert -o package.vert.spv
+  // glslangValidator -V --target-env vulkan1.0 -S frag package.frag -o package.frag.spv
+  // No attachments or shader resources are used; no draw or submission occurs.
+  {
+    using terreate::graphics::GraphicsPipeline;
+    static_assert(!std::is_default_constructible_v<GraphicsPipeline>);
+    static_assert(!std::is_copy_constructible_v<GraphicsPipeline>);
+    static_assert(!std::is_copy_assignable_v<GraphicsPipeline>);
+    static_assert(std::is_nothrow_move_constructible_v<GraphicsPipeline>);
+    static_assert(std::is_nothrow_move_assignable_v<GraphicsPipeline>);
+    constexpr std::uint32_t vertex_words[]{
+        0x07230203, 0x00010000, 0, 12, 0,
+        0x00020011, 1,                         // OpCapability Shader
+        0x0003000e, 0, 1,                      // Logical GLSL450
+        0x0006000f, 0, 10, 0x6e69616d, 0, 6,   // Vertex main, Position interface
+        0x00040047, 6, 11, 0,                  // BuiltIn Position
+        0x00020013, 1,                         // void
+        0x00030021, 2, 1,                      // function type
+        0x00030016, 3, 32,                     // float
+        0x00040017, 4, 3, 4,                   // vec4
+        0x00040020, 5, 3, 4,                   // Output pointer
+        0x0004003b, 5, 6, 3,                   // Output variable
+        0x0004002b, 3, 7, 0,                   // 0.0
+        0x0004002b, 3, 8, 0x3f800000,           // 1.0
+        0x0007002c, 4, 9, 7, 7, 7, 8,          // constant position
+        0x00050036, 1, 10, 0, 2,               // main
+        0x000200f8, 11,                        // label
+        0x0003003e, 6, 9,                      // store Position
+        0x000100fd, 0x00010038};                // return, function end
+    constexpr std::uint32_t fragment_words[]{
+        0x07230203, 0x00010000, 0, 5, 0,
+        0x00020011, 1,                         // OpCapability Shader
+        0x0003000e, 0, 1,                      // Logical GLSL450
+        0x0005000f, 4, 3, 0x6e69616d, 0,       // Fragment main
+        0x00030010, 3, 7,                      // OriginUpperLeft
+        0x00020013, 1,
+        0x00030021, 2, 1,
+        0x00050036, 1, 3, 0, 2,
+        0x000200f8, 4,
+        0x000100fd, 0x00010038};
+    auto vertex_binary = SpirvBinary::fromWords(vertex_words);
+    auto fragment_binary = SpirvBinary::fromWords(fragment_words);
+    if (!vertex_binary || !fragment_binary) return 64;
+    auto graphics_layout = terreate::graphics::createPipelineLayout(*device, {});
+    auto vertex_shader = terreate::graphics::createShaderModule(*device, *vertex_binary);
+    auto fragment_shader = terreate::graphics::createShaderModule(*device, *fragment_binary);
+    if (!graphics_layout || !vertex_shader || !fragment_shader ||
+        !device->plan()->enabledFeatures13().dynamicRendering) return 65;
+    terreate::graphics::GraphicsPipelineDescription graphics_description;
+    graphics_description.vertex_entry_point = "main";
+    graphics_description.fragment_entry_point = "main";
+    auto graphics_pipeline = terreate::graphics::createGraphicsPipeline(
+        *device, *graphics_layout, *vertex_shader, *fragment_shader, graphics_description);
+    if (!graphics_pipeline || !graphics_pipeline->valid() ||
+        graphics_pipeline->nativePipeline() == VK_NULL_HANDLE ||
+        graphics_pipeline->nativeDevice() != device->nativeHandle() ||
+        graphics_pipeline->nativeLayout() != graphics_layout->nativeHandle() ||
+        !graphics_pipeline->correlatedWith(*device) ||
+        !graphics_pipeline->correlatedWith(*graphics_layout) ||
+        !graphics_pipeline->configuration() ||
+        graphics_pipeline->configuration()->requested.vertex_entry_point != "main" ||
+        graphics_pipeline->configuration()->effective.fragment_entry_point != "main") return 66;
+    std::puts("package.graphics_pipeline: runtime=PASS");
+    // Pipeline dies before its retained layout and Device; no GPU work needs waiting.
   }
 
   // Exercise installed pipeline factories and observers, not just header

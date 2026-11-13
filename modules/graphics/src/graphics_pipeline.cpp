@@ -345,7 +345,9 @@ auto createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
   const auto result =
       vkCreateGraphicsPipelines(impl->device, VK_NULL_HANDLE, 1, &info, nullptr, &impl->handle);
   if (result != VK_SUCCESS)
-    return std::unexpected(terreate::Error{vk::make_error_code(static_cast<vk::Result>(result))});
+    return std::unexpected(terreate::Error{vk::make_error_code(static_cast<vk::Result>(result)),
+                                           "vkCreateGraphicsPipelines",
+                                           "native graphics pipeline creation failed"});
   if (impl->handle == VK_NULL_HANDLE)
     return fail(GraphicsPipelineError::native_null_handle);
   return GraphicsPipeline{std::move(impl)};
