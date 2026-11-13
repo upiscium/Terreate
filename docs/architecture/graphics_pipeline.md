@@ -93,6 +93,11 @@ Pre-call validation includes:
 - Structurally valid enum values, flags and combinations within the supported B0
   topology, primitive-restart, rasterization, depth and blend configuration;
   unsupported configurations are rejected rather than enabled or normalized.
+  `vk::Format` values are not range-checked as enums. CPU validation only
+  rejects `eUndefined` and depth/stencil formats for color attachments and
+  vertex attributes, and checks the depth/stencil aspects of the optional depth
+  and stencil attachment formats. Passing a defined, Device-supported
+  `vk::Format` value is the caller's responsibility.
 
 **Format feature support remains the caller's responsibility**, including vertex
 input, attachment and blending support. CPU validation does not query format
