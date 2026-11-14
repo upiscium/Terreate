@@ -704,6 +704,24 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.graphics_pipeline: headless-native=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.graphics_pipeline.*: (assertion=FAIL|.*BLOCKED)")
 
+    add_executable(terreate_graphics_pipeline_commands_tests
+      tests/test_graphics_pipeline_commands.cpp)
+    target_link_libraries(terreate_graphics_pipeline_commands_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_pipeline_commands_tests PRIVATE
+      "-Wl,--wrap=vkCmdBindPipeline" "-Wl,--wrap=vkCmdBindDescriptorSets"
+      "-Wl,--wrap=vkCmdPushConstants" "-Wl,--wrap=vkCmdDispatch")
+    terreate_configure_target(terreate_graphics_pipeline_commands_tests)
+    add_test(NAME graphics.pipeline_commands.cpu
+      COMMAND terreate_graphics_pipeline_commands_tests cpu)
+    set_tests_properties(graphics.pipeline_commands.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.pipeline_commands\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.pipeline_commands.*: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.pipeline_commands
+      COMMAND terreate_graphics_pipeline_commands_tests gpu)
+    set_tests_properties(graphics.pipeline_commands PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.pipeline_commands: headless-dispatch=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.pipeline_commands.*: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_image_tests tests/test_graphics_image.cpp)
     target_link_libraries(terreate_graphics_image_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_image_tests PRIVATE
