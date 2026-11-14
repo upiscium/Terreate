@@ -3,9 +3,11 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <system_error>
 #include <vector>
 
+#include <terreate/graphics/buffer.hpp>
 #include <terreate/graphics/command_buffer.hpp>
 #include <terreate/graphics/device.hpp>
 #include <terreate/graphics/image.hpp>
@@ -27,6 +29,10 @@ enum class RenderingCommandError : std::uint8_t {
   invalid_viewport,
   invalid_scissor,
   allocation_failed,
+  // Appended in #265 Phase C2; existing values are unchanged.
+  invalid_buffer,
+  invalid_binding_range,
+  invalid_index_type,
 };
 
 [[nodiscard]] const std::error_category &rendering_command_error_category() noexcept;
@@ -154,6 +160,44 @@ private:
                               const RenderingScope &scope, std::uint32_t vertex_count,
                               std::uint32_t instance_count, std::uint32_t first_vertex,
                               std::uint32_t first_instance) -> terreate::Result<void>;
+
+/// One vertex buffer binding. `buffer` is borrowed only during
+/// recordBindVertexBuffers; the caller keeps it alive through all GPU use.
+struct VertexBufferBinding {
+  const Buffer *buffer = nullptr;
+  vk::DeviceSize offset = 0;
+};
+
+/// Records exactly one vkCmdBindVertexBuffers for bindings
+/// [first_binding, first_binding + bindings.size()) after validating, before
+/// any native call: a recording CommandBuffer of the Device on a graphics
+/// queue family, a nonempty span within maxVertexInputBindings, and per
+/// binding a live Buffer of the Device with VERTEX_BUFFER usage and an offset
+/// below its size. Allowed inside or outside a rendering instance.
+[[nodiscard]] auto recordBindVertexBuffers(const Device &device, const CommandBuffer &command,
+                                           std::uint32_t first_binding,
+                                           std::span<const VertexBufferBinding> bindings)
+    -> terreate::Result<void>;
+/// Records exactly one vkCmdBindIndexBuffer after validating a live Buffer of
+/// the Device with INDEX_BUFFER usage, an offset below its size whose memory
+/// address (allocation offset + offset) is aligned to the index size, and an
+/// index type of UINT16 or UINT32. UINT8 needs indexTypeUint8, which a Device
+/// cannot enable: DeviceDescription takes only pNext-free Vulkan 1.0-1.3
+/// feature structures. The buffer is borrowed only during
+/// the call. Allowed inside or outside a rendering instance.
+[[nodiscard]] auto recordBindIndexBuffer(const Device &device, const CommandBuffer &command,
+                                         const Buffer &buffer, vk::DeviceSize offset,
+                                         vk::IndexType index_type) -> terreate::Result<void>;
+/// Records one vkCmdDrawIndexed inside `scope`, which must be active and
+/// belong to `command`. Binding state is not tracked: a bound index buffer
+/// whose range covers [first_index, first_index + index_count), vertex buffers
+/// matching the bound pipeline's vertex input, and the pipeline itself are
+/// caller responsibilities.
+[[nodiscard]] auto recordDrawIndexed(const Device &device, const CommandBuffer &command,
+                                     const RenderingScope &scope, std::uint32_t index_count,
+                                     std::uint32_t instance_count, std::uint32_t first_index,
+                                     std::int32_t vertex_offset, std::uint32_t first_instance)
+    -> terreate::Result<void>;
 
 } // namespace terreate::graphics
 

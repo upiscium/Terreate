@@ -40,6 +40,12 @@ public:
       return "invalid scissor";
     case RenderingCommandError::allocation_failed:
       return "temporary storage allocation failed";
+    case RenderingCommandError::invalid_buffer:
+      return "invalid vertex or index buffer, usage or offset";
+    case RenderingCommandError::invalid_binding_range:
+      return "vertex binding range empty or above maxVertexInputBindings";
+    case RenderingCommandError::invalid_index_type:
+      return "index type is not UINT16 or UINT32";
     }
     return "unknown rendering command error";
   }
@@ -175,6 +181,19 @@ auto checkAttachment(const Device &device, const RenderingDescription &descripti
   state = {view->nativeImageView(), effective.format,   extent,
            attachment.layout,       attachment.load_op, attachment.store_op,
            attachment.clear_value};
+  return {};
+}
+
+// A live Buffer of the Device with `usage` and an offset inside it.
+auto checkBuffer(const Device &device, const Buffer *buffer, vk::DeviceSize offset,
+                 vk::BufferUsageFlagBits usage, const char *name) -> terreate::Result<void> {
+  if (!buffer || !buffer->valid() || !buffer->configuration())
+    return fail(RenderingCommandError::invalid_buffer, name);
+  if (!buffer->correlatedWith(device))
+    return fail(RenderingCommandError::parent_mismatch, name);
+  const auto &config = *buffer->configuration();
+  if (!(config.usage & usage) || offset >= config.size)
+    return fail(RenderingCommandError::invalid_buffer, name);
   return {};
 }
 
@@ -376,6 +395,82 @@ auto recordDraw(const Device &device, const CommandBuffer &command, const Render
   if (auto valid = validateScope(command, scope, name); !valid)
     return valid;
   vkCmdDraw(nativeCommand(command), vertex_count, instance_count, first_vertex, first_instance);
+  return {};
+}
+
+auto recordBindVertexBuffers(const Device &device, const CommandBuffer &command,
+                             std::uint32_t first_binding,
+                             std::span<const VertexBufferBinding> bindings)
+    -> terreate::Result<void> {
+  constexpr auto name = "recordBindVertexBuffers";
+  if (auto valid = validateRecording(device, command, name); !valid)
+    return valid;
+  const auto limit = device.plan()->capabilities().properties.limits.maxVertexInputBindings;
+  if (bindings.empty() || std::uint64_t{first_binding} + bindings.size() > limit)
+    return fail(RenderingCommandError::invalid_binding_range, name);
+  for (const auto &binding : bindings)
+    if (auto valid = checkBuffer(device, binding.buffer, binding.offset,
+                                 vk::BufferUsageFlagBits::eVertexBuffer, name);
+        !valid)
+      return valid;
+  std::vector<VkBuffer> buffers;
+  std::vector<VkDeviceSize> offsets;
+  try {
+    buffers.reserve(bindings.size());
+    offsets.reserve(bindings.size());
+  } catch (const std::bad_alloc &) {
+    return std::unexpected(
+        terreate::Error{make_error_code(RenderingCommandError::allocation_failed)});
+  }
+  for (const auto &binding : bindings) {
+    buffers.push_back(binding.buffer->nativeBuffer());
+    offsets.push_back(binding.offset);
+  }
+  vkCmdBindVertexBuffers(nativeCommand(command), first_binding,
+                         static_cast<std::uint32_t>(buffers.size()), buffers.data(),
+                         offsets.data());
+  return {};
+}
+
+auto recordBindIndexBuffer(const Device &device, const CommandBuffer &command, const Buffer &buffer,
+                           vk::DeviceSize offset, vk::IndexType index_type)
+    -> terreate::Result<void> {
+  constexpr auto name = "recordBindIndexBuffer";
+  if (auto valid = validateRecording(device, command, name); !valid)
+    return valid;
+  vk::DeviceSize index_size = 0;
+  if (index_type == vk::IndexType::eUint16)
+    index_size = 2;
+  else if (index_type == vk::IndexType::eUint32)
+    index_size = 4;
+  else
+    return fail(RenderingCommandError::invalid_index_type, name);
+  if (auto valid =
+          checkBuffer(device, &buffer, offset, vk::BufferUsageFlagBits::eIndexBuffer, name);
+      !valid)
+    return valid;
+  // VUID-vkCmdBindIndexBuffer-offset-08783 constrains the memory address, not
+  // only the buffer offset: include where the buffer is bound in its memory.
+  const auto allocation = buffer.allocationInfo();
+  if (!allocation || (allocation->native.offset + offset) % index_size != 0)
+    return fail(RenderingCommandError::invalid_buffer, name);
+  vkCmdBindIndexBuffer(nativeCommand(command), buffer.nativeBuffer(), offset,
+                       static_cast<VkIndexType>(index_type));
+  return {};
+}
+
+auto recordDrawIndexed(const Device &device, const CommandBuffer &command,
+                       const RenderingScope &scope, std::uint32_t index_count,
+                       std::uint32_t instance_count, std::uint32_t first_index,
+                       std::int32_t vertex_offset, std::uint32_t first_instance)
+    -> terreate::Result<void> {
+  constexpr auto name = "recordDrawIndexed";
+  if (auto valid = validateRecording(device, command, name); !valid)
+    return valid;
+  if (auto valid = validateScope(command, scope, name); !valid)
+    return valid;
+  vkCmdDrawIndexed(nativeCommand(command), index_count, instance_count, first_index, vertex_offset,
+                   first_instance);
   return {};
 }
 } // namespace terreate::graphics

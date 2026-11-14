@@ -1,7 +1,7 @@
-# Rendering commands (#265 Phase C1)
+# Rendering commands (#265 Phases C1 and C2)
 
 `<terreate/graphics/rendering_commands.hpp>` records Vulkan 1.3 Dynamic
-Rendering instances and non-indexed draws. It follows the
+Rendering instances, vertex and index buffer bindings, and draws. It follows the
 `pipeline_commands.hpp` model: free functions taking the application's `Device`
 and recording `CommandBuffer`, typed `RenderingCommandError`s, and exactly one
 native `vkCmd*` call per successful function, none on error.
@@ -20,6 +20,9 @@ objects. There is no RenderPass or RenderGraph.
 | `recordSetViewport(device, cmd, vk::Viewport)` | `vkCmdSetViewport` (viewport 0, count 1) |
 | `recordSetScissor(device, cmd, vk::Rect2D)` | `vkCmdSetScissor` (scissor 0, count 1) |
 | `recordDraw(device, cmd, scope, vertex_count, instance_count, first_vertex, first_instance)` | `vkCmdDraw` |
+| `recordBindVertexBuffers(device, cmd, first_binding, span<const VertexBufferBinding>)` | `vkCmdBindVertexBuffers` |
+| `recordBindIndexBuffer(device, cmd, buffer, offset, vk::IndexType)` | `vkCmdBindIndexBuffer` |
+| `recordDrawIndexed(device, cmd, scope, index_count, instance_count, first_index, vertex_offset, first_instance)` | `vkCmdDrawIndexed` |
 
 The pure CPU seams `validateRenderingDescription`, `validateViewport` and
 `validateScissor` expose the attachment-independent checks.
@@ -99,10 +102,46 @@ instance.
   depths in `[0, 1]`. NaN fails every check (`invalid_viewport`).
 - Scissor: nonnegative offset, and `offset + extent` representable as
   `int32_t` (`invalid_scissor`).
+  A zero-width or zero-height scissor is valid Vulkan and is accepted on
+  purpose: it discards every fragment.
 
 `recordDraw` needs a graphics queue and an active scope. Whether a compatible
 graphics pipeline, viewport, scissor and descriptor or push-constant state are
 bound is the caller's responsibility. Nothing is tracked.
+
+## Vertex and index buffers
+
+Each `VertexBufferBinding` borrows a `const Buffer *` and an offset only during
+`recordBindVertexBuffers`; `recordBindIndexBuffer` borrows its `Buffer` only
+during the call. The caller keeps every buffer alive through all GPU use.
+Binding is allowed inside or outside a rendering instance; only
+`recordDrawIndexed` needs an active scope.
+
+Validation before the native call, in addition to the shared Device,
+recording CommandBuffer and graphics queue checks:
+
+- Vertex buffers: a nonempty span with
+  `first_binding + count <= maxVertexInputBindings`, computed without
+  overflow (`invalid_binding_range`). Each Buffer is nonnull and valid
+  (`invalid_buffer`), on the Device (`parent_mismatch`), has `VERTEX_BUFFER`
+  usage and an offset below its size (`invalid_buffer`).
+- Index buffer: index type `UINT16` or `UINT32` (`invalid_index_type`;
+  `UINT8` needs `indexTypeUint8`, which a Terreate Device cannot enable because
+  `DeviceDescription` takes only pNext-free Vulkan 1.0–1.3 feature structures).
+  The Buffer is valid, on the Device (`parent_mismatch`), has `INDEX_BUFFER`
+  usage and an offset below its size. The offset plus the buffer's offset in
+  its `VkDeviceMemory` (the VMA allocation offset) must be a multiple of the
+  index size (VUID-vkCmdBindIndexBuffer-offset-08783; `invalid_buffer`).
+
+Binding state is not tracked, so these remain caller responsibilities:
+
+- the bound index buffer covers `[first_index, first_index + index_count)`;
+- the bound vertex buffers match the bound pipeline's vertex input bindings
+  and attributes;
+- a compatible graphics pipeline is bound.
+
+Checking the index range against the bound buffer and checking vertex input
+compatibility with the pipeline are planned future support.
 
 ## Deliberately excluded
 
@@ -113,7 +152,6 @@ bound is the caller's responsibility. Nothing is tracked.
 - Rendering flags (suspend/resume, secondary command buffer contents),
   `viewMask ≠ 0`, fragment shading rate and density map attachments.
 - Read-only depth/stencil layouts and multi-level views.
-- Vertex and index buffers and `drawIndexed` (Phase C2).
 
 ## Tests
 
@@ -134,6 +172,19 @@ bound is the caller's responsibility. Nothing is tracked.
     Device, foreign attachment, missing usage, mismatched view, layouts, area,
     layers, depth/stencil views, inactive and foreign scopes, viewport and
     scissor.
+  - A second rendering instance draws an indexed quad. Its 4 vertices and 6
+    `UINT16` indices are uploaded through the Upload Batch after a padding
+    vertex and two padding indices, so both bind offsets are nonzero. The
+    pipeline reads binding 0 (stride 8) as attribute 0 `R32G32_SFLOAT`.
+    Readback finds the quad color at the center and inside each triangle,
+    and the clear color outside the quad.
+  - Wraps assert the exact vertex bind, index bind and indexed draw
+    arguments. Rejections make zero native calls: empty, over-limit and
+    overflowing binding ranges, missing usage, out-of-range offsets, index
+    alignment, `UINT8` and `NONE_KHR` index types, foreign Device buffers,
+    and inactive or foreign scopes.
   - Zero validation warnings. Missing prerequisites report BLOCKED.
-- Package smoke records begin, viewport, scissor and end from the installed
-  package without submitting (`package.rendering_commands: runtime=PASS`).
+- Package smoke records begin, viewport, scissor, vertex and index buffer
+  binds and end from the installed package without submitting. With no
+  pipeline bound it records no draw, and checks that `recordDrawIndexed`
+  rejects the consumed scope (`package.rendering_commands: runtime=PASS`).

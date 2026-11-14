@@ -727,7 +727,9 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
     target_link_libraries(terreate_graphics_rendering_commands_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_rendering_commands_tests PRIVATE
       "-Wl,--wrap=vkCmdBeginRendering" "-Wl,--wrap=vkCmdEndRendering"
-      "-Wl,--wrap=vkCmdSetViewport" "-Wl,--wrap=vkCmdSetScissor" "-Wl,--wrap=vkCmdDraw")
+      "-Wl,--wrap=vkCmdSetViewport" "-Wl,--wrap=vkCmdSetScissor" "-Wl,--wrap=vkCmdDraw"
+      "-Wl,--wrap=vkCmdBindVertexBuffers" "-Wl,--wrap=vkCmdBindIndexBuffer"
+      "-Wl,--wrap=vkCmdDrawIndexed")
     terreate_configure_target(terreate_graphics_rendering_commands_tests)
     add_test(NAME graphics.rendering_commands.cpu
       COMMAND terreate_graphics_rendering_commands_tests cpu)
