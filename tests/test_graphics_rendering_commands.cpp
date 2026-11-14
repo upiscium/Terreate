@@ -12,6 +12,7 @@
 #include <terreate/graphics/spirv_binary.hpp>
 #include <terreate/graphics/submission.hpp>
 #include <terreate/graphics/transfer_commands.hpp>
+#include <terreate/graphics/upload_batch.hpp>
 
 #include <array>
 #include <atomic>
@@ -87,6 +88,33 @@ constexpr std::array<std::uint32_t, 76> fragment_words{
     0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0003003e,
     0x00000009, 0x0000000c, 0x000100fd, 0x00010038,
 };
+// quad.vert (SHA-256 7b43439e895d55c89e3d4d50098ce2f574854ba38b5fb485238b615037bf48a0), compiled
+// with the same command; positions come from vertex input binding 0:
+//   #version 450
+//   layout(location = 0) in vec2 position;
+//   void main() { gl_Position = vec4(position, 0.5, 1.0); }
+constexpr std::array<std::uint32_t, 158> quad_vertex_words{
+    0x07230203, 0x00010600, 0x0008000b, 0x0000001b, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0007000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000d, 0x00000012, 0x00030047,
+    0x0000000b, 0x00000002, 0x00050048, 0x0000000b, 0x00000000, 0x0000000b, 0x00000000, 0x00050048,
+    0x0000000b, 0x00000001, 0x0000000b, 0x00000001, 0x00050048, 0x0000000b, 0x00000002, 0x0000000b,
+    0x00000003, 0x00050048, 0x0000000b, 0x00000003, 0x0000000b, 0x00000004, 0x00040047, 0x00000012,
+    0x0000001e, 0x00000000, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016,
+    0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000004, 0x00040015, 0x00000008,
+    0x00000020, 0x00000000, 0x0004002b, 0x00000008, 0x00000009, 0x00000001, 0x0004001c, 0x0000000a,
+    0x00000006, 0x00000009, 0x0006001e, 0x0000000b, 0x00000007, 0x00000006, 0x0000000a, 0x0000000a,
+    0x00040020, 0x0000000c, 0x00000003, 0x0000000b, 0x0004003b, 0x0000000c, 0x0000000d, 0x00000003,
+    0x00040015, 0x0000000e, 0x00000020, 0x00000001, 0x0004002b, 0x0000000e, 0x0000000f, 0x00000000,
+    0x00040017, 0x00000010, 0x00000006, 0x00000002, 0x00040020, 0x00000011, 0x00000001, 0x00000010,
+    0x0004003b, 0x00000011, 0x00000012, 0x00000001, 0x0004002b, 0x00000006, 0x00000014, 0x3f000000,
+    0x0004002b, 0x00000006, 0x00000015, 0x3f800000, 0x00040020, 0x00000019, 0x00000003, 0x00000007,
+    0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003d,
+    0x00000010, 0x00000013, 0x00000012, 0x00050051, 0x00000006, 0x00000016, 0x00000013, 0x00000000,
+    0x00050051, 0x00000006, 0x00000017, 0x00000013, 0x00000001, 0x00070050, 0x00000007, 0x00000018,
+    0x00000016, 0x00000017, 0x00000014, 0x00000015, 0x00050041, 0x00000019, 0x0000001a, 0x0000000d,
+    0x0000000f, 0x0003003e, 0x0000001a, 0x00000018, 0x000100fd, 0x00010038,
+};
 
 constexpr std::uint32_t size = 64;
 constexpr vk::Format color_format = vk::Format::eR8G8B8A8Unorm;
@@ -132,11 +160,23 @@ struct Recorded {
   VkRect2D scissor_value{};
   std::size_t draw = 0;
   std::array<std::uint32_t, 4> draw_args{};
+  std::size_t bind_vertex = 0;
+  std::uint32_t vertex_first = 1;
+  std::vector<VkBuffer> vertex_buffers{};
+  std::vector<VkDeviceSize> vertex_offsets{};
+  std::size_t bind_index = 0;
+  VkBuffer index_buffer = VK_NULL_HANDLE;
+  VkDeviceSize index_offset = 0;
+  VkIndexType index_type = VK_INDEX_TYPE_NONE_KHR;
+  std::size_t draw_indexed = 0;
+  std::array<std::uint32_t, 4> draw_indexed_args{};
+  std::int32_t draw_indexed_vertex_offset = 1;
 };
 Recorded recorded;
 
 std::size_t nativeCalls() {
-  return recorded.begin + recorded.end + recorded.viewport + recorded.scissor + recorded.draw;
+  return recorded.begin + recorded.end + recorded.viewport + recorded.scissor + recorded.draw +
+         recorded.bind_vertex + recorded.bind_index + recorded.draw_indexed;
 }
 
 struct ValidationRecorder {
@@ -176,6 +216,11 @@ extern "C" void __real_vkCmdSetScissor(VkCommandBuffer, std::uint32_t, std::uint
                                        const VkRect2D *);
 extern "C" void __real_vkCmdDraw(VkCommandBuffer, std::uint32_t, std::uint32_t, std::uint32_t,
                                  std::uint32_t);
+extern "C" void __real_vkCmdBindVertexBuffers(VkCommandBuffer, std::uint32_t, std::uint32_t,
+                                              const VkBuffer *, const VkDeviceSize *);
+extern "C" void __real_vkCmdBindIndexBuffer(VkCommandBuffer, VkBuffer, VkDeviceSize, VkIndexType);
+extern "C" void __real_vkCmdDrawIndexed(VkCommandBuffer, std::uint32_t, std::uint32_t,
+                                        std::uint32_t, std::int32_t, std::uint32_t);
 
 extern "C" void __wrap_vkCmdBeginRendering(VkCommandBuffer command, const VkRenderingInfo *info) {
   ++recorded.begin;
@@ -217,6 +262,31 @@ extern "C" void __wrap_vkCmdDraw(VkCommandBuffer command, std::uint32_t vertices
   recorded.draw_args = {vertices, instances, first_vertex, first_instance};
   __real_vkCmdDraw(command, vertices, instances, first_vertex, first_instance);
 }
+extern "C" void __wrap_vkCmdBindVertexBuffers(VkCommandBuffer command, std::uint32_t first,
+                                              std::uint32_t count, const VkBuffer *buffers,
+                                              const VkDeviceSize *offsets) {
+  ++recorded.bind_vertex;
+  recorded.vertex_first = first;
+  recorded.vertex_buffers.assign(buffers, buffers + count);
+  recorded.vertex_offsets.assign(offsets, offsets + count);
+  __real_vkCmdBindVertexBuffers(command, first, count, buffers, offsets);
+}
+extern "C" void __wrap_vkCmdBindIndexBuffer(VkCommandBuffer command, VkBuffer buffer,
+                                            VkDeviceSize offset, VkIndexType type) {
+  ++recorded.bind_index;
+  recorded.index_buffer = buffer;
+  recorded.index_offset = offset;
+  recorded.index_type = type;
+  __real_vkCmdBindIndexBuffer(command, buffer, offset, type);
+}
+extern "C" void __wrap_vkCmdDrawIndexed(VkCommandBuffer command, std::uint32_t indices,
+                                        std::uint32_t instances, std::uint32_t first_index,
+                                        std::int32_t vertex_offset, std::uint32_t first_instance) {
+  ++recorded.draw_indexed;
+  recorded.draw_indexed_args = {indices, instances, first_index, first_instance};
+  recorded.draw_indexed_vertex_offset = vertex_offset;
+  __real_vkCmdDrawIndexed(command, indices, instances, first_index, vertex_offset, first_instance);
+}
 // NOLINTEND(bugprone-reserved-identifier)
 
 namespace {
@@ -228,12 +298,21 @@ int cpuTest() {
   static_assert(std::is_nothrow_move_constructible_v<RenderingScope>);
   static_assert(!std::is_move_assignable_v<RenderingScope>);
   const std::error_code first = Error::invalid_device;
-  const std::error_code last = Error::allocation_failed;
+  const std::error_code last = Error::invalid_index_type;
   check(first.category() == rendering_command_error_category() && first != last &&
             std::string_view{rendering_command_error_category().name()} ==
                 "terreate.graphics.rendering_commands" &&
             !first.message().empty() && !last.message().empty(),
         "typed error category and distinct codes");
+  check(static_cast<int>(Error::allocation_failed) == 13 &&
+            static_cast<int>(Error::invalid_buffer) == 14 &&
+            static_cast<int>(Error::invalid_binding_range) == 15 &&
+            static_cast<int>(Error::invalid_index_type) == 16 &&
+            std::error_code{Error::invalid_buffer}.message() !=
+                std::error_code{Error::allocation_failed}.message(),
+        "C2 codes are appended without renumbering C1 codes");
+  check(VertexBufferBinding{}.buffer == nullptr && VertexBufferBinding{}.offset == 0,
+        "default vertex binding names no buffer");
   check(RenderingAttachmentDescription{}.layout == vk::ImageLayout::eUndefined &&
             RenderingDescription{}.layer_count == 1,
         "default attachment layout is deliberately invalid");
@@ -388,6 +467,62 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   if (!pipeline)
     return blocked("Dynamic Rendering GraphicsPipeline");
 
+  // Indexed quad: positions from vertex input binding 0, color only.
+  const auto quad_binary = SpirvBinary::fromWords(quad_vertex_words);
+  if (!quad_binary)
+    return blocked("quad SPIR-V fixture");
+  auto quad_vertex = createShaderModule(device, *quad_binary);
+  if (!quad_vertex)
+    return blocked("quad vertex shader module");
+  GraphicsPipelineDescription quad_description;
+  quad_description.vertex_entry_point = "main";
+  quad_description.fragment_entry_point = "main";
+  quad_description.vertex_bindings = {
+      vk::VertexInputBindingDescription{0, 2 * sizeof(float), vk::VertexInputRate::eVertex}};
+  quad_description.vertex_attributes = {
+      vk::VertexInputAttributeDescription{0, 0, vk::Format::eR32G32Sfloat, 0}};
+  quad_description.color_attachment_formats = {color_format};
+  quad_description.color_blend_attachments = {blend};
+  auto quad_pipeline =
+      createGraphicsPipeline(device, *layout, *quad_vertex, *fragment, quad_description);
+  auto quad =
+      makeTarget(device, *allocator, color_format, color_usage, vk::ImageAspectFlagBits::eColor);
+  if (!quad_pipeline || !quad)
+    return blocked("vertex-input GraphicsPipeline and quad color target");
+
+  // A leading padding vertex and two leading indices make both bind offsets
+  // observable: ignoring either offset would draw a different shape.
+  constexpr std::array<float, 10> vertices{100.0F, 100.0F, -0.5F, -0.5F, 0.5F,
+                                           -0.5F,  0.5F,   0.5F,  -0.5F, 0.5F};
+  constexpr std::array<std::uint16_t, 8> indices{0, 0, 0, 1, 2, 2, 3, 0};
+  constexpr vk::DeviceSize vertex_offset = 2 * sizeof(float);
+  constexpr vk::DeviceSize index_offset = 2 * sizeof(std::uint16_t);
+  const auto makeBuffer = [](const Allocator &owner, vk::DeviceSize bytes,
+                             vk::BufferUsageFlags usage) {
+    BufferDescription buffer_description;
+    buffer_description.size = bytes;
+    buffer_description.usage = usage;
+    return createBuffer(owner, buffer_description);
+  };
+  constexpr auto upload_usage = vk::BufferUsageFlagBits::eTransferDst;
+  auto vertex_buffer = makeBuffer(*allocator, sizeof(vertices),
+                                  vk::BufferUsageFlagBits::eVertexBuffer | upload_usage);
+  auto index_buffer =
+      makeBuffer(*allocator, sizeof(indices), vk::BufferUsageFlagBits::eIndexBuffer | upload_usage);
+  auto uniform_buffer = makeBuffer(*allocator, 64, vk::BufferUsageFlagBits::eUniformBuffer);
+  auto foreign_buffer =
+      makeBuffer(*other_allocator, 64,
+                 vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer);
+  if (!vertex_buffer || !index_buffer || !uniform_buffer || !foreign_buffer)
+    return blocked("vertex, index and rejection Buffers");
+  const std::array<BufferUploadItem, 2> writes{{
+      {&*vertex_buffer, 0, std::as_bytes(std::span{vertices})},
+      {&*index_buffer, 0, std::as_bytes(std::span{indices})},
+  }};
+  auto upload = prepareUploadBatch(*allocator, UploadBatchDescription{.buffers = writes});
+  if (!upload)
+    return blocked("prepare vertex/index Upload");
+
   CommandPoolDescription pool_description;
   pool_description.queue_family_index = static_cast<std::uint32_t>(queue.familyIndex());
   auto pool = createCommandPool(device, pool_description);
@@ -495,9 +630,20 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
   to_depth.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   to_depth.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-  const std::array<VkImageMemoryBarrier2, 2> to_attachments{to_color, to_depth};
-  if (!recordBarriers(device, *command, {.images = to_attachments}))
-    return blocked("explicit attachment layout transitions");
+  auto to_quad = to_color;
+  to_quad.image = quad->image.nativeImage();
+  const std::array<VkImageMemoryBarrier2, 3> to_attachments{to_color, to_depth, to_quad};
+  VkMemoryBarrier2 to_vertex_input{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+  to_vertex_input.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+  to_vertex_input.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  to_vertex_input.dstStageMask =
+      VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT;
+  to_vertex_input.dstAccessMask =
+      VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT;
+  if (!recordUploadBatch(device, *command, *upload) ||
+      !recordBarriers(device, *command,
+                      {.memory = std::span{&to_vertex_input, 1}, .images = to_attachments}))
+    return blocked("vertex/index upload and explicit attachment layout transitions");
 
   auto scope = recordBeginRendering(device, *command, description);
   if (!scope)
@@ -564,6 +710,79 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
             recorded.end == 1 && recorded.begin == 1,
         "exactly one viewport, scissor, draw and end with exact arguments");
 
+  // Second rendering instance: an indexed quad from vertex and index buffers.
+  RenderingDescription quad_rendering;
+  quad_rendering.render_area = description.render_area;
+  quad_rendering.color_attachments = {
+      {&quad->image, &quad->view, vk::ImageLayout::eColorAttachmentOptimal,
+       vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore, clear_color}};
+  auto quad_scope = recordBeginRendering(device, *command, quad_rendering);
+  if (!quad_scope || !recordBindPipeline(device, *command, *quad_pipeline) ||
+      !recordSetViewport(device, *command, viewport) ||
+      !recordSetScissor(device, *command, scissor))
+    return blocked("begin quad rendering, bind pipeline and set dynamic state");
+  const auto quad_calls = nativeCalls();
+  const auto max_bindings = device.plan()->capabilities().properties.limits.maxVertexInputBindings;
+  const auto bind_vertex = [&](const Buffer *buffer, vk::DeviceSize offset,
+                               std::uint32_t first = 0) {
+    const std::array<VertexBufferBinding, 1> binding{{{buffer, offset}}};
+    return recordBindVertexBuffers(device, *command, first, binding);
+  };
+  const auto bind_index = [&](const Buffer &buffer, vk::DeviceSize offset, vk::IndexType type) {
+    return recordBindIndexBuffer(device, *command, buffer, offset, type);
+  };
+  // `moved` was consumed by recordEndRendering above.
+  // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  check(
+      hasError(recordBindVertexBuffers(device, *command, 0, {}), Error::invalid_binding_range) &&
+          hasError(bind_vertex(&*vertex_buffer, 0, max_bindings), Error::invalid_binding_range) &&
+          hasError(bind_vertex(&*vertex_buffer, 0, std::numeric_limits<std::uint32_t>::max()),
+                   Error::invalid_binding_range) &&
+          hasError(bind_vertex(nullptr, 0), Error::invalid_buffer) &&
+          hasError(bind_vertex(&*uniform_buffer, 0), Error::invalid_buffer) &&
+          hasError(bind_vertex(&*vertex_buffer, sizeof(vertices)), Error::invalid_buffer) &&
+          hasError(bind_vertex(&*foreign_buffer, 0), Error::parent_mismatch) &&
+          hasError(recordBindVertexBuffers(other, *command, 0,
+                                           std::array{VertexBufferBinding{&*vertex_buffer, 0}}),
+                   Error::parent_mismatch) &&
+          hasError(bind_index(*uniform_buffer, 0, vk::IndexType::eUint16), Error::invalid_buffer) &&
+          hasError(bind_index(*index_buffer, sizeof(indices), vk::IndexType::eUint16),
+                   Error::invalid_buffer) &&
+          hasError(bind_index(*index_buffer, 1, vk::IndexType::eUint16), Error::invalid_buffer) &&
+          hasError(bind_index(*index_buffer, 2, vk::IndexType::eUint32), Error::invalid_buffer) &&
+          hasError(bind_index(*index_buffer, 0, vk::IndexType::eUint8),
+                   Error::invalid_index_type) &&
+          hasError(bind_index(*index_buffer, 0, vk::IndexType::eNoneKHR),
+                   Error::invalid_index_type) &&
+          hasError(bind_index(*foreign_buffer, 0, vk::IndexType::eUint16),
+                   Error::parent_mismatch) &&
+          hasError(recordDrawIndexed(device, *command, moved, 6, 1, 0, 0, 0),
+                   Error::invalid_rendering_scope) &&
+          hasError(recordDrawIndexed(device, *spare, *quad_scope, 6, 1, 0, 0, 0),
+                   Error::invalid_rendering_scope) &&
+          nativeCalls() == quad_calls,
+      "empty, over-limit and overflowing binding ranges, missing usage, offsets, index "
+      "alignment and type, foreign Buffers and inactive or foreign scopes rejected before "
+      "native calls");
+  // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  const std::array<VertexBufferBinding, 1> quad_vertices{{{&*vertex_buffer, vertex_offset}}};
+  if (!recordBindVertexBuffers(device, *command, 0, quad_vertices) ||
+      !recordBindIndexBuffer(device, *command, *index_buffer, index_offset,
+                             vk::IndexType::eUint16) ||
+      !recordDrawIndexed(device, *command, *quad_scope, 6, 1, 0, 0, 0) ||
+      !recordEndRendering(device, *command, std::move(*quad_scope)))
+    return blocked("bind vertex/index buffers, draw indexed and end quad rendering");
+  check(recorded.bind_vertex == 1 && recorded.vertex_first == 0 &&
+            recorded.vertex_buffers == std::vector<VkBuffer>{vertex_buffer->nativeBuffer()} &&
+            recorded.vertex_offsets == std::vector<VkDeviceSize>{vertex_offset} &&
+            recorded.bind_index == 1 && recorded.index_buffer == index_buffer->nativeBuffer() &&
+            recorded.index_offset == index_offset && recorded.index_type == VK_INDEX_TYPE_UINT16 &&
+            recorded.draw_indexed == 1 &&
+            recorded.draw_indexed_args == std::array<std::uint32_t, 4>{6, 1, 0, 0} &&
+            recorded.draw_indexed_vertex_offset == 0 && recorded.draw == 1 && recorded.begin == 2 &&
+            recorded.end == 2,
+        "exactly one vertex bind, index bind and indexed draw with exact arguments");
+
   auto to_transfer = imageBarrier(color->image, VK_IMAGE_ASPECT_COLOR_BIT);
   to_transfer.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   to_transfer.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
@@ -574,8 +793,12 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   VkBufferImageCopy2 region{VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
   region.imageSubresource = VkImageSubresourceLayers{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.imageExtent = VkExtent3D{size, size, 1};
-  const std::array<ImageReadbackItem, 1> reads{
-      {{&color->image, vk::ImageLayout::eTransferSrcOptimal, region}}};
+  auto quad_to_transfer = to_transfer;
+  quad_to_transfer.image = quad->image.nativeImage();
+  const std::array<VkImageMemoryBarrier2, 2> to_transfers{to_transfer, quad_to_transfer};
+  const std::array<ImageReadbackItem, 2> reads{
+      {{&color->image, vk::ImageLayout::eTransferSrcOptimal, region},
+       {&quad->image, vk::ImageLayout::eTransferSrcOptimal, region}}};
   auto readback = prepareReadbackBatch(*allocator, ReadbackBatchDescription{.images = reads});
   if (!readback)
     return blocked("prepare image Readback");
@@ -584,7 +807,7 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   to_host.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
   to_host.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
   to_host.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
-  if (!recordBarriers(device, *command, {.images = std::span{&to_transfer, 1}}) ||
+  if (!recordBarriers(device, *command, {.images = to_transfers}) ||
       !recordReadbackBatch(device, *command, *readback) ||
       !recordBarriers(device, *command, {.memory = std::span{&to_host, 1}}) || !command->end() ||
       !spare->end())
@@ -616,26 +839,44 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
     std::_Exit(blocked("Fence did not prove GPU completion"));
   const std::span<const SubmissionReceipt> uses{&*receipt, 1};
   auto copied = tryCopyCompletedReadbackBatch(device, *readback, uses);
-  if (!copied || copied->images().size() != 1)
+  if (!copied || copied->images().size() != 2)
     return blocked("copy completed image Readback");
-  const auto pixels = copied->imageDataFor(0);
-  const auto pitch = copied->images()[0].row_pitch_bytes;
   constexpr std::size_t row_bytes = std::size_t{size} * 4;
-  if (!check(pitch >= row_bytes && pixels.size() >= (pitch * (std::size_t{size} - 1)) + row_bytes,
-             "readback covers every row"))
-    return EXIT_FAILURE;
-  const auto pixel = [&](std::uint32_t x, std::uint32_t y) {
-    std::array<std::uint8_t, 4> rgba{};
-    std::memcpy(rgba.data(), pixels.data() + (std::size_t{y} * pitch) + (std::size_t{x} * 4),
-                rgba.size());
-    return rgba;
+  for (std::size_t image = 0; image < 2; ++image) {
+    const auto pitch = copied->images()[image].row_pitch_bytes;
+    if (!check(pitch >= row_bytes && copied->imageDataFor(image).size() >=
+                                         (pitch * (std::size_t{size} - 1)) + row_bytes,
+               "readback covers every row"))
+      return EXIT_FAILURE;
+  }
+  // Pixel reader for one read-back image (0: triangle, 1: indexed quad).
+  const auto reader = [&](std::size_t image) {
+    return [&copied, image](std::uint32_t x, std::uint32_t y) {
+      const auto pixels = copied->imageDataFor(image);
+      const auto pitch = copied->images()[image].row_pitch_bytes;
+      std::array<std::uint8_t, 4> rgba{};
+      std::memcpy(rgba.data(), pixels.data() + (std::size_t{y} * pitch) + (std::size_t{x} * 4),
+                  rgba.size());
+      return rgba;
+    };
   };
+  const auto triangle = reader(0);
+  const auto quad_pixel = reader(1);
   constexpr std::array<std::uint8_t, 4> green{0, 255, 0, 255};
   constexpr std::array<std::uint8_t, 4> blue{0, 0, 255, 255};
-  check(pixel(size / 2, size / 2) == green, "triangle covers the center pixel");
-  check(pixel(0, 0) == blue && pixel(size - 1, 0) == blue && pixel(0, size - 1) == blue &&
-            pixel(size - 1, size - 1) == blue,
-        "corners keep the clear color");
+  const auto corners_clear = [&](const auto &pixel) {
+    return pixel(0, 0) == blue && pixel(size - 1, 0) == blue && pixel(0, size - 1) == blue &&
+           pixel(size - 1, size - 1) == blue;
+  };
+  check(triangle(size / 2, size / 2) == green, "triangle covers the center pixel");
+  check(corners_clear(triangle), "corners keep the clear color");
+  // Quad spans pixels [16, 48). Indices (0, 1, 2) cover x > y, (2, 3, 0) cover x < y.
+  check(quad_pixel(size / 2, size / 2) == green && quad_pixel(41, 22) == green &&
+            quad_pixel(22, 41) == green,
+        "indexed quad covers the center and a pixel of each triangle");
+  check(corners_clear(quad_pixel) && quad_pixel(8, size / 2) == blue &&
+            quad_pixel(size / 2, 8) == blue,
+        "pixels outside the quad keep the clear color");
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 

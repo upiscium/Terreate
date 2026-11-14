@@ -993,7 +993,13 @@ int main() {
     target_view_description.subresource_range =
         vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
     auto target_view = terreate::graphics::createImageView(*device, *target, target_view_description);
-    if (!target_view || !command_buffer->begin()) return 69;
+    terreate::graphics::BufferDescription geometry_description;
+    geometry_description.size = 64;
+    geometry_description.usage =
+        vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer;
+    auto geometry = terreate::graphics::createBuffer(*allocator, geometry_description);
+    if (!target_view || !geometry || !command_buffer->begin()) return 69;
+    const std::array<terreate::graphics::VertexBufferBinding, 1> vertex_bindings{{{&*geometry, 16}}};
     terreate::graphics::RenderingDescription rendering;
     rendering.render_area = vk::Rect2D{{0, 0}, {4, 4}};
     rendering.color_attachments = {{&*target, &*target_view,
@@ -1007,8 +1013,18 @@ int main() {
           !terreate::graphics::recordSetViewport(*device, *command_buffer,
                                                  vk::Viewport{0.0F, 0.0F, 4.0F, 4.0F, 0.0F, 1.0F}) ||
           !terreate::graphics::recordSetScissor(*device, *command_buffer, vk::Rect2D{{0, 0}, {4, 4}}) ||
+          !terreate::graphics::recordBindVertexBuffers(*device, *command_buffer, 0, vertex_bindings) ||
+          !terreate::graphics::recordBindIndexBuffer(*device, *command_buffer, *geometry, 0,
+                                                     vk::IndexType::eUint16) ||
           !terreate::graphics::recordEndRendering(*device, *command_buffer, std::move(*scope)) ||
           scope->active())
+        return 70;
+      // No pipeline is bound, so no draw is recorded; a consumed scope is rejected.
+      const auto draw = terreate::graphics::recordDrawIndexed(*device, *command_buffer, *scope, 6,
+                                                              1, 0, 0, 0);
+      if (draw || draw.error().code() !=
+                      terreate::graphics::make_error_code(
+                          terreate::graphics::RenderingCommandError::invalid_rendering_scope))
         return 70;
     } else if (scope || scope.error().code() !=
                             terreate::graphics::make_error_code(
