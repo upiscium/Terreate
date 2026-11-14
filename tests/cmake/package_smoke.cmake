@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|pipeline_layout|compute_pipeline|graphics_pipeline|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write pipeline_layout compute_pipeline graphics_pipeline submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write pipeline_layout compute_pipeline graphics_pipeline pipeline_commands submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -215,6 +215,12 @@ set_target_properties(package_consumer PROPERTIES
      NOT "${_run_output}" MATCHES "package\\.graphics_pipeline: runtime=PASS")
     message(FATAL_ERROR
       "${name} consumer did not exercise installed graphics pipeline creation\n"
+      "${_run_output}\n${_run_error}")
+  endif()
+  if("${component}" STREQUAL "Graphics" AND
+     NOT "${_run_output}" MATCHES "package\\.pipeline_commands: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise installed pipeline command recording\n"
       "${_run_output}\n${_run_error}")
   endif()
 endfunction()
@@ -355,6 +361,7 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <terreate/graphics/pipeline_layout.hpp>
 #include <terreate/graphics/compute_pipeline.hpp>
 #include <terreate/graphics/graphics_pipeline.hpp>
+#include <terreate/graphics/pipeline_commands.hpp>
 #include <terreate/graphics/device.hpp>
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
@@ -914,6 +921,33 @@ int main() {
   auto moved_pipeline = std::move(*compute_pipeline);
   if (compute_pipeline->valid() || compute_pipeline->configuration() ||
       !moved_pipeline.valid()) return 47;
+  {
+    // Record installed pipeline commands into a caller-owned CommandBuffer.
+    // Recording only: the application decides whether to submit; nothing is.
+    terreate::graphics::CommandPoolDescription compute_pool_description;
+    compute_pool_description.queue_family_index = compute_selection->family_index;
+    auto compute_pool =
+        terreate::graphics::createCommandPool(*pipeline_device, compute_pool_description);
+    if (!compute_pool) return 67;
+    auto compute_command = compute_pool->allocatePrimary();
+    if (!compute_command || !compute_command->begin()) return 67;
+    const std::array<std::uint32_t, 4> push_values{1, 2, 3, 4};
+    if (!terreate::graphics::recordBindPipeline(*pipeline_device, *compute_command,
+                                                moved_pipeline) ||
+        !terreate::graphics::recordPushConstants(*pipeline_device, *compute_command,
+                                                 *pipeline_layout,
+                                                 vk::ShaderStageFlagBits::eCompute, 0,
+                                                 std::as_bytes(std::span{push_values})) ||
+        !terreate::graphics::recordDispatch(*pipeline_device, *compute_command, 1, 1, 1) ||
+        terreate::graphics::recordPushConstants(*pipeline_device, *compute_command,
+                                                *pipeline_layout,
+                                                vk::ShaderStageFlagBits::eVertex, 0,
+                                                std::as_bytes(std::span{push_values})) ||
+        !compute_command->end() ||
+        compute_command->state() != terreate::graphics::CommandBufferState::executable)
+      return 68;
+    std::puts("package.pipeline_commands: runtime=PASS");
+  }
   // Pipeline dies before its layout; no compute work is submitted.
 
   // The installed Graphics archive also exposes the explicit CommandPool /
