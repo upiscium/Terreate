@@ -722,6 +722,24 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.pipeline_commands: headless-dispatch=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.pipeline_commands.*: (assertion=FAIL|.*BLOCKED)")
 
+    add_executable(terreate_graphics_rendering_commands_tests
+      tests/test_graphics_rendering_commands.cpp)
+    target_link_libraries(terreate_graphics_rendering_commands_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_rendering_commands_tests PRIVATE
+      "-Wl,--wrap=vkCmdBeginRendering" "-Wl,--wrap=vkCmdEndRendering"
+      "-Wl,--wrap=vkCmdSetViewport" "-Wl,--wrap=vkCmdSetScissor" "-Wl,--wrap=vkCmdDraw")
+    terreate_configure_target(terreate_graphics_rendering_commands_tests)
+    add_test(NAME graphics.rendering_commands.cpu
+      COMMAND terreate_graphics_rendering_commands_tests cpu)
+    set_tests_properties(graphics.rendering_commands.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.rendering_commands\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.rendering_commands.*: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.rendering_commands
+      COMMAND terreate_graphics_rendering_commands_tests gpu)
+    set_tests_properties(graphics.rendering_commands PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.rendering_commands: headless-triangle=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.rendering_commands.*: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_image_tests tests/test_graphics_image.cpp)
     target_link_libraries(terreate_graphics_image_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_image_tests PRIVATE

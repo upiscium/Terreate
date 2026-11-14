@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write pipeline_layout compute_pipeline graphics_pipeline pipeline_commands submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write pipeline_layout compute_pipeline graphics_pipeline pipeline_commands rendering_commands submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -221,6 +221,12 @@ set_target_properties(package_consumer PROPERTIES
      NOT "${_run_output}" MATCHES "package\\.pipeline_commands: runtime=PASS")
     message(FATAL_ERROR
       "${name} consumer did not exercise installed pipeline command recording\n"
+      "${_run_output}\n${_run_error}")
+  endif()
+  if("${component}" STREQUAL "Graphics" AND
+     NOT "${_run_output}" MATCHES "package\\.rendering_commands: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise installed Dynamic Rendering recording\n"
       "${_run_output}\n${_run_error}")
   endif()
 endfunction()
@@ -362,6 +368,7 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <terreate/graphics/compute_pipeline.hpp>
 #include <terreate/graphics/graphics_pipeline.hpp>
 #include <terreate/graphics/pipeline_commands.hpp>
+#include <terreate/graphics/rendering_commands.hpp>
 #include <terreate/graphics/device.hpp>
 #include <terreate/graphics/instance.hpp>
 #include <terreate/graphics/physical_device.hpp>
@@ -972,6 +979,45 @@ int main() {
   if (!command_buffer->reset() ||
       command_buffer->state() != terreate::graphics::CommandBufferState::initial)
     return 22;
+  {
+    // Record an installed Dynamic Rendering instance. Recording only: nothing
+    // is submitted, and the application would transition layouts explicitly.
+    terreate::graphics::ImageDescription target_description;
+    target_description.format = vk::Format::eR8G8B8A8Unorm;
+    target_description.extent = vk::Extent3D{4, 4, 1};
+    target_description.usage = vk::ImageUsageFlagBits::eColorAttachment;
+    auto target = terreate::graphics::createImage(*allocator, target_description);
+    if (!target) return 69;
+    terreate::graphics::ImageViewDescription target_view_description;
+    target_view_description.format = target_description.format;
+    target_view_description.subresource_range =
+        vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    auto target_view = terreate::graphics::createImageView(*device, *target, target_view_description);
+    if (!target_view || !command_buffer->begin()) return 69;
+    terreate::graphics::RenderingDescription rendering;
+    rendering.render_area = vk::Rect2D{{0, 0}, {4, 4}};
+    rendering.color_attachments = {{&*target, &*target_view,
+                                    vk::ImageLayout::eColorAttachmentOptimal,
+                                    vk::AttachmentLoadOp::eClear,
+                                    vk::AttachmentStoreOp::eStore}};
+    auto scope = terreate::graphics::recordBeginRendering(*device, *command_buffer, rendering);
+    if (queue_flags & vk::QueueFlagBits::eGraphics) {
+      if (!scope || !scope->active() || scope->state().color_attachments.size() != 1 ||
+          scope->state().color_attachments[0].view != target_view->nativeImageView() ||
+          !terreate::graphics::recordSetViewport(*device, *command_buffer,
+                                                 vk::Viewport{0.0F, 0.0F, 4.0F, 4.0F, 0.0F, 1.0F}) ||
+          !terreate::graphics::recordSetScissor(*device, *command_buffer, vk::Rect2D{{0, 0}, {4, 4}}) ||
+          !terreate::graphics::recordEndRendering(*device, *command_buffer, std::move(*scope)) ||
+          scope->active())
+        return 70;
+    } else if (scope || scope.error().code() !=
+                            terreate::graphics::make_error_code(
+                                terreate::graphics::RenderingCommandError::unsupported_queue)) {
+      return 70;
+    }
+    if (!command_buffer->end()) return 70;
+    std::puts("package.rendering_commands: runtime=PASS");
+  }
   // No GPU work is submitted. View dies before Image; resources precede Allocator/Device/Instance.
   // CPU ownership does not stand in for application-owned GPU completion.
   return budgets && statistics && device->plan() != nullptr &&
