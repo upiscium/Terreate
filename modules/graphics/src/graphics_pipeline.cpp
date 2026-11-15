@@ -35,6 +35,8 @@ public:
       return "Vulkan returned null GraphicsPipeline on success";
     case GraphicsPipelineError::allocation_failed:
       return "GraphicsPipeline allocation failed";
+    case GraphicsPipelineError::invalid_pipeline_cache:
+      return "explicit GraphicsPipeline cache overload requires a non-null cache";
     }
     return "unknown GraphicsPipeline error";
   }
@@ -229,10 +231,11 @@ const GraphicsPipelineConfiguration *GraphicsPipeline::configuration() const noe
   return implementation_ ? &implementation_->config : nullptr;
 }
 
-auto createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
-                            const ShaderModule &vertex_module, const ShaderModule &fragment_module,
-                            const GraphicsPipelineDescription &description)
-    -> terreate::Result<GraphicsPipeline> {
+auto GraphicsPipeline::createWith(const Device &device, const PipelineLayout &layout,
+                                  const ShaderModule &vertex_module,
+                                  const ShaderModule &fragment_module,
+                                  const GraphicsPipelineDescription &description,
+                                  VkPipelineCache cache) -> terreate::Result<GraphicsPipeline> {
   if (!device.valid() || !device.plan())
     return fail(GraphicsPipelineError::invalid_device);
   if (!device.plan()->enabledFeatures13().dynamicRendering)
@@ -260,6 +263,7 @@ auto createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
     impl->config.requested = description;
     impl->config.effective = description;
     impl->config.limits = limits;
+    impl->config.pipeline_cache = cache;
     bindings.reserve(description.vertex_bindings.size());
     for (const auto &binding : description.vertex_bindings)
       bindings.push_back(static_cast<VkVertexInputBindingDescription>(binding));
@@ -362,7 +366,7 @@ auto createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
   // Adopt output immediately, including a partial result on native failure.
   // All owned storage is stable and all allocations precede this single call.
   const auto result =
-      vkCreateGraphicsPipelines(impl->device, VK_NULL_HANDLE, 1, &info, nullptr, &impl->handle);
+      vkCreateGraphicsPipelines(impl->device, cache, 1, &info, nullptr, &impl->handle);
   if (result != VK_SUCCESS)
     return std::unexpected(terreate::Error{vk::make_error_code(static_cast<vk::Result>(result)),
                                            "vkCreateGraphicsPipelines",
@@ -370,5 +374,23 @@ auto createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
   if (impl->handle == VK_NULL_HANDLE)
     return fail(GraphicsPipelineError::native_null_handle);
   return GraphicsPipeline{std::move(impl)};
+}
+
+auto createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
+                            const ShaderModule &vertex_module, const ShaderModule &fragment_module,
+                            const GraphicsPipelineDescription &description)
+    -> terreate::Result<GraphicsPipeline> {
+  return GraphicsPipeline::createWith(device, layout, vertex_module, fragment_module, description,
+                                      VK_NULL_HANDLE);
+}
+
+auto createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
+                            const ShaderModule &vertex_module, const ShaderModule &fragment_module,
+                            const GraphicsPipelineDescription &description, vk::PipelineCache cache)
+    -> terreate::Result<GraphicsPipeline> {
+  if (!cache)
+    return fail(GraphicsPipelineError::invalid_pipeline_cache);
+  return GraphicsPipeline::createWith(device, layout, vertex_module, fragment_module, description,
+                                      static_cast<VkPipelineCache>(cache));
 }
 } // namespace terreate::graphics

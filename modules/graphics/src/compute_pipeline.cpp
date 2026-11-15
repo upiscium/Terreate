@@ -27,6 +27,8 @@ public:
       return "Vulkan returned null ComputePipeline on success";
     case ComputePipelineError::allocation_failed:
       return "ComputePipeline wrapper allocation failed";
+    case ComputePipelineError::invalid_pipeline_cache:
+      return "explicit ComputePipeline cache overload requires a non-null cache";
     }
     return "unknown ComputePipeline error";
   }
@@ -97,10 +99,10 @@ const ComputePipelineConfiguration *ComputePipeline::configuration() const noexc
   return implementation_ ? &implementation_->config : nullptr;
 }
 
-auto createComputePipeline(const Device &device, const ShaderModule &shader_module,
-                           const PipelineLayout &layout,
-                           const ComputePipelineDescription &description)
-    -> terreate::Result<ComputePipeline> {
+auto ComputePipeline::createWith(const Device &device, const ShaderModule &shader_module,
+                                 const PipelineLayout &layout,
+                                 const ComputePipelineDescription &description,
+                                 VkPipelineCache cache) -> terreate::Result<ComputePipeline> {
   if (!device.valid() || !device.plan())
     return fail(ComputePipelineError::invalid_device, "live owning Device required");
   if (!shader_module.valid())
@@ -116,7 +118,7 @@ auto createComputePipeline(const Device &device, const ShaderModule &shader_modu
   std::vector<VkSpecializationMapEntry> specialization_entries;
   try {
     impl = std::make_unique<ComputePipeline::Impl>();
-    impl->config = {description, description, vk::ShaderStageFlagBits::eCompute};
+    impl->config = {description, description, vk::ShaderStageFlagBits::eCompute, cache};
     specialization_entries =
         detail::nativeSpecializationEntries(impl->config.effective.specialization);
   } catch (const std::bad_alloc &) {
@@ -151,7 +153,7 @@ auto createComputePipeline(const Device &device, const ShaderModule &shader_modu
   // on failure. Adopt the initialized output immediately so every nonnull result
   // is cleaned up, even if constructing the diagnostic subsequently throws.
   const auto result =
-      vkCreateComputePipelines(impl->device, VK_NULL_HANDLE, 1, &info, nullptr, &impl->handle);
+      vkCreateComputePipelines(impl->device, cache, 1, &info, nullptr, &impl->handle);
   if (result != VK_SUCCESS)
     return std::unexpected(terreate::Error{vk::make_error_code(static_cast<vk::Result>(result)),
                                            "vkCreateComputePipelines",
@@ -159,5 +161,23 @@ auto createComputePipeline(const Device &device, const ShaderModule &shader_modu
   if (impl->handle == VK_NULL_HANDLE)
     return fail(ComputePipelineError::native_null_handle, "successful Vulkan call returned null");
   return ComputePipeline{std::move(impl)};
+}
+
+auto createComputePipeline(const Device &device, const ShaderModule &shader_module,
+                           const PipelineLayout &layout,
+                           const ComputePipelineDescription &description)
+    -> terreate::Result<ComputePipeline> {
+  return ComputePipeline::createWith(device, shader_module, layout, description, VK_NULL_HANDLE);
+}
+
+auto createComputePipeline(const Device &device, const ShaderModule &shader_module,
+                           const PipelineLayout &layout,
+                           const ComputePipelineDescription &description, vk::PipelineCache cache)
+    -> terreate::Result<ComputePipeline> {
+  if (!cache)
+    return fail(ComputePipelineError::invalid_pipeline_cache,
+                "explicit cache overload requires a caller-owned non-null VkPipelineCache");
+  return ComputePipeline::createWith(device, shader_module, layout, description,
+                                     static_cast<VkPipelineCache>(cache));
 }
 } // namespace terreate::graphics

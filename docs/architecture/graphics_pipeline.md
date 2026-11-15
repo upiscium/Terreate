@@ -44,12 +44,15 @@ GraphicsPipelineDescription requested;
 GraphicsPipelineDescription effective;
 vk::ShaderStageFlags stages;
 vk::PhysicalDeviceLimits limits;
+VkPipelineCache pipeline_cache; // appended in #399 D1
 ```
 
 Requested and effective descriptions are independent owned snapshots, not pointers
 into caller arrays or strings. B0 does not infer shader state or silently substitute
 entry points. `stages` is exactly vertex plus fragment; `limits` snapshots the
-actual DevicePlan limits used for validation. Fixed native states below are not
+actual DevicePlan limits used for validation. `pipeline_cache` records the cache
+passed to creation (`VK_NULL_HANDLE` for the overload without a cache); it is an
+observation only and neither retains nor reuses the cache. Fixed native states below are not
 additional description members.
 
 ## Factory and CPU validation
@@ -114,7 +117,9 @@ the caller records their values before drawing. These fixed choices are not
 description members and do not imply enabling additional device features.
 
 After validation and allocation, exactly one `vkCreateGraphicsPipelines` call
-creates one pipeline: count `1`, null pipeline cache, null `renderPass`, subpass
+creates one pipeline: count `1`, a null pipeline cache unless the explicit cache
+overload is used (#399 D1; see
+[Explicit pipeline cache](pipeline.md#explicit-pipeline-cache-399-d1)), null `renderPass`, subpass
 `0`, zero flags and no derivatives or base pipeline. Its only extension chain is
 the rendering-info `pNext` (`VkPipelineRenderingCreateInfo`) with `viewMask = 0`
 and the explicit color, depth and stencil formats. There are exactly two stages,
@@ -186,6 +191,7 @@ enum class GraphicsPipelineError : std::uint8_t {
   feature_not_enabled,
   native_null_handle,
   allocation_failed,
+  invalid_pipeline_cache, // appended in #399 D1
 };
 ```
 
@@ -202,7 +208,7 @@ codes; allocation-failure reporting must not require another allocation.
 B0-a covers the API documentation and module registration here. Tests and installed
 package smoke belong to B0-b, not this change. Specialization constants were added in
 #399 D0. Pipeline
-caches (#399 D1), other shader stages and other dynamic states remain deferred. Reflection
+caches were added in #399 D1. Other shader stages and other dynamic states remain deferred. Reflection
 (#262), compiler integration (#261), RenderPass/RenderGraph abstractions, shared
 ownership and waits are outside this API. Existing layout and compute contracts
 remain documented in [pipeline.md](pipeline.md).
