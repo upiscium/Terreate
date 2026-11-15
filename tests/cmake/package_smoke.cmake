@@ -235,6 +235,12 @@ set_target_properties(package_consumer PROPERTIES
       "${name} consumer did not exercise installed specialization constants\n"
       "${_run_output}\n${_run_error}")
   endif()
+  if("${component}" STREQUAL "Graphics" AND
+     NOT "${_run_output}" MATCHES "package\\.pipeline_cache: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise the installed explicit pipeline cache hook\n"
+      "${_run_output}\n${_run_error}")
+  endif()
 endfunction()
 
 function(terreate_expect_compile_failure name source diagnostics)
@@ -955,6 +961,32 @@ int main() {
         !moved_pipeline.configuration()->effective.specialization.empty())
       return 47;
     std::puts("package.specialization: runtime=PASS");
+  }
+  {
+    // Installed explicit pipeline cache hook (#399 D1): the consumer owns the
+    // native cache; Terreate only borrows it during creation.
+    const auto native_device = static_cast<VkDevice>(pipeline_device->nativeHandle());
+    const VkPipelineCacheCreateInfo cache_info{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    VkPipelineCache cache = VK_NULL_HANDLE;
+    if (vkCreatePipelineCache(native_device, &cache_info, nullptr, &cache) != VK_SUCCESS)
+      return 47;
+    bool cache_ok = false;
+    {
+      const auto rejected = terreate::graphics::createComputePipeline(
+          *pipeline_device, *compute_shader, *pipeline_layout, {"main"}, vk::PipelineCache{});
+      auto cached = terreate::graphics::createComputePipeline(
+          *pipeline_device, *compute_shader, *pipeline_layout, {"main"}, vk::PipelineCache{cache});
+      cache_ok = !rejected &&
+                 rejected.error().code() ==
+                     terreate::graphics::make_error_code(
+                         terreate::graphics::ComputePipelineError::invalid_pipeline_cache) &&
+                 cached && cached->configuration() &&
+                 cached->configuration()->pipeline_cache == cache &&
+                 moved_pipeline.configuration()->pipeline_cache == VK_NULL_HANDLE;
+    }
+    vkDestroyPipelineCache(native_device, cache, nullptr);
+    if (!cache_ok) return 47;
+    std::puts("package.pipeline_cache: runtime=PASS");
   }
   {
     // Record installed pipeline commands into a caller-owned CommandBuffer.

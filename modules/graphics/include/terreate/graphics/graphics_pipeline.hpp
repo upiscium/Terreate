@@ -45,6 +45,9 @@ struct GraphicsPipelineConfiguration {
   vk::ShaderStageFlags stages =
       vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
   vk::PhysicalDeviceLimits limits{};
+  /// Appended in #399 D1. The caller-owned cache passed to creation, or
+  /// VK_NULL_HANDLE. Observation only: it is neither retained nor used again.
+  VkPipelineCache pipeline_cache = VK_NULL_HANDLE;
 };
 
 enum class GraphicsPipelineError : std::uint8_t {
@@ -58,6 +61,8 @@ enum class GraphicsPipelineError : std::uint8_t {
   feature_not_enabled,
   native_null_handle,
   allocation_failed,
+  // Appended in #399 D1; existing values are unchanged.
+  invalid_pipeline_cache,
 };
 
 [[nodiscard]] const std::error_category &graphics_pipeline_error_category() noexcept;
@@ -104,9 +109,15 @@ private:
   friend auto createGraphicsPipeline(const Device &, const PipelineLayout &, const ShaderModule &,
                                      const ShaderModule &, const GraphicsPipelineDescription &)
       -> terreate::Result<GraphicsPipeline>;
+  friend auto createGraphicsPipeline(const Device &, const PipelineLayout &, const ShaderModule &,
+                                     const ShaderModule &, const GraphicsPipelineDescription &,
+                                     vk::PipelineCache) -> terreate::Result<GraphicsPipeline>;
+  static auto createWith(const Device &, const PipelineLayout &, const ShaderModule &,
+                         const ShaderModule &, const GraphicsPipelineDescription &, VkPipelineCache)
+      -> terreate::Result<GraphicsPipeline>;
 };
 
-/// One synchronous dynamic-rendering pipeline creation without a cache; nonempty
+/// One synchronous dynamic-rendering pipeline creation with a null cache; nonempty
 /// stage specializations are passed as pSpecializationInfo. B0 fixes fill, line width 1, one
 /// sample, and dynamic viewport and scissor (one each). No other dynamic states or extension chains
 /// are used. dynamicRendering must already be explicitly enabled in the DevicePlan.
@@ -114,6 +125,18 @@ private:
                                           const ShaderModule &vertex_module,
                                           const ShaderModule &fragment_module,
                                           const GraphicsPipelineDescription &description)
+    -> terreate::Result<GraphicsPipeline>;
+
+/// Same as above, but passes an explicit caller-owned `cache` (#399 D1). A null
+/// cache is rejected with `invalid_pipeline_cache`. The cache is borrowed only
+/// during the call; Terreate never creates, retains or persists it. Vulkan offers
+/// no query for a cache's Device, so provenance is NOT verified: it must come
+/// from `device`. Host synchronization (VK_PIPELINE_CACHE_CREATE_EXTERNALLY_
+/// SYNCHRONIZED_BIT), lifetime and persistence are the application's.
+[[nodiscard]] auto
+createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
+                       const ShaderModule &vertex_module, const ShaderModule &fragment_module,
+                       const GraphicsPipelineDescription &description, vk::PipelineCache cache)
     -> terreate::Result<GraphicsPipeline>;
 
 } // namespace terreate::graphics

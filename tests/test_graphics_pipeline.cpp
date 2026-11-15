@@ -157,6 +157,8 @@ struct ComputeObservation {
   std::vector<std::byte> specialization_data{};
   const void *specialization_data_pointer = nullptr;
 } observed_compute;
+// The cache the next native compute creation must receive (#399 D1).
+VkPipelineCache expected_compute_cache = VK_NULL_HANDLE;
 
 struct ValidationRecorder {
   std::atomic<std::size_t> warnings_or_errors{0};
@@ -256,7 +258,7 @@ extern "C" VkResult __wrap_vkCreateComputePipelines(VkDevice device, VkPipelineC
   observed_compute.layout = info->layout;
   observed_compute.module = info->stage.module;
   observed_compute.exact_header =
-      cache == VK_NULL_HANDLE && !alloc &&
+      cache == expected_compute_cache && !alloc &&
       info->sType == VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO && !info->pNext &&
       info->flags == 0 && info->basePipelineHandle == VK_NULL_HANDLE &&
       info->basePipelineIndex == -1 &&
@@ -534,11 +536,14 @@ bool cpuTest() {
   passed &= check(rejects(specialization({}, 4), SpecializationError::data_without_entries),
                   "data without entries is rejected");
   const std::error_code specialization_error = SpecializationError::entry_out_of_range;
-  passed &= check(std::string_view{specialization_error.category().name()} ==
-                          "terreate.graphics.specialization" &&
-                      !specialization_error.message().empty() &&
-                      static_cast<int>(ComputePipelineError::allocation_failed) == 7,
-                  "typed specialization category; compute codes unchanged");
+  passed &=
+      check(std::string_view{specialization_error.category().name()} ==
+                    "terreate.graphics.specialization" &&
+                !specialization_error.message().empty() &&
+                static_cast<int>(ComputePipelineError::allocation_failed) == 7 &&
+                static_cast<int>(ComputePipelineError::invalid_pipeline_cache) == 8 &&
+                !std::error_code{ComputePipelineError::invalid_pipeline_cache}.message().empty(),
+            "typed specialization category; compute codes unchanged");
   passed &= check(layouts.creates == 0 && pipelines.creates == 0 && layouts.destroys == 0 &&
                       pipelines.destroys == 0,
                   "CPU validation never creates or destroys native Vulkan objects");
@@ -914,6 +919,48 @@ bool computeTest(const Device &device, const Device &moved_from, const Device &o
   passed &= check(pipelines.creates == creates_before + 6 &&
                       pipelines.destroys == destroys_before + 4 && pipelines.empty(),
                   "the specialized pipeline is created and destroyed exactly once");
+  {
+    // #399 D1: a test-owned native VkPipelineCache. Terreate only borrows it.
+    if (!binary)
+      return false;
+    auto cache_shader = createShaderModule(device, *binary);
+    if (!check(cache_shader.has_value(), "ShaderModule for the cache pipelines"))
+      return false;
+    const auto native_device = static_cast<VkDevice>(device.nativeHandle());
+    const VkPipelineCacheCreateInfo cache_info{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    VkPipelineCache cache = VK_NULL_HANDLE;
+    if (!check(vkCreatePipelineCache(native_device, &cache_info, nullptr, &cache) == VK_SUCCESS &&
+                   cache != VK_NULL_HANDLE,
+               "test-owned native VkPipelineCache"))
+      return false;
+    const ComputePipelineDescription plain{"main"};
+    pipelines.forbid_create = true;
+    passed &= check(
+        hasError(createComputePipeline(device, *cache_shader, layout, plain, vk::PipelineCache{}),
+                 ComputePipelineError::invalid_pipeline_cache),
+        "a null cache passed to the explicit overload is rejected before creation");
+    pipelines.forbid_create = false;
+    {
+      auto uncached = createComputePipeline(device, *cache_shader, layout, plain);
+      passed &= check(uncached && uncached->configuration() &&
+                          uncached->configuration()->pipeline_cache == VK_NULL_HANDLE,
+                      "the existing overload still passes and observes a null cache");
+      expected_compute_cache = cache;
+      auto cached =
+          createComputePipeline(device, *cache_shader, layout, plain, vk::PipelineCache{cache});
+      expected_compute_cache = VK_NULL_HANDLE;
+      passed &= check(cached && cached->configuration() &&
+                          cached->configuration()->pipeline_cache == cache &&
+                          observed_compute.exact_header,
+                      "the explicit cache reaches vkCreateComputePipelines and is observable");
+    }
+    // Both pipelines are gone; the cache was never retained, so the test may
+    // destroy it now.
+    vkDestroyPipelineCache(native_device, cache, nullptr);
+  }
+  passed &= check(pipelines.creates == creates_before + 8 &&
+                      pipelines.destroys == destroys_before + 6 && pipelines.empty(),
+                  "the uncached and cached pipelines are created and destroyed exactly once");
   return passed && failures == 0;
 }
 

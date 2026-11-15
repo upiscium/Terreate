@@ -28,6 +28,9 @@ struct ComputePipelineConfiguration {
   ComputePipelineDescription effective{};
   /// Fixed by this compute-only API, never inferred from SPIR-V.
   vk::ShaderStageFlagBits stage = vk::ShaderStageFlagBits::eCompute;
+  /// Appended in #399 D1. The caller-owned cache passed to creation, or
+  /// VK_NULL_HANDLE. Observation only: it is neither retained nor used again.
+  VkPipelineCache pipeline_cache = VK_NULL_HANDLE;
 };
 
 enum class ComputePipelineError : std::uint8_t {
@@ -38,6 +41,8 @@ enum class ComputePipelineError : std::uint8_t {
   invalid_entry_point,
   native_null_handle,
   allocation_failed,
+  // Appended in #399 D1; existing values are unchanged.
+  invalid_pipeline_cache,
 };
 
 [[nodiscard]] const std::error_category &compute_pipeline_error_category() noexcept;
@@ -83,9 +88,15 @@ private:
   friend auto createComputePipeline(const Device &, const ShaderModule &, const PipelineLayout &,
                                     const ComputePipelineDescription &)
       -> terreate::Result<ComputePipeline>;
+  friend auto createComputePipeline(const Device &, const ShaderModule &, const PipelineLayout &,
+                                    const ComputePipelineDescription &, vk::PipelineCache)
+      -> terreate::Result<ComputePipeline>;
+  static auto createWith(const Device &, const ShaderModule &, const PipelineLayout &,
+                         const ComputePipelineDescription &, VkPipelineCache)
+      -> terreate::Result<ComputePipeline>;
 };
 
-/// Creates exactly one compute pipeline with no cache or extension chain. A
+/// Creates exactly one compute pipeline with a null cache and no extension chain. A
 /// nonempty `description.specialization` is passed as pSpecializationInfo,
 /// pointing into the pipeline's own effective configuration. All three native objects must be live
 /// and belong to the supplied Device. The explicit description is copied. SPIR-V version/API
@@ -95,6 +106,18 @@ private:
 [[nodiscard]] auto createComputePipeline(const Device &device, const ShaderModule &shader_module,
                                          const PipelineLayout &layout,
                                          const ComputePipelineDescription &description)
+    -> terreate::Result<ComputePipeline>;
+
+/// Same as above, but passes an explicit caller-owned `cache` (#399 D1). A null
+/// cache is rejected with `invalid_pipeline_cache`. The cache is borrowed only
+/// during the call; Terreate never creates, retains or persists it. Vulkan offers
+/// no query for a cache's Device, so provenance is NOT verified: it must come
+/// from `device`. Host synchronization (VK_PIPELINE_CACHE_CREATE_EXTERNALLY_
+/// SYNCHRONIZED_BIT), lifetime and persistence are the application's.
+[[nodiscard]] auto createComputePipeline(const Device &device, const ShaderModule &shader_module,
+                                         const PipelineLayout &layout,
+                                         const ComputePipelineDescription &description,
+                                         vk::PipelineCache cache)
     -> terreate::Result<ComputePipeline>;
 
 } // namespace terreate::graphics

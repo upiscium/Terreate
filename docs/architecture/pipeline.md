@@ -131,8 +131,9 @@ Creation requires a live, explicit `Device`, `ShaderModule` and `PipelineLayout`
 Both children must correlate with that Device. The native stage is explicitly
 `VK_SHADER_STAGE_COMPUTE_BIT` (`vk::ShaderStageFlagBits::eCompute`); it is not
 deduced from SPIR-V. Exactly one `VkComputePipelineCreateInfo` is passed with
-zero flags, null extension chains, no derivative/base pipeline and a null
-pipeline cache. `pSpecializationInfo` is null unless
+zero flags, null extension chains and no derivative/base pipeline. The
+pipeline cache is null unless the explicit cache overload is used (see
+[Explicit pipeline cache](#explicit-pipeline-cache-399-d1)). `pSpecializationInfo` is null unless
 `ComputePipelineDescription::specialization` is nonempty (see
 [Specialization constants](#specialization-constants-399-d0)). The
 configuration retains independent requested/effective entry-point strings and
@@ -237,6 +238,39 @@ constant type (00776; booleans use `sizeof(VkBool32)`) and which constant IDs
 the shader declares remain caller responsibilities. Entries for IDs the shader
 does not declare are valid Vulkan and ignored.
 
+## Explicit pipeline cache (#399 D1)
+
+Both factories have an overload that takes a caller-owned `vk::PipelineCache`:
+
+```cpp
+// The application created `cache` on `device` and owns it.
+auto pipeline = terreate::graphics::createComputePipeline(
+    device, shader_module, *layout, compute_description, vk::PipelineCache{cache});
+```
+
+`createGraphicsPipeline(device, layout, vertex, fragment, description, cache)`
+works the same way. The existing overloads are unchanged and still pass a null
+cache.
+
+- A null cache passed to the explicit overload is rejected with
+  `invalid_pipeline_cache` (appended to `ComputePipelineError` and
+  `GraphicsPipelineError`; existing values unchanged), before any native call.
+  Use the existing overload for "no cache".
+- The cache is borrowed only during the synchronous creation call. Terreate
+  never creates, retains, serializes or persists it.
+- `configuration()->pipeline_cache` records which cache was passed
+  (`VK_NULL_HANDLE` for the existing overloads). It is an observation only and
+  does not keep the cache alive.
+- **Provenance is not verified.** Vulkan offers no query for a cache's Device,
+  so Terreate cannot prove that the cache belongs to `device`
+  (VUID-vkCreateComputePipelines-pipelineCache-parent and its graphics
+  equivalent). Passing a cache from another Device is a caller error.
+- Host synchronization is the application's: a cache created with
+  `VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT` must not be used
+  concurrently (VUID-vkCreateComputePipelines-pipelineCache-02873 and
+  VUID-vkCreateGraphicsPipelines-pipelineCache-02876). Keep the
+  cache alive through the call and destroy it when the application chooses.
+
 ## Tests and installed consumer
 
 - `graphics.pipeline.cpu`: pure description/entry-point validation, count and
@@ -252,7 +286,11 @@ does not declare are valid Vulkan and ignored.
   It also checks that an empty specialization passes a null
   `pSpecializationInfo`, that a nonempty one reaches Vulkan with exact entries
   and bytes pointing into the pipeline's own copy, and that an invalid one is
-  rejected with its typed error before native creation.
+  rejected with its typed error before native creation. For #399 D1 it creates a
+  test-owned `VkPipelineCache`, checks that the explicit overload rejects a null
+  cache without native creation, that the existing overload still passes null,
+  and that the explicit cache reaches `vkCreateComputePipelines` and is
+  observable; `graphics.graphics_pipeline` does the same for graphics.
 - `graphics.pipeline.cpu` additionally covers every `SpecializationError`.
 - `graphics.pipeline_commands` dispatches a specialized compute shader (two
   constants at swapped data offsets) and reads back
@@ -275,15 +313,18 @@ Package smoke explicitly permits and requires both installed headers, compiles
 their public types, links their validators/factories/observers and creates a real
 layout and compute pipeline in the external Graphics consumer without dispatch.
 It also creates a specialized compute pipeline, checks that `data_without_entries`
-is rejected, and must print `package.specialization: runtime=PASS`.
+is rejected, and must print `package.specialization: runtime=PASS`. It then
+passes a consumer-owned native `VkPipelineCache` through the explicit overload,
+checks the null-cache rejection and the observed cache, and must print
+`package.pipeline_cache: runtime=PASS`.
 The existing Vulkan-free Core-only consumer and isolation checks remain intact.
 
 ## Deferred surface
 
 Graphics pipelines and later descriptor binding (#265) remain separate
-work; B1 only integrates explicit layouts from #266. Pipeline cache input is deferred:
-a raw borrowed `vk::PipelineCache`
-cannot be correlated with a Device through the current public API. Extension
+work; B1 only integrates explicit layouts from #266. Pipeline cache creation,
+serialization and persistence (#330) are not provided; only the explicit
+borrowed cache hook above exists. Extension
 stages/chains, descriptor allocation, reflection,
 pipeline compilation tooling, recording conveniences and execution scheduling
 are not silently provided by these synchronous creation APIs.

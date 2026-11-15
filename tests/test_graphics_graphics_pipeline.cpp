@@ -99,6 +99,8 @@ std::array<Record, 8> live{};
 enum class Injection : std::uint8_t { none, failure, partial_failure, null_success };
 Injection injection = Injection::none;
 GraphicsPipelineDescription expected;
+// The cache the next native graphics creation must receive (#399 D1).
+VkPipelineCache expected_cache = VK_NULL_HANDLE;
 // An empty description must reach Vulkan as null; otherwise the native view
 // must carry exactly the described entries and bytes.
 bool nativeMatches(const VkSpecializationInfo *info, const SpecializationDescription &described) {
@@ -262,10 +264,10 @@ extern "C" VkResult __wrap_vkCreateGraphicsPipelines(VkDevice device, VkPipeline
   if (!check(info && out && count == 1, "one graphics pipeline per call"))
     return VK_ERROR_INITIALIZATION_FAILED;
   *out = VK_NULL_HANDLE;
-  check(!cache && !alloc && !info->renderPass && info->subpass == 0 && info->flags == 0 &&
-            !info->basePipelineHandle && info->basePipelineIndex == -1 &&
+  check(cache == expected_cache && !alloc && !info->renderPass && info->subpass == 0 &&
+            info->flags == 0 && !info->basePipelineHandle && info->basePipelineIndex == -1 &&
             info->layout == expected_layout,
-        "explicit layout, null cache/renderPass, subpass zero and no derivatives");
+        "explicit layout, expected cache, null renderPass, subpass zero and no derivatives");
   const auto *rendering = static_cast<const VkPipelineRenderingCreateInfo *>(info->pNext);
   if (check(rendering != nullptr, "dynamic rendering pNext")) {
     check(rendering->sType == VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO &&
@@ -515,6 +517,40 @@ int pipelineTest(const Device &device, const Device &moved_from, const Device &o
     expected = plain;
   }
   check(handles == destroys, "the specialized pipeline is destroyed exactly once");
+  {
+    // #399 D1: a test-owned native VkPipelineCache. Terreate only borrows it.
+    const auto native_device = static_cast<VkDevice>(device.nativeHandle());
+    const VkPipelineCacheCreateInfo cache_info{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    VkPipelineCache cache = VK_NULL_HANDLE;
+    if (!check(vkCreatePipelineCache(native_device, &cache_info, nullptr, &cache) == VK_SUCCESS &&
+                   cache != VK_NULL_HANDLE,
+               "test-owned native VkPipelineCache"))
+      return EXIT_FAILURE;
+    const auto before_cache = creates;
+    check(hasError(createGraphicsPipeline(device, layout, vertex, fragment, expected,
+                                          vk::PipelineCache{}),
+                   Error::invalid_pipeline_cache) &&
+              creates == before_cache,
+          "a null cache passed to the explicit overload is rejected before creation");
+    {
+      auto uncached = create();
+      expected_cache = cache;
+      auto cached = createGraphicsPipeline(device, layout, vertex, fragment, expected,
+                                           vk::PipelineCache{cache});
+      expected_cache = VK_NULL_HANDLE;
+      check(uncached && uncached->configuration() &&
+                uncached->configuration()->pipeline_cache == VK_NULL_HANDLE && cached &&
+                cached->configuration() && cached->configuration()->pipeline_cache == cache &&
+                creates == before_cache + 2,
+            "the existing overload passes a null cache; the explicit cache reaches Vulkan and "
+            "is observable");
+    }
+    // Both pipelines are gone and the cache was never retained.
+    vkDestroyPipelineCache(native_device, cache, nullptr);
+  }
+  check(handles == destroys && static_cast<int>(Error::allocation_failed) == 10 &&
+            static_cast<int>(Error::invalid_pipeline_cache) == 11,
+        "cached pipelines destroyed exactly once; graphics codes appended without renumbering");
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 struct ValidationRecorder {
