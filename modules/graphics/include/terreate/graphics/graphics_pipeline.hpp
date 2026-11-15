@@ -10,6 +10,7 @@
 
 #include <terreate/graphics/pipeline_layout.hpp>
 #include <terreate/graphics/shader_module.hpp>
+#include <terreate/graphics/specialization.hpp>
 
 namespace terreate::graphics {
 
@@ -33,6 +34,9 @@ struct GraphicsPipelineDescription {
   std::vector<vk::PipelineColorBlendAttachmentState> color_blend_attachments{};
   vk::Format depth_attachment_format = vk::Format::eUndefined;
   vk::Format stencil_attachment_format = vk::Format::eUndefined;
+  /// Appended in #399 D0. Empty means no specialization for that stage.
+  SpecializationDescription vertex_specialization{};
+  SpecializationDescription fragment_specialization{};
 };
 
 struct GraphicsPipelineConfiguration {
@@ -59,8 +63,10 @@ enum class GraphicsPipelineError : std::uint8_t {
 [[nodiscard]] const std::error_category &graphics_pipeline_error_category() noexcept;
 [[nodiscard]] std::error_code make_error_code(GraphicsPipelineError error) noexcept;
 
-/// Pure CPU structural/limit validation. Format features, shader semantics and
-/// shader/layout compatibility remain the caller's responsibility.
+/// Pure CPU structural/limit validation, including validateSpecializationDescription
+/// for both stages (its typed SpecializationError is returned unchanged). Format
+/// features, shader semantics, constant types and shader/layout compatibility
+/// remain the caller's responsibility.
 [[nodiscard]] auto
 validateGraphicsPipelineDescription(const GraphicsPipelineDescription &description,
                                     const vk::PhysicalDeviceLimits &limits)
@@ -100,10 +106,10 @@ private:
       -> terreate::Result<GraphicsPipeline>;
 };
 
-/// One synchronous dynamic-rendering pipeline creation, without cache or
-/// specialization. B0 fixes fill, line width 1, one sample, and dynamic viewport
-/// and scissor (one each). No other dynamic states or extension chains are used.
-/// dynamicRendering must already be explicitly enabled in the DevicePlan.
+/// One synchronous dynamic-rendering pipeline creation without a cache; nonempty
+/// stage specializations are passed as pSpecializationInfo. B0 fixes fill, line width 1, one
+/// sample, and dynamic viewport and scissor (one each). No other dynamic states or extension chains
+/// are used. dynamicRendering must already be explicitly enabled in the DevicePlan.
 [[nodiscard]] auto createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
                                           const ShaderModule &vertex_module,
                                           const ShaderModule &fragment_module,

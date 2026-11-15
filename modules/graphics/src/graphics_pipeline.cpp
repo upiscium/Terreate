@@ -6,6 +6,8 @@
 #include <new>
 #include <utility>
 
+#include "specialization_native.hpp"
+
 namespace terreate::graphics {
 namespace {
 class GraphicsPipelineErrorCategory final : public std::error_category {
@@ -179,7 +181,9 @@ auto validateGraphicsPipelineDescription(const GraphicsPipelineDescription &desc
       ((description.depth_test_enable || description.depth_write_enable) &&
        depth == vk::Format::eUndefined))
     return fail(GraphicsPipelineError::invalid_description);
-  return {};
+  if (auto valid = validateSpecializationDescription(description.vertex_specialization); !valid)
+    return valid;
+  return validateSpecializationDescription(description.fragment_specialization);
 }
 
 struct GraphicsPipeline::Impl {
@@ -249,6 +253,8 @@ auto createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
   std::vector<VkVertexInputAttributeDescription> attributes;
   std::vector<VkFormat> formats;
   std::vector<VkPipelineColorBlendAttachmentState> attachments;
+  std::vector<VkSpecializationMapEntry> vertex_entries;
+  std::vector<VkSpecializationMapEntry> fragment_entries;
   try {
     impl = std::make_unique<GraphicsPipeline::Impl>();
     impl->config.requested = description;
@@ -266,6 +272,10 @@ auto createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
     attachments.reserve(description.color_blend_attachments.size());
     for (const auto &attachment : description.color_blend_attachments)
       attachments.push_back(static_cast<VkPipelineColorBlendAttachmentState>(attachment));
+    vertex_entries =
+        detail::nativeSpecializationEntries(impl->config.effective.vertex_specialization);
+    fragment_entries =
+        detail::nativeSpecializationEntries(impl->config.effective.fragment_specialization);
   } catch (const std::bad_alloc &) {
     return fail(GraphicsPipelineError::allocation_failed);
   }
@@ -281,6 +291,15 @@ auto createGraphicsPipeline(const Device &device, const PipelineLayout &layout,
   stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
   stages[1].module = fragment_module.nativeShaderModule();
   stages[1].pName = effective.fragment_entry_point.c_str();
+  // Both point into the owned effective configuration and local native entries.
+  const auto vertex_specialization =
+      detail::nativeSpecializationInfo(vertex_entries, effective.vertex_specialization);
+  const auto fragment_specialization =
+      detail::nativeSpecializationInfo(fragment_entries, effective.fragment_specialization);
+  if (!effective.vertex_specialization.empty())
+    stages[0].pSpecializationInfo = &vertex_specialization;
+  if (!effective.fragment_specialization.empty())
+    stages[1].pSpecializationInfo = &fragment_specialization;
 
   VkPipelineVertexInputStateCreateInfo vertex{};
   vertex.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;

@@ -118,7 +118,10 @@ creates one pipeline: count `1`, null pipeline cache, null `renderPass`, subpass
 `0`, zero flags and no derivatives or base pipeline. Its only extension chain is
 the rendering-info `pNext` (`VkPipelineRenderingCreateInfo`) with `viewMask = 0`
 and the explicit color, depth and stencil formats. There are exactly two stages,
-vertex and fragment, with no specialization data. All other extension chains are
+vertex and fragment. Each stage passes `pSpecializationInfo` only when its
+`vertex_specialization` / `fragment_specialization` is nonempty (#399 D0; see
+[Specialization constants](pipeline.md#specialization-constants-399-d0)); the
+native view points into the pipeline's own effective copy. All other extension chains are
 null. No RenderPass object or RenderGraph is introduced.
 
 All strings, arrays, snapshots and native call backing data are owned and stable
@@ -197,8 +200,9 @@ wrapper error. Null-success and allocation failure use the corresponding wrapper
 codes; allocation-failure reporting must not require another allocation.
 
 B0-a covers the API documentation and module registration here. Tests and installed
-package smoke belong to B0-b, not this change. Specialization constants, pipeline
-caches, other shader stages and other dynamic states are deferred to B2. Reflection
+package smoke belong to B0-b, not this change. Specialization constants were added in
+#399 D0. Pipeline
+caches (#399 D1), other shader stages and other dynamic states remain deferred. Reflection
 (#262), compiler integration (#261), RenderPass/RenderGraph abstractions, shared
 ownership and waits are outside this API. Existing layout and compute contracts
 remain documented in [pipeline.md](pipeline.md).

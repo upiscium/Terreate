@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write pipeline_layout compute_pipeline graphics_pipeline pipeline_commands rendering_commands submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write specialization pipeline_layout compute_pipeline graphics_pipeline pipeline_commands rendering_commands submission retirement image image_view sampler)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -227,6 +227,12 @@ set_target_properties(package_consumer PROPERTIES
      NOT "${_run_output}" MATCHES "package\\.rendering_commands: runtime=PASS")
     message(FATAL_ERROR
       "${name} consumer did not exercise installed Dynamic Rendering recording\n"
+      "${_run_output}\n${_run_error}")
+  endif()
+  if("${component}" STREQUAL "Graphics" AND
+     NOT "${_run_output}" MATCHES "package\\.specialization: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise installed specialization constants\n"
       "${_run_output}\n${_run_error}")
   endif()
 endfunction()
@@ -928,6 +934,28 @@ int main() {
   auto moved_pipeline = std::move(*compute_pipeline);
   if (compute_pipeline->valid() || compute_pipeline->configuration() ||
       !moved_pipeline.valid()) return 47;
+  {
+    // Installed specialization constants (#399 D0). The constant ID is absent
+    // from the shader, which Vulkan allows; invalid input is rejected first.
+    terreate::graphics::ComputePipelineDescription specialized_description{"main"};
+    specialized_description.specialization.map_entries = {vk::SpecializationMapEntry{3, 0, 4}};
+    specialized_description.specialization.data.resize(4);
+    auto invalid_description = specialized_description;
+    invalid_description.specialization.map_entries.clear();
+    const auto invalid = terreate::graphics::createComputePipeline(
+        *pipeline_device, *compute_shader, *pipeline_layout, invalid_description);
+    auto specialized = terreate::graphics::createComputePipeline(
+        *pipeline_device, *compute_shader, *pipeline_layout, specialized_description);
+    if (invalid || invalid.error().code() !=
+                       terreate::graphics::make_error_code(
+                           terreate::graphics::SpecializationError::data_without_entries) ||
+        !specialized || !specialized->configuration() ||
+        specialized->configuration()->effective.specialization.map_entries !=
+            specialized_description.specialization.map_entries ||
+        !moved_pipeline.configuration()->effective.specialization.empty())
+      return 47;
+    std::puts("package.specialization: runtime=PASS");
+  }
   {
     // Record installed pipeline commands into a caller-owned CommandBuffer.
     // Recording only: the application decides whether to submit; nothing is.
