@@ -131,9 +131,12 @@ Creation requires a live, explicit `Device`, `ShaderModule` and `PipelineLayout`
 Both children must correlate with that Device. The native stage is explicitly
 `VK_SHADER_STAGE_COMPUTE_BIT` (`vk::ShaderStageFlagBits::eCompute`); it is not
 deduced from SPIR-V. Exactly one `VkComputePipelineCreateInfo` is passed with
-zero flags, null extension chains, no specialization, no derivative/base
-pipeline and a null pipeline cache. The configuration retains independent
-requested/effective entry-point strings and the actual compute stage.
+zero flags, null extension chains, no derivative/base pipeline and a null
+pipeline cache. `pSpecializationInfo` is null unless
+`ComputePipelineDescription::specialization` is nonempty (see
+[Specialization constants](#specialization-constants-399-d0)). The
+configuration retains independent requested/effective entry-point strings and
+specializations, and the actual compute stage.
 
 The caller must supply a real compute entry point whose shader interface is
 compatible with the explicit set layouts and push constant ranges. Neither
@@ -190,6 +193,50 @@ owners. Compute multi-create output is adopted before checking the result, so
 any nonnull pipeline returned on a failed call is destroyed exactly once. There
 is no implicit retry, fallback stage, entry-point substitution or device recovery.
 
+## Specialization constants (#399 D0)
+
+`<terreate/graphics/specialization.hpp>` defines `SpecializationDescription`,
+shared by compute and graphics pipelines. It owns
+`std::vector<vk::SpecializationMapEntry> map_entries` and
+`std::vector<std::byte> data`. `ComputePipelineDescription::specialization`
+and `GraphicsPipelineDescription::vertex_specialization` /
+`fragment_specialization` are appended fields, so existing aggregate
+initialization keeps working. An empty description (no entries, no data) means
+no `pSpecializationInfo`, exactly as before.
+
+```cpp
+terreate::graphics::ComputePipelineDescription description{"main"};
+const std::uint32_t factor = 2;
+description.specialization.map_entries = {
+    vk::SpecializationMapEntry{/*constantID*/ 5, /*offset*/ 0, sizeof(factor)}};
+description.specialization.data.resize(sizeof(factor));
+std::memcpy(description.specialization.data.data(), &factor, sizeof(factor));
+```
+
+Creation copies the description into the pipeline's requested/effective
+configuration. The native `VkSpecializationInfo` points into that owned
+effective copy (data) and into native `VkSpecializationMapEntry` values copied
+field by field for the call, so caller storage is not borrowed and stays
+unchanged.
+
+`validateSpecializationDescription` runs, through the pipeline validators,
+before any native call and returns a typed `SpecializationError`:
+
+- `entry_out_of_range`: an entry's offset is not below `dataSize`
+  (VUID-VkSpecializationInfo-offset-00773) or its size exceeds
+  `dataSize - offset` (-pMapEntries-00774). Written so no sum overflows.
+- `duplicate_constant_id`: constant IDs must be unique (-constantID-04911).
+- `empty_entry`: a zero size can match no shader constant
+  (VUID-VkSpecializationMapEntry-constantID-00776).
+- `data_without_entries`: data with no entries is rejected as a caller
+  mistake.
+- `too_large`: the entry count must fit `uint32_t`.
+
+Terreate does not parse SPIR-V. Whether each entry's size matches the declared
+constant type (00776; booleans use `sizeof(VkBool32)`) and which constant IDs
+the shader declares remain caller responsibilities. Entries for IDs the shader
+does not declare are valid Vulkan and ignored.
+
 ## Tests and installed consumer
 
 - `graphics.pipeline.cpu`: pure description/entry-point validation, count and
@@ -202,6 +249,14 @@ is no implicit retry, fallback stage, entry-point substitution or device recover
   compute fixture, exact `pName = "main"`, compute stage, module/layout/Device
   correlation, two-Device mismatch rejection, native failures, null-success,
   partial-output cleanup, module release after creation and exact move cleanup.
+  It also checks that an empty specialization passes a null
+  `pSpecializationInfo`, that a nonempty one reaches Vulkan with exact entries
+  and bytes pointing into the pipeline's own copy, and that an invalid one is
+  rejected with its typed error before native creation.
+- `graphics.pipeline.cpu` additionally covers every `SpecializationError`.
+- `graphics.pipeline_commands` dispatches a specialized compute shader (two
+  constants at swapped data offsets) and reads back
+  `(base + i * scale) * factor + bias`, proving the GPU used both constants.
 
 Tests intercept the actual four Vulkan C create/destroy functions using the
 existing GCC linker-wrapper convention. Artificial null-success interception
@@ -219,6 +274,8 @@ validation coverage. Missing loader, physical device or usable compute queue is
 Package smoke explicitly permits and requires both installed headers, compiles
 their public types, links their validators/factories/observers and creates a real
 layout and compute pipeline in the external Graphics consumer without dispatch.
+It also creates a specialized compute pipeline, checks that `data_without_entries`
+is rejected, and must print `package.specialization: runtime=PASS`.
 The existing Vulkan-free Core-only consumer and isolation checks remain intact.
 
 ## Deferred surface
@@ -227,6 +284,6 @@ Graphics pipelines and later descriptor binding (#265) remain separate
 work; B1 only integrates explicit layouts from #266. Pipeline cache input is deferred:
 a raw borrowed `vk::PipelineCache`
 cannot be correlated with a Device through the current public API. Extension
-stages/chains, specialization constants, descriptor allocation, reflection,
+stages/chains, descriptor allocation, reflection,
 pipeline compilation tooling, recording conveniences and execution scheduling
 are not silently provided by these synchronous creation APIs.

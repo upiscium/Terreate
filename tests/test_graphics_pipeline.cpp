@@ -152,6 +152,10 @@ struct ComputeObservation {
   bool exact_header = false;
   bool compute_stage = false;
   bool entry_point_is_main = false;
+  bool has_specialization = true;
+  std::vector<VkSpecializationMapEntry> specialization_entries{};
+  std::vector<std::byte> specialization_data{};
+  const void *specialization_data_pointer = nullptr;
 } observed_compute;
 
 struct ValidationRecorder {
@@ -257,7 +261,19 @@ extern "C" VkResult __wrap_vkCreateComputePipelines(VkDevice device, VkPipelineC
       info->flags == 0 && info->basePipelineHandle == VK_NULL_HANDLE &&
       info->basePipelineIndex == -1 &&
       info->stage.sType == VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO &&
-      !info->stage.pNext && info->stage.flags == 0 && !info->stage.pSpecializationInfo;
+      !info->stage.pNext && info->stage.flags == 0;
+  const auto *specialization = info->stage.pSpecializationInfo;
+  observed_compute.has_specialization = specialization != nullptr;
+  observed_compute.specialization_entries.clear();
+  observed_compute.specialization_data.clear();
+  observed_compute.specialization_data_pointer = nullptr;
+  if (specialization) {
+    observed_compute.specialization_entries.assign(
+        specialization->pMapEntries, specialization->pMapEntries + specialization->mapEntryCount);
+    const auto *bytes = static_cast<const std::byte *>(specialization->pData);
+    observed_compute.specialization_data.assign(bytes, bytes + specialization->dataSize);
+    observed_compute.specialization_data_pointer = specialization->pData;
+  }
   observed_compute.compute_stage = info->stage.stage == VK_SHADER_STAGE_COMPUTE_BIT;
   observed_compute.entry_point_is_main =
       info->stage.pName && std::strcmp(info->stage.pName, "main") == 0;
@@ -479,6 +495,50 @@ bool cpuTest() {
                       std::string_view{pipeline_error.category().name()} ==
                           "terreate.graphics.compute_pipeline",
                   "public error categories support std::error_code conversion");
+  // #399 D0: specialization validation (VUID 00773, 00774, 04911, plus the
+  // documented zero-size and data-without-entries rules).
+  const auto specialization = [](std::vector<vk::SpecializationMapEntry> entries,
+                                 std::size_t bytes) {
+    SpecializationDescription result;
+    result.map_entries = std::move(entries);
+    result.data.resize(bytes);
+    return result;
+  };
+  const auto rejects = [&](const SpecializationDescription &value, SpecializationError error) {
+    ComputePipelineDescription with_specialization{"main"};
+    with_specialization.specialization = value;
+    return hasError(validateSpecializationDescription(value), error) &&
+           hasError(validateComputePipelineDescription(with_specialization), error);
+  };
+  passed &= check(SpecializationDescription{}.empty() &&
+                      validateSpecializationDescription({}).has_value() &&
+                      validateComputePipelineDescription({"main"}).has_value(),
+                  "an empty specialization is valid and means none");
+  passed &=
+      check(validateSpecializationDescription(specialization({{0, 0, 4}, {7, 4, 4}, {3, 8, 1}}, 9))
+                    .has_value() &&
+                validateSpecializationDescription(specialization({{1, 2, 2}}, 4)).has_value(),
+            "entries ending exactly at dataSize and sharing no ID are accepted");
+  passed &=
+      check(rejects(specialization({{0, 4, 1}}, 4), SpecializationError::entry_out_of_range) &&
+                rejects(specialization({{0, 2, 4}}, 4), SpecializationError::entry_out_of_range) &&
+                rejects(specialization({{0, 0, 1}}, 0), SpecializationError::entry_out_of_range) &&
+                rejects(specialization({{0, 1, std::numeric_limits<std::size_t>::max()}}, 4),
+                        SpecializationError::entry_out_of_range),
+            "offset at or past dataSize and sizes past the end are rejected without overflow");
+  passed &= check(rejects(specialization({{4, 0, 4}, {4, 4, 4}}, 8),
+                          SpecializationError::duplicate_constant_id),
+                  "duplicate constant IDs are rejected");
+  passed &= check(rejects(specialization({{0, 0, 0}}, 4), SpecializationError::empty_entry),
+                  "a zero-size entry is rejected");
+  passed &= check(rejects(specialization({}, 4), SpecializationError::data_without_entries),
+                  "data without entries is rejected");
+  const std::error_code specialization_error = SpecializationError::entry_out_of_range;
+  passed &= check(std::string_view{specialization_error.category().name()} ==
+                          "terreate.graphics.specialization" &&
+                      !specialization_error.message().empty() &&
+                      static_cast<int>(ComputePipelineError::allocation_failed) == 7,
+                  "typed specialization category; compute codes unchanged");
   passed &= check(layouts.creates == 0 && pipelines.creates == 0 && layouts.destroys == 0 &&
                       pipelines.destroys == 0,
                   "CPU validation never creates or destroys native Vulkan objects");
@@ -722,6 +782,12 @@ bool computeTest(const Device &device, const Device &moved_from, const Device &o
     passed &= check(hasError(createComputePipeline(device, *shader, layout, entry),
                              ComputePipelineError::invalid_entry_point),
                     "invalid entry point rejected before vkCreateComputePipelines");
+  auto bad_specialization = description;
+  bad_specialization.specialization.map_entries = {vk::SpecializationMapEntry{0, 2, 4}};
+  bad_specialization.specialization.data.resize(4);
+  passed &= check(hasError(createComputePipeline(device, *shader, layout, bad_specialization),
+                           SpecializationError::entry_out_of_range),
+                  "invalid specialization rejected with its typed error before native creation");
   passed &= check(pipelines.creates == creates_before,
                   "all semantic rejection paths leave the native create counter unchanged");
   pipelines.forbid_create = false;
@@ -763,6 +829,8 @@ bool computeTest(const Device &device, const Device &moved_from, const Device &o
                         first_observation.module == observed_compute.module &&
                         first_observation.layout == layout.nativePipelineLayout(),
                     "native compute stage, main, module, layout and Device correlate exactly");
+    passed &= check(!first_observation.has_specialization && !observed_compute.has_specialization,
+                    "an empty specialization passes a null pSpecializationInfo as before");
     passed &= check(second->correlatedWith(*different_layout) && !second->correlatedWith(layout),
                     "real compute creation also supports an entirely empty layout");
     passed &=
@@ -807,6 +875,45 @@ bool computeTest(const Device &device, const Device &moved_from, const Device &o
   passed &= check(pipelines.creates == creates_before + 5 &&
                       pipelines.destroys == destroys_before + 3 && pipelines.empty(),
                   "partial output and both successful pipelines cleaned up exactly once");
+  {
+    // Constant IDs absent from the shader are valid Vulkan and ignored; this
+    // proves the exact native view. The dispatch test proves the GPU effect.
+    if (!binary)
+      return false;
+    auto fresh_shader = createShaderModule(device, *binary);
+    if (!check(fresh_shader.has_value(), "fresh ShaderModule for the specialized pipeline"))
+      return false;
+    ComputePipelineDescription specialized_description{"main"};
+    specialized_description.specialization.map_entries = {vk::SpecializationMapEntry{9, 4, 4},
+                                                          vk::SpecializationMapEntry{3, 0, 2}};
+    specialized_description.specialization.data = {std::byte{1}, std::byte{2}, std::byte{3},
+                                                   std::byte{4}, std::byte{5}, std::byte{6},
+                                                   std::byte{7}, std::byte{8}};
+    auto specialized =
+        createComputePipeline(device, *fresh_shader, layout, specialized_description);
+    if (!check(specialized && specialized->configuration(),
+               "real compute creation with a specialization"))
+      return false;
+    const auto &owned = specialized->configuration()->effective.specialization;
+    passed &= check(observed_compute.has_specialization &&
+                        observed_compute.specialization_entries.size() == 2 &&
+                        observed_compute.specialization_entries[0].constantID == 9 &&
+                        observed_compute.specialization_entries[0].offset == 4 &&
+                        observed_compute.specialization_entries[0].size == 4 &&
+                        observed_compute.specialization_entries[1].constantID == 3 &&
+                        observed_compute.specialization_entries[1].offset == 0 &&
+                        observed_compute.specialization_entries[1].size == 2 &&
+                        observed_compute.specialization_data ==
+                            specialized_description.specialization.data &&
+                        observed_compute.specialization_data_pointer == owned.data.data() &&
+                        owned.map_entries == specialized_description.specialization.map_entries &&
+                        specialized->configuration()->requested.specialization.data ==
+                            specialized_description.specialization.data,
+                    "exact VkSpecializationInfo points into the pipeline's own effective copy");
+  }
+  passed &= check(pipelines.creates == creates_before + 6 &&
+                      pipelines.destroys == destroys_before + 4 && pipelines.empty(),
+                  "the specialized pipeline is created and destroyed exactly once");
   return passed && failures == 0;
 }
 

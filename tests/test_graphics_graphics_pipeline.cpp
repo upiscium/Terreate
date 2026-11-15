@@ -99,6 +99,20 @@ std::array<Record, 8> live{};
 enum class Injection : std::uint8_t { none, failure, partial_failure, null_success };
 Injection injection = Injection::none;
 GraphicsPipelineDescription expected;
+// An empty description must reach Vulkan as null; otherwise the native view
+// must carry exactly the described entries and bytes.
+bool nativeMatches(const VkSpecializationInfo *info, const SpecializationDescription &described) {
+  if (described.empty())
+    return info == nullptr;
+  if (!info || info->mapEntryCount != described.map_entries.size() ||
+      info->dataSize != described.data.size() || !info->pMapEntries || !info->pData)
+    return false;
+  for (std::size_t i = 0; i < described.map_entries.size(); ++i)
+    if (vk::SpecializationMapEntry{info->pMapEntries[i]} != described.map_entries[i])
+      return false;
+  return std::memcmp(info->pData, described.data.data(), described.data.size()) == 0 &&
+         info->pData != described.data.data();
+}
 VkShaderModule expected_vertex = VK_NULL_HANDLE;
 VkShaderModule expected_fragment = VK_NULL_HANDLE;
 VkPipelineLayout expected_layout = VK_NULL_HANDLE;
@@ -202,6 +216,30 @@ int cpuTest() {
   check(hasError(validateGraphicsPipelineDescription(description(), {}),
                  Error::unsupported_configuration),
         "zero limits reject nonempty inputs");
+  {
+    // #399 D0: each stage's specialization is validated with its typed error.
+    SpecializationDescription out_of_range;
+    out_of_range.map_entries = {vk::SpecializationMapEntry{0, 4, 4}};
+    out_of_range.data.resize(4);
+    SpecializationDescription duplicate;
+    duplicate.map_entries = {vk::SpecializationMapEntry{1, 0, 4},
+                             vk::SpecializationMapEntry{1, 4, 4}};
+    duplicate.data.resize(8);
+    auto vertex = GraphicsPipelineDescription{"main", "main"};
+    vertex.vertex_specialization = out_of_range;
+    auto fragment = GraphicsPipelineDescription{"main", "main"};
+    fragment.fragment_specialization = duplicate;
+    auto valid = GraphicsPipelineDescription{"main", "main"};
+    valid.vertex_specialization.map_entries = {vk::SpecializationMapEntry{2, 0, 4}};
+    valid.vertex_specialization.data.resize(4);
+    valid.fragment_specialization = valid.vertex_specialization;
+    check(hasError(validateGraphicsPipelineDescription(vertex, {}),
+                   SpecializationError::entry_out_of_range) &&
+              hasError(validateGraphicsPipelineDescription(fragment, {}),
+                       SpecializationError::duplicate_constant_id) &&
+              validateGraphicsPipelineDescription(valid, {}).has_value(),
+          "vertex and fragment specializations validated independently");
+  }
   check(creates == 0 && destroys == 0, "CPU path makes no native calls");
   if (failures != 0)
     return EXIT_FAILURE;
@@ -252,8 +290,11 @@ extern "C" VkResult __wrap_vkCreateGraphicsPipelines(VkDevice device, VkPipeline
                 stage.module == (i == 0 ? expected_vertex : expected_fragment) && stage.pName &&
                 std::strcmp(stage.pName, i == 0 ? expected.vertex_entry_point.c_str()
                                                 : expected.fragment_entry_point.c_str()) == 0 &&
-                !stage.pSpecializationInfo && !stage.pNext,
-            "stage, module and entry name");
+                nativeMatches(stage.pSpecializationInfo, i == 0
+                                                             ? expected.vertex_specialization
+                                                             : expected.fragment_specialization) &&
+                !stage.pNext,
+            "stage, module, entry name and exact specialization");
     }
   }
   const auto *dynamic = info->pDynamicState;
@@ -313,6 +354,9 @@ extern "C" void __wrap_vkDestroyPipeline(VkDevice device, VkPipeline pipeline,
 // NOLINTEND(bugprone-reserved-identifier)
 
 namespace {
+bool sameSpecialization(const SpecializationDescription &a, const SpecializationDescription &b) {
+  return a.map_entries == b.map_entries && a.data == b.data;
+}
 bool sameDescription(const GraphicsPipelineDescription &a, const GraphicsPipelineDescription &b) {
   return a.vertex_entry_point == b.vertex_entry_point &&
          a.fragment_entry_point == b.fragment_entry_point &&
@@ -324,7 +368,9 @@ bool sameDescription(const GraphicsPipelineDescription &a, const GraphicsPipelin
          a.color_attachment_formats == b.color_attachment_formats &&
          a.color_blend_attachments == b.color_blend_attachments &&
          a.depth_attachment_format == b.depth_attachment_format &&
-         a.stencil_attachment_format == b.stencil_attachment_format;
+         a.stencil_attachment_format == b.stencil_attachment_format &&
+         sameSpecialization(a.vertex_specialization, b.vertex_specialization) &&
+         sameSpecialization(a.fragment_specialization, b.fragment_specialization);
 }
 // Inspects intentionally moved-from wrappers.
 // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
@@ -448,6 +494,27 @@ int pipelineTest(const Device &device, const Device &moved_from, const Device &o
     // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   }
   check(destroys == prior + 3 && handles == destroys, "all native handles destroyed exactly once");
+  {
+    // #399 D0: both stages specialized with distinct layouts. Constant IDs
+    // absent from the shaders are valid Vulkan and ignored; the wrap checks
+    // the exact native view and that it points into the pipeline's own copy.
+    const auto plain = expected;
+    expected.vertex_specialization.map_entries = {vk::SpecializationMapEntry{4, 0, 4}};
+    expected.vertex_specialization.data = {std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}};
+    expected.fragment_specialization.map_entries = {vk::SpecializationMapEntry{8, 4, 4},
+                                                    vk::SpecializationMapEntry{6, 0, 2}};
+    expected.fragment_specialization.data = {std::byte{9},  std::byte{10}, std::byte{11},
+                                             std::byte{12}, std::byte{13}, std::byte{14},
+                                             std::byte{15}, std::byte{16}};
+    const auto before_specialized = creates;
+    auto specialized = create();
+    check(specialized && creates == before_specialized + 1 && specialized->configuration() &&
+              sameDescription(specialized->configuration()->effective, expected) &&
+              sameDescription(specialized->configuration()->requested, expected),
+          "specialized graphics pipeline created; configuration exposes both stages");
+    expected = plain;
+  }
+  check(handles == destroys, "the specialized pipeline is destroyed exactly once");
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 struct ValidationRecorder {

@@ -74,6 +74,46 @@ constexpr std::array<std::uint32_t, 230> fill_words{
     0x00000022, 0x0000001c, 0x00000021, 0x00060041, 0x00000023, 0x00000024, 0x00000013, 0x00000015,
     0x00000016, 0x0003003e, 0x00000024, 0x00000022, 0x000100fd, 0x00010038,
 };
+// Specialized variant (#399 D0), same command, 256 words, SHA-256 of the .spv:
+// 466f3bf0a22cc0f73c3661cafbf936960bbe680a903663af96aea5c739ac41f9
+// GLSL: fill.comp plus
+//       layout(constant_id = 0) const uint bias = 0u;
+//       layout(constant_id = 5) const uint factor = 1u;
+//       out_buf.values[i] = (pc.base + i * pc.scale) * factor + bias;
+constexpr std::array<std::uint32_t, 256> specialized_words{
+    0x07230203, 0x00010600, 0x0008000b, 0x0000002c, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0008000f, 0x00000005, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000b, 0x00000013, 0x00000019,
+    0x00060010, 0x00000004, 0x00000011, 0x00000040, 0x00000001, 0x00000001, 0x00040047, 0x0000000b,
+    0x0000000b, 0x0000001c, 0x00040047, 0x00000010, 0x00000006, 0x00000004, 0x00030047, 0x00000011,
+    0x00000002, 0x00050048, 0x00000011, 0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x00000013,
+    0x00000021, 0x00000000, 0x00040047, 0x00000013, 0x00000022, 0x00000000, 0x00030047, 0x00000017,
+    0x00000002, 0x00050048, 0x00000017, 0x00000000, 0x00000023, 0x00000000, 0x00050048, 0x00000017,
+    0x00000001, 0x00000023, 0x00000004, 0x00040047, 0x00000023, 0x00000001, 0x00000005, 0x00040047,
+    0x00000025, 0x00000001, 0x00000000, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002,
+    0x00040015, 0x00000006, 0x00000020, 0x00000000, 0x00040020, 0x00000007, 0x00000007, 0x00000006,
+    0x00040017, 0x00000009, 0x00000006, 0x00000003, 0x00040020, 0x0000000a, 0x00000001, 0x00000009,
+    0x0004003b, 0x0000000a, 0x0000000b, 0x00000001, 0x0004002b, 0x00000006, 0x0000000c, 0x00000000,
+    0x00040020, 0x0000000d, 0x00000001, 0x00000006, 0x0003001d, 0x00000010, 0x00000006, 0x0003001e,
+    0x00000011, 0x00000010, 0x00040020, 0x00000012, 0x0000000c, 0x00000011, 0x0004003b, 0x00000012,
+    0x00000013, 0x0000000c, 0x00040015, 0x00000014, 0x00000020, 0x00000001, 0x0004002b, 0x00000014,
+    0x00000015, 0x00000000, 0x0004001e, 0x00000017, 0x00000006, 0x00000006, 0x00040020, 0x00000018,
+    0x00000009, 0x00000017, 0x0004003b, 0x00000018, 0x00000019, 0x00000009, 0x00040020, 0x0000001a,
+    0x00000009, 0x00000006, 0x0004002b, 0x00000014, 0x0000001e, 0x00000001, 0x00040032, 0x00000006,
+    0x00000023, 0x00000001, 0x00040032, 0x00000006, 0x00000025, 0x00000000, 0x00040020, 0x00000027,
+    0x0000000c, 0x00000006, 0x0004002b, 0x00000006, 0x00000029, 0x00000040, 0x0004002b, 0x00000006,
+    0x0000002a, 0x00000001, 0x0006002c, 0x00000009, 0x0000002b, 0x00000029, 0x0000002a, 0x0000002a,
+    0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003b,
+    0x00000007, 0x00000008, 0x00000007, 0x00050041, 0x0000000d, 0x0000000e, 0x0000000b, 0x0000000c,
+    0x0004003d, 0x00000006, 0x0000000f, 0x0000000e, 0x0003003e, 0x00000008, 0x0000000f, 0x0004003d,
+    0x00000006, 0x00000016, 0x00000008, 0x00050041, 0x0000001a, 0x0000001b, 0x00000019, 0x00000015,
+    0x0004003d, 0x00000006, 0x0000001c, 0x0000001b, 0x0004003d, 0x00000006, 0x0000001d, 0x00000008,
+    0x00050041, 0x0000001a, 0x0000001f, 0x00000019, 0x0000001e, 0x0004003d, 0x00000006, 0x00000020,
+    0x0000001f, 0x00050084, 0x00000006, 0x00000021, 0x0000001d, 0x00000020, 0x00050080, 0x00000006,
+    0x00000022, 0x0000001c, 0x00000021, 0x00050084, 0x00000006, 0x00000024, 0x00000022, 0x00000023,
+    0x00050080, 0x00000006, 0x00000026, 0x00000024, 0x00000025, 0x00060041, 0x00000027, 0x00000028,
+    0x00000013, 0x00000015, 0x00000016, 0x0003003e, 0x00000028, 0x00000026, 0x000100fd, 0x00010038,
+};
 
 constexpr std::uint32_t invocations = 64;
 constexpr std::uint32_t push_base = 1000;
@@ -307,8 +347,17 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   if (alignment > std::numeric_limits<std::uint32_t>::max() - payload_bytes)
     return blocked("minStorageBufferOffsetAlignment not representable as a dynamic offset");
   const auto dynamic_offset = static_cast<std::uint32_t>(alignment);
+  // A second aligned region after the first receives the specialized dispatch.
+  // The guard above bounds alignment below 2^32, so this sum cannot overflow
+  // vk::DeviceSize; the rounded offset and the region end must still fit the
+  // uint32_t dynamic offset.
+  const auto rounded_offset =
+      ((vk::DeviceSize{dynamic_offset} + payload_bytes + alignment - 1) / alignment) * alignment;
+  if (rounded_offset > std::numeric_limits<std::uint32_t>::max() - payload_bytes)
+    return blocked("second dynamic-offset region not representable as uint32_t");
+  const auto specialized_offset = static_cast<std::uint32_t>(rounded_offset);
   BufferDescription buffer_description;
-  buffer_description.size = dynamic_offset + payload_bytes;
+  buffer_description.size = vk::DeviceSize{specialized_offset} + payload_bytes;
   buffer_description.usage = vk::BufferUsageFlagBits::eStorageBuffer |
                              vk::BufferUsageFlagBits::eTransferSrc |
                              vk::BufferUsageFlagBits::eTransferDst;
@@ -350,6 +399,37 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
       createComputePipeline(device, *shader, *layout, ComputePipelineDescription{"main"});
   if (!pipeline)
     return blocked("ComputePipeline");
+
+  // #399 D0: two constants at swapped data offsets (factor first, then bias),
+  // so a dropped or mismatched specialization changes every written value.
+  constexpr std::uint32_t bias = 7;
+  constexpr std::uint32_t factor = 2;
+  ComputePipelineDescription specialized_description{"main"};
+  specialized_description.specialization.map_entries = {
+      vk::SpecializationMapEntry{0, sizeof(std::uint32_t), sizeof(std::uint32_t)},
+      vk::SpecializationMapEntry{5, 0, sizeof(std::uint32_t)}};
+  specialized_description.specialization.data.resize(2 * sizeof(std::uint32_t));
+  std::memcpy(specialized_description.specialization.data.data(), &factor, sizeof(factor));
+  std::memcpy(specialized_description.specialization.data.data() + sizeof(factor), &bias,
+              sizeof(bias));
+  const auto specialized_binary = SpirvBinary::fromWords(specialized_words);
+  if (!specialized_binary)
+    return blocked("specialized SPIR-V fixture");
+  auto specialized_shader = createShaderModule(device, *specialized_binary);
+  if (!specialized_shader)
+    return blocked("specialized ShaderModule");
+  auto specialized =
+      createComputePipeline(device, *specialized_shader, *layout, specialized_description);
+  if (!specialized)
+    return blocked("specialized ComputePipeline");
+  check(specialized->configuration() &&
+            specialized->configuration()->effective.specialization.map_entries ==
+                specialized_description.specialization.map_entries &&
+            specialized->configuration()->effective.specialization.data ==
+                specialized_description.specialization.data &&
+            pipeline->configuration() &&
+            pipeline->configuration()->effective.specialization.empty(),
+        "effective configuration exposes the specialization; the plain pipeline has none");
 
   CommandPoolDescription pool_description;
   pool_description.queue_family_index = static_cast<std::uint32_t>(queue.familyIndex());
@@ -457,8 +537,22 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   check(recorded.dispatch == 1 && recorded.groups == std::array<std::uint32_t, 3>{1, 1, 1},
         "one vkCmdDispatch with exact group counts");
 
-  const std::array<BufferReadbackItem, 1> reads{
-      {{&*storage, 0, vk::DeviceSize{dynamic_offset} + payload_bytes}}};
+  // Same layout, set and push constants; the specialized shader writes the
+  // second region, so the first dispatch's result stays observable.
+  const std::array<std::uint32_t, 1> specialized_offsets{specialized_offset};
+  if (!recordBindPipeline(device, *command, *specialized) ||
+      !recordBindDescriptorSets(device, *command, compute, *layout, 0, bound,
+                                specialized_offsets) ||
+      !recordPushConstants(device, *command, *layout, compute_stage, 0, push_bytes) ||
+      !recordDispatch(device, *command, 1, 1, 1))
+    return blocked("record the specialized compute dispatch");
+  check(recorded.pipeline == specialized->nativePipeline() &&
+            recorded.dynamic_offsets == std::vector<std::uint32_t>{specialized_offset},
+        "the second dispatch binds the specialized pipeline at the second region");
+
+  const std::array<BufferReadbackItem, 2> reads{
+      {{&*storage, 0, vk::DeviceSize{dynamic_offset} + payload_bytes},
+       {&*storage, specialized_offset, payload_bytes}}};
   auto readback = prepareReadbackBatch(*allocator, ReadbackBatchDescription{.buffers = reads});
   if (!readback)
     return blocked("prepare Readback");
@@ -478,9 +572,9 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
       !recordReadbackBatch(device, *command, *readback) ||
       !recordBarriers(device, *command, {.memory = std::span{&to_host, 1}}) || !command->end())
     return blocked("explicit barriers, readback and end");
-  check(recorded.bind_pipeline == 1 && recorded.bind_sets == 1 && recorded.push == 1 &&
-            recorded.dispatch == 1,
-        "exactly one native call per successful recorder over the whole recording");
+  check(recorded.bind_pipeline == 2 && recorded.bind_sets == 2 && recorded.push == 2 &&
+            recorded.dispatch == 2,
+        "exactly one native call per successful recorder over both dispatches");
 
   NativeFence fence;
   fence.device = static_cast<VkDevice>(device.nativeHandle());
@@ -525,6 +619,18 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   for (std::uint32_t index = 0; index < invocations; ++index)
     matches &= words[prefix_words + index] == push_base + index * push_scale;
   check(matches, "GPU wrote base + i * scale at the dynamic offset using pushed constants");
+
+  const auto specialized_data = copied->dataFor(1);
+  std::vector<std::uint32_t> specialized_words_out(invocations);
+  if (!check(specialized_data.size() == payload_bytes, "readback covers the specialized region"))
+    return EXIT_FAILURE;
+  std::memcpy(specialized_words_out.data(), specialized_data.data(), specialized_data.size());
+  bool specialized_matches = true;
+  for (std::uint32_t index = 0; index < invocations; ++index)
+    specialized_matches &=
+        specialized_words_out[index] == ((push_base + index * push_scale) * factor) + bias;
+  check(specialized_matches,
+        "specialized pipeline wrote (base + i * scale) * factor + bias with both constants");
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 

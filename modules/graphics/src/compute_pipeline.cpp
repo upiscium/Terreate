@@ -2,6 +2,9 @@
 
 #include <new>
 #include <utility>
+#include <vector>
+
+#include "specialization_native.hpp"
 
 namespace terreate::graphics {
 namespace {
@@ -48,7 +51,7 @@ auto validateComputePipelineDescription(const ComputePipelineDescription &descri
       name.find('\0') != std::string::npos)
     return fail(ComputePipelineError::invalid_entry_point,
                 "explicit nonempty entry point of at most 4096 bytes without NUL required");
-  return {};
+  return validateSpecializationDescription(description.specialization);
 }
 
 struct ComputePipeline::Impl {
@@ -110,15 +113,22 @@ auto createComputePipeline(const Device &device, const ShaderModule &shader_modu
     return std::unexpected(std::move(validation.error()));
 
   std::unique_ptr<ComputePipeline::Impl> impl;
+  std::vector<VkSpecializationMapEntry> specialization_entries;
   try {
     impl = std::make_unique<ComputePipeline::Impl>();
     impl->config = {description, description, vk::ShaderStageFlagBits::eCompute};
+    specialization_entries =
+        detail::nativeSpecializationEntries(impl->config.effective.specialization);
   } catch (const std::bad_alloc &) {
     return std::unexpected(
         terreate::Error{make_error_code(ComputePipelineError::allocation_failed)});
   }
   impl->device = static_cast<VkDevice>(device.nativeHandle());
   impl->layout = layout.nativeHandle();
+  const auto &specialization = impl->config.effective.specialization;
+  // Points into the owned effective copy and the local native entries.
+  const auto specialization_info =
+      detail::nativeSpecializationInfo(specialization_entries, specialization);
   const VkPipelineShaderStageCreateInfo stage{
       .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
       .pNext = nullptr,
@@ -126,7 +136,7 @@ auto createComputePipeline(const Device &device, const ShaderModule &shader_modu
       .stage = VK_SHADER_STAGE_COMPUTE_BIT,
       .module = shader_module.nativeShaderModule(),
       .pName = impl->config.effective.entry_point.c_str(),
-      .pSpecializationInfo = nullptr,
+      .pSpecializationInfo = specialization.empty() ? nullptr : &specialization_info,
   };
   const VkComputePipelineCreateInfo info{
       .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
