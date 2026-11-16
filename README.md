@@ -116,6 +116,17 @@ and Graphics-OFF packages do not discover Vulkan or VMA. An optional Graphics
 request with unavailable dependencies must leave Core usable rather than force
 VMA on Core-only consumers. No component discovers or links GLFW.
 
+`cmake.package_smoke` checks this from outside the build tree (#285). It
+installs four packages (all components, Core only, Platform only, Graphics
+only), then configures separate consumer projects that use only
+`CMAKE_PREFIX_PATH`. It verifies that:
+
+- a required component that was not built fails with a message naming it and
+  the `TERREATE_BUILD_*=ON` option, and an optional one leaves Core usable;
+- installed package files and the include directories a consumer receives do
+  not refer to the source or build tree;
+- Core and Graphics consumers import no GLFW target or link dependency.
+
 Allocator integration is already merged into main. Its public-interface and
 installed-consumer contracts retain the same `Terreate::Graphics` target and
 transitive dependency visibility; allocator-test linker wrapping is private to

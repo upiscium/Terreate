@@ -63,7 +63,7 @@ if(_Terreate_graphics_built AND _Terreate_graphics_requested)
          NOT "${Vulkan_VERSION}" MATCHES "-NOTFOUND$" AND
          "${Vulkan_VERSION}" VERSION_LESS
              "${_Terreate_minimum_vulkan_api_version}")
-    set(_Terreate_graphics_unavailable_reason
+    string(CONCAT _Terreate_graphics_unavailable_reason
       "Terreate Graphics requires Vulkan >= "
       "${_Terreate_minimum_vulkan_api_version}; found Vulkan ${Vulkan_VERSION}")
   else()
@@ -259,7 +259,7 @@ set_target_properties(terreate_vulkan_headers_probe PROPERTIES
     if(_Terreate_vulkan_hpp_available)
       set(_Terreate_graphics_available TRUE)
     else()
-      set(_Terreate_graphics_unavailable_reason
+      string(CONCAT _Terreate_graphics_unavailable_reason
         "Terreate Graphics compile probe rejected the effective Vulkan::Vulkan "
         "include order: missing or uncompileable declarations in "
         "vulkan/vulkan_core.h, vulkan/vulkan.hpp, and "
@@ -336,7 +336,7 @@ foreach(_Terreate_component IN ITEMS Core Platform Graphics)
       "${CMAKE_CURRENT_LIST_DIR}/Terreate${_Terreate_component}Targets.cmake")
     if(NOT EXISTS "${_Terreate_component_file}")
       set(Terreate_FOUND FALSE)
-      set(Terreate_NOT_FOUND_MESSAGE
+      string(CONCAT Terreate_NOT_FOUND_MESSAGE
         "Terreate package targets are missing from ${CMAKE_CURRENT_LIST_DIR}: "
         "Terreate${_Terreate_component}Targets.cmake")
     else()
@@ -361,7 +361,7 @@ foreach(_Terreate_component IN LISTS Terreate_FIND_COMPONENTS)
     if(_Terreate_component_index EQUAL -1)
       set(Terreate_${_Terreate_component}_FOUND FALSE)
       if(NOT Terreate_NOT_FOUND_MESSAGE)
-        set(Terreate_NOT_FOUND_MESSAGE
+        string(CONCAT Terreate_NOT_FOUND_MESSAGE
           "Terreate does not provide requested component '${_Terreate_component}'; "
           "supported components are Core, Platform, and Graphics")
       endif()
@@ -376,7 +376,7 @@ foreach(_Terreate_component IN LISTS Terreate_FIND_COMPONENTS)
           "Terreate Graphics is unavailable because Vulkan was not found")
       endif()
     else()
-      set(Terreate_NOT_FOUND_MESSAGE
+      string(CONCAT Terreate_NOT_FOUND_MESSAGE
         "Terreate component '${_Terreate_component}' is disabled in this "
         "installation; reconfigure Terreate with "
         "TERREATE_BUILD_${_Terreate_component_upper}=ON")
