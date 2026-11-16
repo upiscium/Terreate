@@ -10,6 +10,7 @@
 #include <terreate/graphics/buffer.hpp>
 #include <terreate/graphics/command_buffer.hpp>
 #include <terreate/graphics/device.hpp>
+#include <terreate/graphics/graphics_pipeline.hpp>
 #include <terreate/graphics/image.hpp>
 #include <terreate/graphics/image_view.hpp>
 
@@ -33,6 +34,12 @@ enum class RenderingCommandError : std::uint8_t {
   invalid_buffer,
   invalid_binding_range,
   invalid_index_type,
+  // Appended in #403; existing values are unchanged.
+  binding_state_mismatch,
+  missing_vertex_buffer,
+  vertex_range_out_of_bounds,
+  missing_index_buffer,
+  index_range_out_of_bounds,
 };
 
 [[nodiscard]] const std::error_category &rendering_command_error_category() noexcept;
@@ -198,6 +205,85 @@ struct VertexBufferBinding {
                                      std::uint32_t instance_count, std::uint32_t first_index,
                                      std::int32_t vertex_offset, std::uint32_t first_instance)
     -> terreate::Result<void>;
+
+/// Bound index buffer as seen by a GraphicsBindingState.
+struct IndexBufferState {
+  vk::IndexType type = vk::IndexType::eUint16;
+  /// Whole indices available from the bind offset to the end of the buffer.
+  vk::DeviceSize available_indices = 0;
+};
+
+/// Explicit, caller-owned record of what was bound through the stateful
+/// overloads below (#403). It is a plain pointer-free value: nothing is stored
+/// inside CommandBuffer. It only reflects binds made through these overloads;
+/// native vkCmd* calls, binds through the stateless overloads, or a reset of
+/// the CommandBuffer are invisible to it. Use one state per CommandBuffer
+/// recording; the draws reject a state filled on another CommandBuffer.
+struct GraphicsBindingState {
+  /// CommandBuffer the state was filled on (observation only).
+  vk::CommandBuffer command{};
+  /// Effective vertex input of the GraphicsPipeline bound through the state.
+  bool pipeline_bound = false;
+  std::vector<vk::VertexInputBindingDescription> vertex_bindings{};
+  std::vector<vk::VertexInputAttributeDescription> vertex_attributes{};
+  /// Indexed by binding number: bytes from the bind offset to the buffer end,
+  /// or 0 when nothing is bound at that binding. A successful stateful bind
+  /// always records a positive count, because the bind offset must be less
+  /// than the buffer size.
+  std::vector<vk::DeviceSize> vertex_bytes{};
+  std::optional<IndexBufferState> index{};
+};
+
+/// Pure CPU checks used by the stateful draws, with the same error codes.
+/// Every pipeline vertex binding must have a bound buffer, even one the vertex
+/// shader does not access: this is stricter than Vulkan (VUID 04007/04008 cover
+/// only accessed bindings) because Terreate does not reflect SPIR-V. For a
+/// non-indexed draw, each binding must also hold the last vertex (per-vertex
+/// rate) or instance (per-instance rate) it fetches:
+/// (first + count - 1) * stride + max(attribute offset + vk::blockSize(format)).
+/// Zero counts fetch nothing. All arithmetic is overflow-checked.
+[[nodiscard]] auto validateDrawBindings(const GraphicsBindingState &state,
+                                        std::uint32_t vertex_count, std::uint32_t instance_count,
+                                        std::uint32_t first_vertex, std::uint32_t first_instance)
+    -> terreate::Result<void>;
+/// Indexed draws: [first_index, first_index + index_count) must lie inside the
+/// bound index buffer, and every pipeline vertex binding must have a bound
+/// buffer. Which vertices the indices reference is unknown without reading GPU
+/// memory, so vertex ranges are NOT checked here.
+[[nodiscard]] auto validateIndexedDrawBindings(const GraphicsBindingState &state,
+                                               std::uint32_t index_count, std::uint32_t first_index)
+    -> terreate::Result<void>;
+
+/// Stateful overloads (#403). Each runs the same validation as its stateless
+/// counterpart, records exactly one native call, and updates `state` only on
+/// success. recordBindPipeline also resets the state when `state` belongs to
+/// another CommandBuffer and snapshots the pipeline's effective vertex input;
+/// its validation errors are the PipelineCommandError codes of the stateless
+/// recordBindPipeline, returned unchanged.
+[[nodiscard]] auto recordBindPipeline(const Device &device, const CommandBuffer &command,
+                                      const GraphicsPipeline &pipeline, GraphicsBindingState &state)
+    -> terreate::Result<void>;
+[[nodiscard]] auto recordBindVertexBuffers(const Device &device, const CommandBuffer &command,
+                                           std::uint32_t first_binding,
+                                           std::span<const VertexBufferBinding> bindings,
+                                           GraphicsBindingState &state) -> terreate::Result<void>;
+[[nodiscard]] auto recordBindIndexBuffer(const Device &device, const CommandBuffer &command,
+                                         const Buffer &buffer, vk::DeviceSize offset,
+                                         vk::IndexType index_type, GraphicsBindingState &state)
+    -> terreate::Result<void>;
+/// Stateful draws additionally require that `state` was filled on `command`
+/// with a pipeline bound through it (binding_state_mismatch), then apply
+/// validateDrawBindings / validateIndexedDrawBindings before the native call.
+[[nodiscard]] auto recordDraw(const Device &device, const CommandBuffer &command,
+                              const RenderingScope &scope, const GraphicsBindingState &state,
+                              std::uint32_t vertex_count, std::uint32_t instance_count,
+                              std::uint32_t first_vertex, std::uint32_t first_instance)
+    -> terreate::Result<void>;
+[[nodiscard]] auto recordDrawIndexed(const Device &device, const CommandBuffer &command,
+                                     const RenderingScope &scope, const GraphicsBindingState &state,
+                                     std::uint32_t index_count, std::uint32_t instance_count,
+                                     std::uint32_t first_index, std::int32_t vertex_offset,
+                                     std::uint32_t first_instance) -> terreate::Result<void>;
 
 } // namespace terreate::graphics
 

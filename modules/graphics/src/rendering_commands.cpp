@@ -1,11 +1,15 @@
 #include <terreate/graphics/rendering_commands.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <new>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <terreate/graphics/pipeline_commands.hpp>
+#include <vulkan/vulkan_format_traits.hpp>
 
 namespace terreate::graphics {
 namespace {
@@ -46,6 +50,16 @@ public:
       return "vertex binding range empty or above maxVertexInputBindings";
     case RenderingCommandError::invalid_index_type:
       return "index type is not UINT16 or UINT32";
+    case RenderingCommandError::binding_state_mismatch:
+      return "binding state belongs to another CommandBuffer or has no pipeline bound";
+    case RenderingCommandError::missing_vertex_buffer:
+      return "a pipeline vertex binding has no bound vertex buffer";
+    case RenderingCommandError::vertex_range_out_of_bounds:
+      return "draw fetches past the end of a bound vertex buffer";
+    case RenderingCommandError::missing_index_buffer:
+      return "indexed draw without a bound index buffer";
+    case RenderingCommandError::index_range_out_of_bounds:
+      return "indexed draw reads past the end of the bound index buffer";
     }
     return "unknown rendering command error";
   }
@@ -469,6 +483,182 @@ auto recordDrawIndexed(const Device &device, const CommandBuffer &command,
     return valid;
   if (auto valid = validateScope(command, scope, name); !valid)
     return valid;
+  vkCmdDrawIndexed(nativeCommand(command), index_count, instance_count, first_index, vertex_offset,
+                   first_instance);
+  return {};
+}
+
+namespace {
+// Every vertex binding of the bound pipeline needs a bound buffer.
+terreate::Result<void> checkVertexBuffersPresent(const GraphicsBindingState &state,
+                                                 const char *name) {
+  if (!state.pipeline_bound)
+    return fail(RenderingCommandError::binding_state_mismatch, name);
+  for (const auto &binding : state.vertex_bindings)
+    if (binding.binding >= state.vertex_bytes.size() || state.vertex_bytes[binding.binding] == 0)
+      return fail(RenderingCommandError::missing_vertex_buffer, name);
+  return {};
+}
+
+// Stateful draws: the state must have been filled on this CommandBuffer.
+terreate::Result<void> checkStateOwner(const CommandBuffer &command,
+                                       const GraphicsBindingState &state, const char *name) {
+  if (state.command != command.nativeHandle() || !state.pipeline_bound)
+    return fail(RenderingCommandError::binding_state_mismatch, name);
+  return {};
+}
+
+// A state filled on another CommandBuffer starts over for this one.
+GraphicsBindingState adoptedState(const CommandBuffer &command, const GraphicsBindingState &state) {
+  if (state.command == command.nativeHandle())
+    return state;
+  GraphicsBindingState fresh;
+  fresh.command = command.nativeHandle();
+  return fresh;
+}
+} // namespace
+
+auto validateDrawBindings(const GraphicsBindingState &state, std::uint32_t vertex_count,
+                          std::uint32_t instance_count, std::uint32_t first_vertex,
+                          std::uint32_t first_instance) -> terreate::Result<void> {
+  constexpr auto name = "validateDrawBindings";
+  if (auto present = checkVertexBuffersPresent(state, name); !present)
+    return present;
+  if (vertex_count == 0 || instance_count == 0)
+    return {};
+  constexpr auto max = std::numeric_limits<std::uint64_t>::max();
+  for (const auto &binding : state.vertex_bindings) {
+    std::uint64_t attribute_end = 0;
+    for (const auto &attribute : state.vertex_attributes)
+      if (attribute.binding == binding.binding)
+        attribute_end = std::max<std::uint64_t>(attribute_end, std::uint64_t{attribute.offset} +
+                                                                   vk::blockSize(attribute.format));
+    if (attribute_end == 0)
+      continue; // no attribute fetches from this binding
+    const bool per_vertex = binding.inputRate == vk::VertexInputRate::eVertex;
+    // first + count - 1 fits in 33 bits, so it cannot overflow uint64_t.
+    const std::uint64_t last = per_vertex ? std::uint64_t{first_vertex} + vertex_count - 1
+                                          : std::uint64_t{first_instance} + instance_count - 1;
+    const std::uint64_t stride = binding.stride;
+    if (stride != 0 && last > (max - attribute_end) / stride)
+      return fail(RenderingCommandError::vertex_range_out_of_bounds, name);
+    if ((last * stride) + attribute_end > state.vertex_bytes[binding.binding])
+      return fail(RenderingCommandError::vertex_range_out_of_bounds, name);
+  }
+  return {};
+}
+
+auto validateIndexedDrawBindings(const GraphicsBindingState &state, std::uint32_t index_count,
+                                 std::uint32_t first_index) -> terreate::Result<void> {
+  constexpr auto name = "validateIndexedDrawBindings";
+  if (auto present = checkVertexBuffersPresent(state, name); !present)
+    return present;
+  if (!state.index)
+    return fail(RenderingCommandError::missing_index_buffer, name);
+  if (std::uint64_t{first_index} + index_count > state.index->available_indices)
+    return fail(RenderingCommandError::index_range_out_of_bounds, name);
+  return {};
+}
+
+auto recordBindPipeline(const Device &device, const CommandBuffer &command,
+                        const GraphicsPipeline &pipeline, GraphicsBindingState &state)
+    -> terreate::Result<void> {
+  constexpr auto name = "recordBindPipeline";
+  const auto *config = pipeline.configuration();
+  if (!config) // invalid pipeline: report the stateless validation error
+    return recordBindPipeline(device, command, pipeline);
+  // Prepare every allocation before the native call; publish after success.
+  GraphicsBindingState next;
+  try {
+    next = adoptedState(command, state);
+    next.vertex_bindings = config->effective.vertex_bindings;
+    next.vertex_attributes = config->effective.vertex_attributes;
+  } catch (const std::bad_alloc &) {
+    return fail(RenderingCommandError::allocation_failed, name);
+  }
+  next.pipeline_bound = true;
+  if (auto bound = recordBindPipeline(device, command, pipeline); !bound)
+    return bound;
+  state = std::move(next);
+  return {};
+}
+
+auto recordBindVertexBuffers(const Device &device, const CommandBuffer &command,
+                             std::uint32_t first_binding,
+                             std::span<const VertexBufferBinding> bindings,
+                             GraphicsBindingState &state) -> terreate::Result<void> {
+  constexpr auto name = "recordBindVertexBuffers";
+  GraphicsBindingState next;
+  try {
+    next = adoptedState(command, state);
+    const auto end = std::uint64_t{first_binding} + bindings.size();
+    // An out-of-range request is rejected by the stateless validation below.
+    if (end <= std::numeric_limits<std::uint32_t>::max() && next.vertex_bytes.size() < end)
+      next.vertex_bytes.resize(static_cast<std::size_t>(end), 0);
+  } catch (const std::bad_alloc &) {
+    return fail(RenderingCommandError::allocation_failed, name);
+  }
+  if (auto bound = recordBindVertexBuffers(device, command, first_binding, bindings); !bound)
+    return bound;
+  // Validation succeeded, so every buffer is valid with offset < size.
+  for (std::size_t index = 0; index < bindings.size(); ++index)
+    next.vertex_bytes[first_binding + index] =
+        bindings[index].buffer->configuration()->size - bindings[index].offset;
+  state = std::move(next);
+  return {};
+}
+
+auto recordBindIndexBuffer(const Device &device, const CommandBuffer &command, const Buffer &buffer,
+                           vk::DeviceSize offset, vk::IndexType index_type,
+                           GraphicsBindingState &state) -> terreate::Result<void> {
+  constexpr auto name = "recordBindIndexBuffer";
+  GraphicsBindingState next;
+  try {
+    next = adoptedState(command, state);
+  } catch (const std::bad_alloc &) {
+    return fail(RenderingCommandError::allocation_failed, name);
+  }
+  if (auto bound = recordBindIndexBuffer(device, command, buffer, offset, index_type); !bound)
+    return bound;
+  const vk::DeviceSize index_size = index_type == vk::IndexType::eUint16 ? 2 : 4;
+  next.index = IndexBufferState{index_type, (buffer.configuration()->size - offset) / index_size};
+  state = std::move(next);
+  return {};
+}
+
+auto recordDraw(const Device &device, const CommandBuffer &command, const RenderingScope &scope,
+                const GraphicsBindingState &state, std::uint32_t vertex_count,
+                std::uint32_t instance_count, std::uint32_t first_vertex,
+                std::uint32_t first_instance) -> terreate::Result<void> {
+  constexpr auto name = "recordDraw";
+  if (auto valid = validateRecording(device, command, name); !valid)
+    return valid;
+  if (auto valid = validateScope(command, scope, name); !valid)
+    return valid;
+  if (auto valid = checkStateOwner(command, state, name); !valid)
+    return valid;
+  if (auto valid =
+          validateDrawBindings(state, vertex_count, instance_count, first_vertex, first_instance);
+      !valid)
+    return withContext(std::move(valid), name);
+  vkCmdDraw(nativeCommand(command), vertex_count, instance_count, first_vertex, first_instance);
+  return {};
+}
+
+auto recordDrawIndexed(const Device &device, const CommandBuffer &command,
+                       const RenderingScope &scope, const GraphicsBindingState &state,
+                       std::uint32_t index_count, std::uint32_t instance_count,
+                       std::uint32_t first_index, std::int32_t vertex_offset,
+                       std::uint32_t first_instance) -> terreate::Result<void> {
+  constexpr auto name = "recordDrawIndexed";
+  if (auto valid = validateRecording(device, command, name); !valid)
+    return valid;
+  if (auto valid = validateScope(command, scope, name); !valid)
+    return valid;
+  if (auto valid = checkStateOwner(command, state, name); !valid)
+    return valid;
+  if (auto valid = validateIndexedDrawBindings(state, index_count, first_index); !valid)
+    return withContext(std::move(valid), name);
   vkCmdDrawIndexed(nativeCommand(command), index_count, instance_count, first_index, vertex_offset,
                    first_instance);
   return {};
