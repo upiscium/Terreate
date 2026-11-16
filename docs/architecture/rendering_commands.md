@@ -247,3 +247,33 @@ between bind and draw. These stay caller responsibilities.
   binds and end from the installed package without submitting. With no
   pipeline bound it records no draw, and checks that `recordDrawIndexed`
   rejects the consumed scope (`package.rendering_commands: runtime=PASS`).
+
+## Headless end-to-end smoke (#283)
+
+`graphics.headless_triangle` (`tests/test_graphics_headless_triangle.cpp`)
+draws one triangle without Window, Surface or Swapchain. Every step goes
+through a public Graphics API:
+
+1. The Upload Batch (#338) fills a device-local vertex Buffer and a uniform
+   color Buffer.
+2. A DescriptorSetLayout, a DescriptorPool, a DescriptorSet and a write
+   (#266) expose the uniform at set 0, binding 0.
+3. A PipelineLayout with that set and a GraphicsPipeline (#267) are built
+   from precompiled SPIR-V; no compiler or reflection is used.
+4. The test records explicit barriers (#264), then Dynamic Rendering, the
+   descriptor bind and the draw (#265). The draw goes through the explicit
+   `GraphicsBindingState` (#403), and a draw past the uploaded vertices is
+   rejected before the native call.
+5. The application submits once and waits (#258).
+6. The image readback (#339) refuses host access without a receipt and
+   while the Fence is pending. Once completed, the center and both base
+   corners have the uniform color, and pixels outside the triangle keep the
+   clear color.
+7. Both staging Buffers are retired through a `RetirementQueue` (#259).
+
+The test creates only the Fence natively. Synchronization primitives are
+caller-owned handles under the #258 contract (`gpu_submission.md`), so the
+native Fence is not a missing API. With the validation layer available, a
+Debug Utils probe must reach the diagnostic sink, and no real validation
+warning may remain. Without the layer, the validation part reports SKIP and
+never a false PASS.

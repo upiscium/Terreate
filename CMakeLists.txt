@@ -742,6 +742,20 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.rendering_commands: headless-triangle=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.rendering_commands.*: (assertion=FAIL|.*BLOCKED)")
 
+    # #283: end-to-end headless triangle through the public Graphics APIs only.
+    add_executable(terreate_graphics_headless_triangle_tests
+      tests/test_graphics_headless_triangle.cpp)
+    target_link_libraries(terreate_graphics_headless_triangle_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_headless_triangle_tests PRIVATE
+      "-Wl,--wrap=vkQueueSubmit2" "-Wl,--wrap=vkGetFenceStatus" "-Wl,--wrap=vkDeviceWaitIdle"
+      "-Wl,--wrap=vkCmdDraw" "-Wl,--wrap=vkCmdBindDescriptorSets"
+      "-Wl,--wrap=vmaDestroyBuffer")
+    terreate_configure_target(terreate_graphics_headless_triangle_tests)
+    add_test(NAME graphics.headless_triangle COMMAND terreate_graphics_headless_triangle_tests)
+    set_tests_properties(graphics.headless_triangle PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.headless_triangle: headless-triangle-readback=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.headless_triangle: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_image_tests tests/test_graphics_image.cpp)
     target_link_libraries(terreate_graphics_image_tests PRIVATE Terreate::Graphics)
     target_link_options(terreate_graphics_image_tests PRIVATE
