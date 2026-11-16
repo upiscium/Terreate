@@ -313,6 +313,57 @@ int cpuTest() {
         "C2 codes are appended without renumbering C1 codes");
   check(VertexBufferBinding{}.buffer == nullptr && VertexBufferBinding{}.offset == 0,
         "default vertex binding names no buffer");
+
+  // #403: pure binding-state checks.
+  check(static_cast<int>(Error::invalid_index_type) == 16 &&
+            static_cast<int>(Error::binding_state_mismatch) == 17 &&
+            static_cast<int>(Error::index_range_out_of_bounds) == 21 &&
+            !std::error_code{Error::index_range_out_of_bounds}.message().empty(),
+        "#403 codes are appended without renumbering");
+  GraphicsBindingState state;
+  check(hasError(validateDrawBindings(state, 3, 1, 0, 0), Error::binding_state_mismatch) &&
+            hasError(validateIndexedDrawBindings(state, 3, 0), Error::binding_state_mismatch),
+        "a state without a bound pipeline is rejected");
+  state.pipeline_bound = true;
+  // Binding 0: per-vertex, stride 8, R32G32 at offset 0 (8 bytes per vertex).
+  // Binding 2: per-instance, stride 16, R32 at offset 4 (ends at byte 8).
+  state.vertex_bindings = {{0, 8, vk::VertexInputRate::eVertex},
+                           {2, 16, vk::VertexInputRate::eInstance}};
+  state.vertex_attributes = {{0, 0, vk::Format::eR32G32Sfloat, 0},
+                             {1, 2, vk::Format::eR32Sfloat, 4}};
+  state.vertex_bytes = {32, 0, 0};
+  check(hasError(validateDrawBindings(state, 4, 1, 0, 0), Error::missing_vertex_buffer) &&
+            hasError(validateIndexedDrawBindings(state, 3, 0), Error::missing_vertex_buffer),
+        "an unbound pipeline binding is rejected for both draws");
+  state.vertex_bytes[2] = 40; // instances 0..2 end at 2 * 16 + 8 = 40
+  check(validateDrawBindings(state, 4, 3, 0, 0).has_value() &&
+            validateDrawBindings(state, 3, 3, 1, 0).has_value() &&
+            validateDrawBindings(state, 0, 3, 100, 0).has_value() &&
+            validateDrawBindings(state, 4, 0, 0, 100).has_value(),
+        "ranges ending exactly at the buffer end and zero counts are accepted");
+  check(hasError(validateDrawBindings(state, 5, 1, 0, 0), Error::vertex_range_out_of_bounds) &&
+            hasError(validateDrawBindings(state, 4, 1, 1, 0), Error::vertex_range_out_of_bounds) &&
+            hasError(validateDrawBindings(state, 1, 4, 0, 0), Error::vertex_range_out_of_bounds) &&
+            hasError(validateDrawBindings(state, 1, 1, 0, 3), Error::vertex_range_out_of_bounds) &&
+            hasError(validateDrawBindings(state, std::numeric_limits<std::uint32_t>::max(), 1,
+                                          std::numeric_limits<std::uint32_t>::max(), 0),
+                     Error::vertex_range_out_of_bounds),
+        "per-vertex and per-instance overruns and huge ranges are rejected without overflow");
+  check(hasError(validateIndexedDrawBindings(state, 3, 0), Error::missing_index_buffer),
+        "an indexed draw without an index buffer is rejected");
+  state.index = IndexBufferState{vk::IndexType::eUint16, 6};
+  check(validateIndexedDrawBindings(state, 6, 0).has_value() &&
+            validateIndexedDrawBindings(state, 2, 4).has_value() &&
+            validateIndexedDrawBindings(state, 0, 6).has_value() &&
+            hasError(validateIndexedDrawBindings(state, 7, 0), Error::index_range_out_of_bounds) &&
+            hasError(validateIndexedDrawBindings(state, 1, 6), Error::index_range_out_of_bounds) &&
+            hasError(validateIndexedDrawBindings(state, std::numeric_limits<std::uint32_t>::max(),
+                                                 std::numeric_limits<std::uint32_t>::max()),
+                     Error::index_range_out_of_bounds),
+        "index ranges are checked against the available indices without overflow");
+  state.vertex_bytes[0] = 8; // a single vertex: indexed draws only need presence
+  check(validateIndexedDrawBindings(state, 6, 0).has_value(),
+        "indexed draws do not check vertex ranges (indices are unknown on the CPU)");
   check(RenderingAttachmentDescription{}.layout == vk::ImageLayout::eUndefined &&
             RenderingDescription{}.layer_count == 1,
         "default attachment layout is deliberately invalid");
@@ -487,8 +538,11 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
       createGraphicsPipeline(device, *layout, *quad_vertex, *fragment, quad_description);
   auto quad =
       makeTarget(device, *allocator, color_format, color_usage, vk::ImageAspectFlagBits::eColor);
-  if (!quad_pipeline || !quad)
-    return blocked("vertex-input GraphicsPipeline and quad color target");
+  // #403: a third target drawn through the stateful binding overloads.
+  auto stateful =
+      makeTarget(device, *allocator, color_format, color_usage, vk::ImageAspectFlagBits::eColor);
+  if (!quad_pipeline || !quad || !stateful)
+    return blocked("vertex-input GraphicsPipeline and quad color targets");
 
   // A leading padding vertex and two leading indices make both bind offsets
   // observable: ignoring either offset would draw a different shape.
@@ -632,7 +686,10 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   to_depth.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
   auto to_quad = to_color;
   to_quad.image = quad->image.nativeImage();
-  const std::array<VkImageMemoryBarrier2, 3> to_attachments{to_color, to_depth, to_quad};
+  auto to_stateful = to_color;
+  to_stateful.image = stateful->image.nativeImage();
+  const std::array<VkImageMemoryBarrier2, 4> to_attachments{to_color, to_depth, to_quad,
+                                                            to_stateful};
   VkMemoryBarrier2 to_vertex_input{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
   to_vertex_input.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
   to_vertex_input.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -783,6 +840,66 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
             recorded.end == 2,
         "exactly one vertex bind, index bind and indexed draw with exact arguments");
 
+  // #403: third rendering instance through the stateful binding overloads.
+  auto stateful_rendering = quad_rendering;
+  stateful_rendering.color_attachments[0].image = &stateful->image;
+  stateful_rendering.color_attachments[0].view = &stateful->view;
+  auto stateful_scope = recordBeginRendering(device, *command, stateful_rendering);
+  if (!stateful_scope || !recordSetViewport(device, *command, viewport) ||
+      !recordSetScissor(device, *command, scissor))
+    return blocked("begin stateful rendering and set dynamic state");
+  GraphicsBindingState binding_state;
+  GraphicsBindingState pipeline_only;
+  GraphicsBindingState foreign_state;
+  if (!recordBindPipeline(device, *command, *quad_pipeline, pipeline_only) ||
+      !recordBindPipeline(device, *spare, *quad_pipeline, foreign_state) ||
+      !recordBindPipeline(device, *command, *quad_pipeline, binding_state) ||
+      !recordBindVertexBuffers(device, *command, 0, quad_vertices, binding_state) ||
+      !recordBindIndexBuffer(device, *command, *index_buffer, index_offset, vk::IndexType::eUint16,
+                             binding_state))
+    return blocked("stateful pipeline, vertex and index binds");
+  check(binding_state.command == command->nativeHandle() && binding_state.pipeline_bound &&
+            binding_state.vertex_bindings == quad_description.vertex_bindings &&
+            binding_state.vertex_attributes == quad_description.vertex_attributes &&
+            binding_state.vertex_bytes ==
+                std::vector<vk::DeviceSize>{sizeof(vertices) - vertex_offset} &&
+            binding_state.index && binding_state.index->type == vk::IndexType::eUint16 &&
+            binding_state.index->available_indices == 6 &&
+            foreign_state.command == spare->nativeHandle(),
+        "the binding_state records the pipeline vertex input, 32 vertex bytes and 6 indices");
+  const auto stateful_calls = nativeCalls();
+  check(hasError(recordDrawIndexed(device, *command, *stateful_scope, binding_state, 7, 1, 0, 0, 0),
+                 Error::index_range_out_of_bounds) &&
+            hasError(
+                recordDrawIndexed(device, *command, *stateful_scope, binding_state, 1, 1, 6, 0, 0),
+                Error::index_range_out_of_bounds) &&
+            hasError(recordDraw(device, *command, *stateful_scope, binding_state, 5, 1, 0, 0),
+                     Error::vertex_range_out_of_bounds) &&
+            hasError(
+                recordDrawIndexed(device, *command, *stateful_scope, pipeline_only, 6, 1, 0, 0, 0),
+                Error::missing_vertex_buffer) &&
+            hasError(
+                recordDrawIndexed(device, *command, *stateful_scope, foreign_state, 6, 1, 0, 0, 0),
+                Error::binding_state_mismatch) &&
+            hasError(
+                recordDraw(device, *command, *stateful_scope, GraphicsBindingState{}, 3, 1, 0, 0),
+                Error::binding_state_mismatch) &&
+            nativeCalls() == stateful_calls,
+        "over-long index and vertex ranges, missing buffers and foreign or empty states are "
+        "rejected before native calls");
+  // Indexed quad, then its first triangle again via a non-indexed draw of the
+  // 4 available vertices' first 3 (same pixels, exercises the vertex range).
+  if (!recordDrawIndexed(device, *command, *stateful_scope, binding_state, 6, 1, 0, 0, 0) ||
+      !recordDraw(device, *command, *stateful_scope, binding_state, 3, 1, 0, 0) ||
+      !recordEndRendering(device, *command, std::move(*stateful_scope)))
+    return blocked("stateful indexed and non-indexed draws");
+  check(recorded.draw_indexed == 2 &&
+            recorded.draw_indexed_args == std::array<std::uint32_t, 4>{6, 1, 0, 0} &&
+            recorded.draw == 2 && recorded.draw_args == std::array<std::uint32_t, 4>{3, 1, 0, 0} &&
+            recorded.bind_vertex == 2 && recorded.bind_index == 2 && recorded.begin == 3 &&
+            recorded.end == 3,
+        "stateful binds and draws each record exactly one native call");
+
   auto to_transfer = imageBarrier(color->image, VK_IMAGE_ASPECT_COLOR_BIT);
   to_transfer.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   to_transfer.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
@@ -795,10 +912,14 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   region.imageExtent = VkExtent3D{size, size, 1};
   auto quad_to_transfer = to_transfer;
   quad_to_transfer.image = quad->image.nativeImage();
-  const std::array<VkImageMemoryBarrier2, 2> to_transfers{to_transfer, quad_to_transfer};
-  const std::array<ImageReadbackItem, 2> reads{
+  auto stateful_to_transfer = to_transfer;
+  stateful_to_transfer.image = stateful->image.nativeImage();
+  const std::array<VkImageMemoryBarrier2, 3> to_transfers{to_transfer, quad_to_transfer,
+                                                          stateful_to_transfer};
+  const std::array<ImageReadbackItem, 3> reads{
       {{&color->image, vk::ImageLayout::eTransferSrcOptimal, region},
-       {&quad->image, vk::ImageLayout::eTransferSrcOptimal, region}}};
+       {&quad->image, vk::ImageLayout::eTransferSrcOptimal, region},
+       {&stateful->image, vk::ImageLayout::eTransferSrcOptimal, region}}};
   auto readback = prepareReadbackBatch(*allocator, ReadbackBatchDescription{.images = reads});
   if (!readback)
     return blocked("prepare image Readback");
@@ -839,10 +960,10 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
     std::_Exit(blocked("Fence did not prove GPU completion"));
   const std::span<const SubmissionReceipt> uses{&*receipt, 1};
   auto copied = tryCopyCompletedReadbackBatch(device, *readback, uses);
-  if (!copied || copied->images().size() != 2)
+  if (!copied || copied->images().size() != 3)
     return blocked("copy completed image Readback");
   constexpr std::size_t row_bytes = std::size_t{size} * 4;
-  for (std::size_t image = 0; image < 2; ++image) {
+  for (std::size_t image = 0; image < 3; ++image) {
     const auto pitch = copied->images()[image].row_pitch_bytes;
     if (!check(pitch >= row_bytes && copied->imageDataFor(image).size() >=
                                          (pitch * (std::size_t{size} - 1)) + row_bytes,
@@ -862,6 +983,7 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   };
   const auto triangle = reader(0);
   const auto quad_pixel = reader(1);
+  const auto stateful_pixel = reader(2);
   constexpr std::array<std::uint8_t, 4> green{0, 255, 0, 255};
   constexpr std::array<std::uint8_t, 4> blue{0, 0, 255, 255};
   const auto corners_clear = [&](const auto &pixel) {
@@ -877,6 +999,10 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   check(corners_clear(quad_pixel) && quad_pixel(8, size / 2) == blue &&
             quad_pixel(size / 2, 8) == blue,
         "pixels outside the quad keep the clear color");
+  check(stateful_pixel(size / 2, size / 2) == green && stateful_pixel(41, 22) == green &&
+            stateful_pixel(22, 41) == green && corners_clear(stateful_pixel) &&
+            stateful_pixel(8, size / 2) == blue && stateful_pixel(size / 2, 8) == blue,
+        "the stateful path draws the same quad");
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 

@@ -241,6 +241,12 @@ set_target_properties(package_consumer PROPERTIES
       "${name} consumer did not exercise the installed explicit pipeline cache hook\n"
       "${_run_output}\n${_run_error}")
   endif()
+  if("${component}" STREQUAL "Graphics" AND
+     NOT "${_run_output}" MATCHES "package\\.binding_state: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise the installed explicit binding state\n"
+      "${_run_output}\n${_run_error}")
+  endif()
 endfunction()
 
 function(terreate_expect_compile_failure name source diagnostics)
@@ -1075,8 +1081,27 @@ int main() {
           !terreate::graphics::recordSetScissor(*device, *command_buffer, vk::Rect2D{{0, 0}, {4, 4}}) ||
           !terreate::graphics::recordBindVertexBuffers(*device, *command_buffer, 0, vertex_bindings) ||
           !terreate::graphics::recordBindIndexBuffer(*device, *command_buffer, *geometry, 0,
-                                                     vk::IndexType::eUint16) ||
-          !terreate::graphics::recordEndRendering(*device, *command_buffer, std::move(*scope)) ||
+                                                     vk::IndexType::eUint16))
+        return 70;
+      // Installed explicit binding state (#403): binds update the caller-owned
+      // value; without a pipeline bound through it, a draw is rejected.
+      terreate::graphics::GraphicsBindingState binding_state;
+      if (!terreate::graphics::recordBindVertexBuffers(*device, *command_buffer, 0,
+                                                       vertex_bindings, binding_state) ||
+          !terreate::graphics::recordBindIndexBuffer(*device, *command_buffer, *geometry, 0,
+                                                     vk::IndexType::eUint16, binding_state) ||
+          binding_state.command != command_buffer->nativeHandle() ||
+          binding_state.vertex_bytes != std::vector<vk::DeviceSize>{48} ||
+          !binding_state.index || binding_state.index->available_indices != 32)
+        return 70;
+      const auto unbound = terreate::graphics::recordDrawIndexed(
+          *device, *command_buffer, *scope, binding_state, 6, 1, 0, 0, 0);
+      if (unbound || unbound.error().code() !=
+                         terreate::graphics::make_error_code(
+                             terreate::graphics::RenderingCommandError::binding_state_mismatch))
+        return 70;
+      std::puts("package.binding_state: runtime=PASS");
+      if (!terreate::graphics::recordEndRendering(*device, *command_buffer, std::move(*scope)) ||
           scope->active())
         return 70;
       // No pipeline is bound, so no draw is recorded; a consumed scope is rejected.
@@ -1090,6 +1115,19 @@ int main() {
                             terreate::graphics::make_error_code(
                                 terreate::graphics::RenderingCommandError::unsupported_queue)) {
       return 70;
+    }
+    if (!(queue_flags & vk::QueueFlagBits::eGraphics)) {
+      // No rendering instance on this queue: exercise the installed pure check.
+      terreate::graphics::GraphicsBindingState seam_state;
+      seam_state.pipeline_bound = true;
+      seam_state.index = terreate::graphics::IndexBufferState{vk::IndexType::eUint16, 6};
+      const auto over = terreate::graphics::validateIndexedDrawBindings(seam_state, 7, 0);
+      if (!terreate::graphics::validateIndexedDrawBindings(seam_state, 6, 0) || over ||
+          over.error().code() !=
+              terreate::graphics::make_error_code(
+                  terreate::graphics::RenderingCommandError::index_range_out_of_bounds))
+        return 70;
+      std::puts("package.binding_state: runtime=PASS");
     }
     if (!command_buffer->end()) return 70;
     std::puts("package.rendering_commands: runtime=PASS");

@@ -1,4 +1,4 @@
-# Rendering commands (#265 Phases C1 and C2)
+# Rendering commands (#265 Phases C1 and C2, #403)
 
 `<terreate/graphics/rendering_commands.hpp>` records Vulkan 1.3 Dynamic
 Rendering instances, vertex and index buffer bindings, and draws. It follows the
@@ -133,15 +133,65 @@ recording CommandBuffer and graphics queue checks:
   its `VkDeviceMemory` (the VMA allocation offset) must be a multiple of the
   index size (VUID-vkCmdBindIndexBuffer-offset-08783; `invalid_buffer`).
 
-Binding state is not tracked, so these remain caller responsibilities:
+The stateless functions above track nothing, so with them these remain caller
+responsibilities:
 
 - the bound index buffer covers `[first_index, first_index + index_count)`;
 - the bound vertex buffers match the bound pipeline's vertex input bindings
   and attributes;
 - a compatible graphics pipeline is bound.
 
-Checking the index range against the bound buffer and checking vertex input
-compatibility with the pipeline are planned future support.
+The opt-in explicit binding state below (#403) checks the first two before a
+draw.
+
+## Explicit binding state (#403)
+
+`GraphicsBindingState` is a plain, pointer-free value owned by the caller.
+Nothing is stored inside `CommandBuffer`; the state is passed explicitly to
+stateful overloads:
+
+| Function | Effect on the state |
+| --- | --- |
+| `recordBindPipeline(device, cmd, const GraphicsPipeline&, state)` | snapshots the pipeline's effective vertex bindings and attributes |
+| `recordBindVertexBuffers(device, cmd, first, bindings, state)` | records the bytes from each bind offset to the buffer end |
+| `recordBindIndexBuffer(device, cmd, buffer, offset, type, state)` | records the index type and the whole indices available |
+| `recordDraw(device, cmd, scope, const state&, …)` | checks, then records `vkCmdDraw` |
+| `recordDrawIndexed(device, cmd, scope, const state&, …)` | checks, then records `vkCmdDrawIndexed` |
+
+The binders run exactly the validation of their stateless counterparts
+(`recordBindPipeline` returns its `PipelineCommandError` unchanged), record
+one native call, and update the state only on success. A state filled on
+another CommandBuffer starts over when a binder is called with a new one; the
+state records which CommandBuffer it belongs to.
+
+Before the native draw (after the usual recording and scope checks):
+
+- `binding_state_mismatch`: the state belongs to another CommandBuffer, or no
+  pipeline was bound through it.
+- `missing_vertex_buffer`: a vertex binding of the bound pipeline has no
+  buffer bound through the state. This is deliberately stricter than Vulkan:
+  VUID-vkCmdDraw-None-04007/04008 cover only bindings the vertex shader
+  accesses, but Terreate does not reflect SPIR-V, so every declared binding
+  (and, for `recordDraw`, its range) is checked. Leave unused bindings out of
+  the pipeline's vertex input, or use the stateless overloads.
+- `vertex_range_out_of_bounds` (`recordDraw`): for each pipeline binding with
+  attributes, `(last index) * stride + max(attribute offset +
+  vk::blockSize(format))` must fit the bound bytes, where the last index is
+  `first_vertex + vertex_count - 1` for per-vertex bindings and
+  `first_instance + instance_count - 1` for per-instance bindings. Zero counts
+  fetch nothing. The arithmetic is overflow-checked.
+- `missing_index_buffer` / `index_range_out_of_bounds` (`recordDrawIndexed`):
+  `[first_index, first_index + index_count)` must lie inside the bound index
+  buffer.
+
+Which vertices an indexed draw fetches depends on index values in GPU memory,
+so `recordDrawIndexed` checks vertex-buffer presence but not vertex ranges.
+`validateDrawBindings` and `validateIndexedDrawBindings` expose the same
+checks as pure CPU functions.
+
+Not proven by the state: native `vkCmd*` calls made by the caller, binds made
+through the stateless overloads, a CommandBuffer reset, and buffer lifetime
+between bind and draw. These stay caller responsibilities.
 
 ## Deliberately excluded
 
@@ -154,6 +204,15 @@ compatibility with the pipeline are planned future support.
 - Read-only depth/stencil layouts and multi-level views.
 
 ## Tests
+
+- The rendering test also checks every binding-state error on the CPU, then
+  draws the indexed quad a third time through the stateful overloads (plus a
+  non-indexed draw of its first triangle). Over-long index and vertex ranges,
+  a missing vertex buffer and foreign or empty states are rejected with zero
+  native calls, and readback matches the stateless quad.
+- Package smoke binds through an explicit state, checks the recorded bytes
+  and indices, checks that a draw is rejected without a pipeline bound through
+  the state, and must print `package.binding_state: runtime=PASS`.
 
 - `graphics.rendering_commands.cpu` covers the CPU seams: color count, render
   area bounds and overflow, layer count, viewport bounds/depth/NaN, scissor
