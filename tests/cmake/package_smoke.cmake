@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -127,7 +127,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write specialization pipeline_layout compute_pipeline graphics_pipeline pipeline_commands rendering_commands submission retirement image image_view sampler)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write specialization pipeline_layout compute_pipeline graphics_pipeline pipeline_commands rendering_commands submission retirement image image_view sampler debug_utils)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -233,6 +233,12 @@ set_target_properties(package_consumer PROPERTIES
      NOT "${_run_output}" MATCHES "package\\.specialization: runtime=PASS")
     message(FATAL_ERROR
       "${name} consumer did not exercise installed specialization constants\n"
+      "${_run_output}\n${_run_error}")
+  endif()
+  if("${component}" STREQUAL "Graphics" AND
+     NOT "${_run_output}" MATCHES "package\\.debug_utils: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise the installed Debug Utils API\n"
       "${_run_output}\n${_run_error}")
   endif()
   if("${component}" STREQUAL "Graphics" AND
@@ -376,6 +382,7 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <terreate/graphics/image.hpp>
 #include <terreate/graphics/image_view.hpp>
 #include <terreate/graphics/sampler.hpp>
+#include <terreate/graphics/debug_utils.hpp>
 #include <terreate/graphics/spirv_binary.hpp>
 #include <terreate/graphics/shader_module.hpp>
 #include <terreate/graphics/descriptor_set_layout.hpp>
@@ -692,6 +699,26 @@ int main() {
   auto device = terreate::graphics::createDevice(*instance, *device_plan);
   if (!device || !device->valid() || !device->queue("package-main")) {
     return 11;
+  }
+  {
+    // This Instance does not enable VK_EXT_debug_utils: the installed Debug
+    // Utils API reports that explicitly, and a disabled value never calls Vulkan.
+    static_assert(std::is_trivially_copyable_v<terreate::graphics::DebugUtils>);
+    const auto debug = terreate::graphics::createDebugUtils(*instance, *device);
+    const terreate::graphics::DebugUtils disabled;
+    const auto not_enabled = terreate::graphics::make_error_code(
+        terreate::graphics::DebugUtilsError::not_enabled);
+    const auto label = terreate::graphics::insertQueueDebugLabel(
+        disabled, device->queue("package-main"), {"package"});
+    const auto named = terreate::graphics::setObjectName(
+        disabled, device->queue("package-main"), "package-main");
+    if (debug || debug.error().code() !=
+                     terreate::graphics::make_error_code(
+                         terreate::graphics::DebugUtilsError::extension_not_enabled) ||
+        label || label.error().code() != not_enabled || named ||
+        named.error().code() != not_enabled)
+      return 71;
+    std::puts("package.debug_utils: runtime=PASS");
   }
   auto allocator = terreate::graphics::createAllocator(*instance, candidate, *device);
   if (!allocator || !allocator->valid() ||

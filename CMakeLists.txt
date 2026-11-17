@@ -722,6 +722,26 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.pipeline_commands: headless-dispatch=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.pipeline_commands.*: (assertion=FAIL|.*BLOCKED)")
 
+    # #340: the Debug Utils entry points are loaded through vkGetInstanceProcAddr,
+    # so the test wraps that loader symbol to count the native calls.
+    add_executable(terreate_graphics_debug_utils_tests
+      tests/test_graphics_debug_utils.cpp)
+    target_link_libraries(terreate_graphics_debug_utils_tests PRIVATE Terreate::Graphics)
+    target_link_options(terreate_graphics_debug_utils_tests PRIVATE
+      "-Wl,--wrap=vkGetInstanceProcAddr")
+    terreate_configure_target(terreate_graphics_debug_utils_tests)
+    add_test(NAME graphics.debug_utils.cpu
+      COMMAND terreate_graphics_debug_utils_tests cpu)
+    set_tests_properties(graphics.debug_utils.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.debug_utils\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.debug_utils.*: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.debug_utils
+      COMMAND terreate_graphics_debug_utils_tests gpu)
+    set_tests_properties(graphics.debug_utils PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.debug_utils: debug-utils=PASS"
+      SKIP_REGULAR_EXPRESSION "graphics\\.debug_utils: debug-utils=SKIP"
+      FAIL_REGULAR_EXPRESSION "graphics\\.debug_utils.*: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_rendering_commands_tests
       tests/test_graphics_rendering_commands.cpp)
     target_link_libraries(terreate_graphics_rendering_commands_tests PRIVATE Terreate::Graphics)
