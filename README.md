@@ -123,8 +123,9 @@ only), then configures separate consumer projects that use only
 
 - a required component that was not built fails with a message naming it and
   the `TERREATE_BUILD_*=ON` option, and an optional one leaves Core usable;
-- installed package files and the include directories a consumer receives do
-  not refer to the source or build tree;
+- installed package files and the include directories a consumer receives
+  (including system include directories) do not refer to the source or build
+  tree, and contain no unresolved generator expression;
 - Core and Graphics consumers import no GLFW target or link dependency.
 
 Allocator integration is already merged into main. Its public-interface and
