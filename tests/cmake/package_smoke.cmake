@@ -1520,3 +1520,156 @@ if(NOT _decoy_diagnostics MATCHES "compile|declaration|vulkan")
     "incomplete Vulkan rejection was not actionable\n"
     "${_decoy_output}\n${_decoy_error}")
 endif()
+
+# #285: the installed package as an external consumer sees it.
+# Configure-only consumer projects; each takes only CMAKE_PREFIX_PATH.
+function(terreate_configure_consumer name prefix body result_variable output_variable)
+  set(_consumer "${_terreate_package_root}/external/${name}")
+  set(_build "${_terreate_package_root}/external/${name}-build")
+  file(REMOVE_RECURSE "${_consumer}" "${_build}")
+  file(MAKE_DIRECTORY "${_consumer}")
+  file(WRITE "${_consumer}/CMakeLists.txt"
+    "cmake_minimum_required(VERSION 3.28)\n"
+    "project(TerreateExternalConsumer LANGUAGES CXX)\n"
+    "set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)\n"
+    "set(CMAKE_FIND_PACKAGE_NO_MODULE TRUE)\n"
+    "${body}")
+  set(_command "${CMAKE_COMMAND}" -S "${_consumer}" -B "${_build}"
+    "-DCMAKE_PREFIX_PATH:PATH=${prefix}"
+    "-DTERREATE_TEST_PREFIX:PATH=${prefix}"
+    "-DTERREATE_TEST_SOURCE_DIR:PATH=${_terreate_source_dir}")
+  terreate_append_generator_and_compiler(_command)
+  execute_process(
+    COMMAND ${_command}
+    RESULT_VARIABLE _result
+    OUTPUT_VARIABLE _output
+    ERROR_VARIABLE _error)
+  set(${result_variable} "${_result}" PARENT_SCOPE)
+  set(${output_variable} "${_output}\n${_error}" PARENT_SCOPE)
+endfunction()
+
+# 1. Requesting a component that was not built is a clear configure error
+#    naming the component and the option to enable it.
+foreach(_disabled_case IN ITEMS "core_only;Graphics;GRAPHICS" "core_only;Platform;PLATFORM"
+                                "graphics_only;Platform;PLATFORM")
+  list(GET _disabled_case 0 _disabled_prefix_name)
+  list(GET _disabled_case 1 _disabled_component)
+  list(GET _disabled_case 2 _disabled_option)
+  terreate_configure_consumer(
+    "disabled-${_disabled_prefix_name}-${_disabled_component}"
+    "${${_disabled_prefix_name}_PREFIX}"
+    "find_package(Terreate REQUIRED COMPONENTS ${_disabled_component})\n"
+    _disabled_result _disabled_output)
+  if(_disabled_result EQUAL 0)
+    message(FATAL_ERROR
+      "${_disabled_prefix_name} package accepted the disabled component "
+      "${_disabled_component}\n${_disabled_output}")
+  endif()
+  string(REGEX REPLACE "[ \t\r\n]+" " " _disabled_flat "${_disabled_output}")
+  if(NOT _disabled_flat MATCHES
+       "component '${_disabled_component}' is disabled in this installation" OR
+     NOT _disabled_flat MATCHES "reconfigure Terreate with TERREATE_BUILD_${_disabled_option}=ON")
+    message(FATAL_ERROR
+      "${_disabled_prefix_name} package did not explain the disabled component "
+      "${_disabled_component}\n${_disabled_output}")
+  endif()
+endforeach()
+terreate_configure_consumer(disabled-optional "${core_only_PREFIX}" [=[
+find_package(Terreate REQUIRED COMPONENTS Core OPTIONAL_COMPONENTS Graphics)
+if(NOT Terreate_Core_FOUND OR NOT TARGET Terreate::Core OR
+   Terreate_Graphics_FOUND OR TARGET Terreate::Graphics)
+  message(FATAL_ERROR "an optional disabled Graphics changed Core resolution")
+endif()
+]=] _disabled_optional_result _disabled_optional_output)
+if(NOT _disabled_optional_result EQUAL 0)
+  message(FATAL_ERROR
+    "an optional disabled component failed configuration\n${_disabled_optional_output}")
+endif()
+
+# 2. Installed package files and the include directories a consumer receives
+#    must not refer to the source tree or the fixture build trees. The install
+#    prefixes live under the build tree, so paths inside a prefix are allowed.
+foreach(_prefix_name IN ITEMS all_components core_only platform_only graphics_only)
+  file(GLOB_RECURSE _package_files "${${_prefix_name}_PREFIX}/*.cmake")
+  if(NOT _package_files)
+    message(FATAL_ERROR "${_prefix_name} install has no CMake package files")
+  endif()
+  foreach(_package_file IN LISTS _package_files)
+    file(READ "${_package_file}" _package_contents)
+    string(FIND "${_package_contents}" "${_terreate_source_dir}" _source_reference)
+    string(FIND "${_package_contents}" "fixture-build" _build_reference)
+    if(NOT _source_reference EQUAL -1 OR NOT _build_reference EQUAL -1)
+      message(FATAL_ERROR
+        "${_prefix_name} package file refers to the source or build tree: "
+        "${_package_file}")
+    endif()
+  endforeach()
+endforeach()
+terreate_configure_consumer(source-independence "${_all_prefix}" [=[
+find_package(Terreate REQUIRED COMPONENTS Core Platform Graphics)
+foreach(_target IN ITEMS Terreate::Core Terreate::Platform Terreate::Graphics)
+  foreach(_property IN ITEMS INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
+    get_target_property(_includes ${_target} ${_property})
+    if(NOT _includes)
+      continue()
+    endif()
+    foreach(_include IN LISTS _includes)
+      # A generator expression is not a path, so it cannot be compared below.
+      if(_include MATCHES [[\$<]])
+        message(FATAL_ERROR
+          "${_target} ${_property} has an unresolved generator expression: ${_include}")
+      endif()
+      cmake_path(IS_PREFIX TERREATE_TEST_PREFIX "${_include}" NORMALIZE _in_prefix)
+      cmake_path(IS_PREFIX TERREATE_TEST_SOURCE_DIR "${_include}" NORMALIZE _in_source)
+      if(_in_source AND NOT _in_prefix)
+        message(FATAL_ERROR
+          "${_target} ${_property} exposes a source/build-tree include: ${_include}")
+      endif()
+    endforeach()
+  endforeach()
+endforeach()
+]=] _source_independence_result _source_independence_output)
+if(NOT _source_independence_result EQUAL 0)
+  message(FATAL_ERROR
+    "installed include directories are not source-tree independent\n"
+    "${_source_independence_output}")
+endif()
+
+# 3. Core and Graphics consumers never receive a GLFW (windowing) dependency.
+#    GLFW is not a dependency yet (#347); this guards the boundary for later.
+set(_no_glfw_check [=[
+get_property(_imported DIRECTORY PROPERTY IMPORTED_TARGETS)
+foreach(_target IN LISTS _imported)
+  string(TOLOWER "${_target}" _target_lower)
+  if(_target_lower MATCHES "glfw")
+    message(FATAL_ERROR "consumer imported a GLFW target: ${_target}")
+  endif()
+endforeach()
+foreach(_target IN ITEMS Terreate::Core Terreate::Graphics)
+  if(TARGET ${_target})
+    get_target_property(_links ${_target} INTERFACE_LINK_LIBRARIES)
+    string(TOLOWER "${_links}" _links_lower)
+    if(_links_lower MATCHES "glfw")
+      message(FATAL_ERROR "${_target} links GLFW: ${_links}")
+    endif()
+  endif()
+endforeach()
+]=])
+foreach(_glfw_case IN ITEMS "core_only;Core" "graphics_only;Graphics" "all_components;Core"
+                            "all_components;Core Graphics")
+  list(GET _glfw_case 0 _glfw_prefix_name)
+  list(GET _glfw_case 1 _glfw_components)
+  string(REPLACE " " "-" _glfw_suffix "${_glfw_components}")
+  terreate_configure_consumer("no-glfw-${_glfw_prefix_name}-${_glfw_suffix}"
+    "${${_glfw_prefix_name}_PREFIX}"
+    "find_package(Terreate REQUIRED COMPONENTS ${_glfw_components})\n${_no_glfw_check}"
+    _no_glfw_result _no_glfw_output)
+  if(NOT _no_glfw_result EQUAL 0)
+    message(FATAL_ERROR
+      "${_glfw_prefix_name} ${_glfw_components} consumer saw GLFW\n${_no_glfw_output}")
+  endif()
+endforeach()
+
+# Printed last: any failure above stops the script before this line.
+message(STATUS "package.external_consumer: disabled-diagnostic=PASS "
+  "source-independence=PASS no-glfw=PASS")

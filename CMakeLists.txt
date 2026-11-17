@@ -787,6 +787,10 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       -DTERREATE_CMAKE_GENERATOR=${CMAKE_GENERATOR}
       -DTERREATE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
       -P ${PROJECT_SOURCE_DIR}/tests/cmake/package_smoke.cmake)
+  # #285: the external-consumer checks print this marker as the script's last line.
+  set_tests_properties(cmake.package_smoke PROPERTIES
+    PASS_REGULAR_EXPRESSION
+      "package\\.external_consumer: disabled-diagnostic=PASS source-independence=PASS no-glfw=PASS")
 endif()
 
 # Each component registers its own install target in the shared export set.
