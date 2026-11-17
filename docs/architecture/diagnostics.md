@@ -129,11 +129,13 @@ creation/registration/lifetime belong to #268. Its callback adapter converts
 Vulkan ABI values to private semantic values before connecting to this bridge;
 Core remains free of Vulkan headers.
 
-Issue #340 remains a separate integration boundary and is intentionally not
-implemented here. Vulkan object naming and queue/command-buffer debug-label
-creation and lifecycle belong to #340. #350 only transports validation/debug
+Vulkan object naming and queue/command-buffer debug labels are a separate
+integration boundary, implemented by #340 in
+[`debug_utils.md`](debug_utils.md). #350 only transports validation/debug
 messages through its owning events and application sink contract; it does not
-create or manage Vulkan object names or queue/command-buffer debug labels. The
+create or manage Vulkan object names or queue/command-buffer debug labels. Names
+set through #340 reach events through the object names this translator already
+copies; the labels in the callback data are not copied. The
 #349 `Error`/`Result` failure transport remains independent and unchanged:
 diagnostics are observational events, not implicit operation failures.
 
