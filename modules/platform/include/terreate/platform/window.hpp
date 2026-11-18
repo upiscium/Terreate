@@ -51,9 +51,12 @@ struct WindowConfiguration {
 };
 
 /// A move-only owner of one GLFW window. See Runtime for the thread and
-/// destruction-order contract. Every query is checked against the Runtime's
-/// thread and fails with wrong_thread elsewhere, or invalid_window for a
-/// moved-from Window, before any GLFW call. Events are not processed here.
+/// destruction-order contract. Every query that calls GLFW (size,
+/// framebufferSize, contentScale, shouldClose, setShouldClose) is checked
+/// against the Runtime's thread and fails with wrong_thread elsewhere, or
+/// invalid_window for a moved-from Window, before any GLFW call. valid,
+/// configuration, nativeHandle and correlatedWith only read this object and
+/// are not checked. Events are not processed here.
 class Window final {
 public:
   Window() = delete;

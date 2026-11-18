@@ -2,9 +2,10 @@
 //
 // `null` mode runs on GLFW's null backend, which needs no display, so it runs
 // everywhere. `native` mode uses the automatic backend and reports SKIP (never
-// PASS) when no display is configured. The test wraps glfwCreateWindow
-// (-Wl,--wrap) to count native window creations; GLFW is otherwise called
-// directly only to trigger an error through the native handle.
+// PASS) when no display is configured. The test uses only portable
+// observations (results, liveWindowCount and the diagnostic sink); GLFW is
+// called directly only to install a callback and to trigger errors through
+// the native handle.
 #include <terreate/platform/runtime.hpp>
 #include <terreate/platform/window.hpp>
 
@@ -32,7 +33,6 @@ using Error = PlatformError;
 
 const char *test_name = "platform.runtime";
 int failures = 0;
-std::size_t created_windows = 0;
 
 bool check(bool condition, const char *message) {
   if (!condition) {
@@ -81,18 +81,6 @@ struct EventRecorder {
       (void)glfwGetInputMode(reentrant_window, 0);
   }
 };
-} // namespace
-
-// NOLINTBEGIN(bugprone-reserved-identifier)
-extern "C" GLFWwindow *__real_glfwCreateWindow(int, int, const char *, GLFWmonitor *, GLFWwindow *);
-extern "C" GLFWwindow *__wrap_glfwCreateWindow(int width, int height, const char *title,
-                                               GLFWmonitor *monitor, GLFWwindow *share) {
-  ++created_windows;
-  return __real_glfwCreateWindow(width, height, title, monitor, share);
-}
-// NOLINTEND(bugprone-reserved-identifier)
-
-namespace {
 // The application hands the Platform's extension list to the Graphics
 // Instance request itself; Platform does not depend on Graphics. Prints
 // "<test>: vulkan-instance=PASS" or "=SKIP reason=...".
@@ -162,8 +150,9 @@ int nullTest() {
 
   vulkanInstanceHandOff(*runtime);
 
-  // Invalid descriptions are rejected before GLFW creates anything.
-  const auto created_before = created_windows;
+  // Invalid descriptions are rejected before GLFW is called: no window is
+  // owned, and GLFW reports no error (it would for a zero size).
+  const auto events_before_rejections = recorder.events.size();
   check(
       hasError(createWindow(*runtime, {.width = 0, .height = 10}), Error::invalid_description) &&
           hasError(createWindow(*runtime, {.width = 10, .height = 0}),
@@ -175,7 +164,8 @@ int nullTest() {
                                 {.width = 10, .height = 10, .title = std::string{"bad\0title", 9}}),
                    Error::invalid_description),
       "zero, oversized and NUL-titled descriptions are rejected");
-  check(created_windows == created_before, "no native window for a rejected description");
+  check(runtime->liveWindowCount() == 0 && recorder.events.size() == events_before_rejections,
+        "no window and no GLFW error for a rejected description");
 
   // Two windows on one Runtime.
   const WindowDescription first_description{.width = 640, .height = 480, .title = "first"};
@@ -185,8 +175,7 @@ int nullTest() {
   auto second = createWindow(*runtime, second_description);
   if (!first || !second)
     return blocked("two null-backend Windows");
-  check(created_windows == created_before + 2 && runtime->liveWindowCount() == 2,
-        "two native windows are created and counted");
+  check(runtime->liveWindowCount() == 2, "two windows are created and counted");
   check(first->nativeHandle() != nullptr && second->nativeHandle() != nullptr &&
             first->nativeHandle() != second->nativeHandle() && first->correlatedWith(*runtime) &&
             second->correlatedWith(*runtime),
@@ -247,7 +236,7 @@ int nullTest() {
   // The error the native call left behind does not leak into the next query.
   check(first->size().has_value(), "a later query is not failed by an earlier native error");
 
-  // Every call from another thread fails before touching GLFW.
+  // Every GLFW-calling operation from another thread fails before touching GLFW.
   bool other_thread_ok = false;
   std::thread other([&] {
     other_thread_ok = hasError(runtime->vulkanSupported(), Error::wrong_thread) &&
@@ -260,8 +249,8 @@ int nullTest() {
                       hasError(createWindow(*runtime, first_description), Error::wrong_thread);
   });
   other.join();
-  check(other_thread_ok && created_windows == created_before + 2,
-        "every Runtime and Window call on another thread fails with wrong_thread");
+  check(other_thread_ok && runtime->liveWindowCount() == 2,
+        "every GLFW-calling operation on another thread fails with wrong_thread");
   check(is(first->shouldClose(), true), "the rejected call from another thread changed nothing");
 
   // Moves keep ownership and the count.

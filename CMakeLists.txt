@@ -792,7 +792,8 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
   endif()
 
   # #347: GLFW Runtime and Window. The null backend needs no display; the
-  # native case reports SKIP when no display is configured.
+  # native case reports SKIP when no display is configured. The test needs no
+  # linker-specific interception, so it builds with any toolchain.
   if(TERREATE_BUILD_PLATFORM)
     add_executable(terreate_platform_runtime_tests tests/test_platform_runtime.cpp)
     target_link_libraries(terreate_platform_runtime_tests PRIVATE Terreate::Platform)
@@ -802,8 +803,6 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       target_compile_definitions(terreate_platform_runtime_tests PRIVATE
         TERREATE_TEST_WITH_GRAPHICS=1)
     endif()
-    target_link_options(terreate_platform_runtime_tests PRIVATE
-      "-Wl,--wrap=glfwCreateWindow")
     terreate_configure_target(terreate_platform_runtime_tests)
     add_test(NAME platform.runtime COMMAND terreate_platform_runtime_tests null)
     set_tests_properties(platform.runtime PROPERTIES

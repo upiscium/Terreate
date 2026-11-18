@@ -33,8 +33,12 @@ process. The Runtime mirrors that instead of hiding it:
 ### Thread contract
 
 GLFW requires its calls on the thread that initialized it. The Runtime records
-that thread. Every Runtime and Window operation called on another thread fails
-with `wrong_thread` before any GLFW call. Destruction cannot report errors, so
+that thread. Every Runtime and Window operation that calls GLFW
+(`vulkanSupported`, `requiredInstanceExtensions`, `createWindow` and the Window
+queries) fails with `wrong_thread` on another thread, before any GLFW call.
+Accessors that only read Terreate's own state (`valid`, `requested`, `backend`,
+`liveWindowCount`, `configuration`, `nativeHandle`, `correlatedWith`) call no
+GLFW function and are not checked. Destruction cannot report errors, so
 the Runtime and its Windows must also be destroyed on that thread.
 
 ### Errors and diagnostics
@@ -123,8 +127,7 @@ GLFW underneath the target's live Windows.
 - the effective backend and the single-Runtime rule;
 - two Windows, with their sizes, framebuffer sizes, content scale, close flags
   and distinct native handles;
-- rejected descriptions, which create no native window (`glfwCreateWindow` is
-  wrapped and counted);
+- rejected descriptions, which leave no window owned and produce no GLFW error;
 - `wrong_thread` for every operation from another thread;
 - a GLFW error, triggered through the native handle, reaching the sink as a
   `PLATFORM` event;
@@ -135,6 +138,10 @@ GLFW underneath the target's live Windows.
 
 The Vulkan hand-off reports SKIP there, because the null backend names no
 surface extensions.
+
+The test uses only portable observations (results, `liveWindowCount()` and the
+diagnostic sink), with no linker-specific interception, so it builds with any
+toolchain.
 
 `platform.native_window` uses the automatic backend. Without `DISPLAY` or
 `WAYLAND_DISPLAY` it reports SKIP, never PASS. With a display, it also hands the

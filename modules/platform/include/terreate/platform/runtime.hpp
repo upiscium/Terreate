@@ -64,8 +64,12 @@ struct RuntimeDescription {
 /// any number of Windows. It does not poll events and owns no loop.
 ///
 /// The Runtime records the thread that created it. GLFW requires its calls on
-/// that thread, so every Runtime and Window operation called on another thread
-/// fails with wrong_thread before any GLFW call. The Runtime and its Windows
+/// that thread, so every Runtime and Window operation that calls GLFW
+/// (vulkanSupported, requiredInstanceExtensions, createWindow and the Window
+/// queries) fails with wrong_thread on another thread, before any GLFW call.
+/// Accessors that only read Terreate's own state (valid, requested, backend,
+/// liveWindowCount, configuration, nativeHandle, correlatedWith) call no GLFW
+/// function and are not checked. The Runtime and its Windows
 /// must also be destroyed on that thread, and every Window must be destroyed
 /// before its Runtime (glfwTerminate would destroy them underneath their
 /// owners). liveWindowCount() makes the second rule observable; neither is
