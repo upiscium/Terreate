@@ -3,15 +3,17 @@
 
 #include <cstddef>
 #include <thread>
+#include <vector>
 
 #include <terreate/core/diagnostics.hpp>
 #include <terreate/core/result.hpp>
+#include <terreate/platform/events.hpp>
 #include <terreate/platform/runtime.hpp>
 
 namespace terreate::platform {
 
 // Heap-owned, so its address is stable across Runtime moves; Windows keep a
-// pointer to it for the thread check and the live-window count.
+// pointer to it for the thread check, the live-window count and the events.
 struct Runtime::Impl {
   RuntimeDescription requested{};
   PlatformBackend backend = PlatformBackend::automatic;
@@ -21,6 +23,9 @@ struct Runtime::Impl {
   // The GLFW error callback installed before this Runtime: chained while the
   // Runtime is alive and restored when it is destroyed.
   void (*previous_error_callback)(int, const char *) = nullptr;
+  // Events stored by the window callbacks since the last poll or wait (#348).
+  std::vector<WindowEvent> pending_events{};
+  std::size_t dropped_events = 0;
 };
 
 namespace detail {

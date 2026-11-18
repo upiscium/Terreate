@@ -4,23 +4,31 @@
 
 #include <GLFW/glfw3.h>
 
+#include <atomic>
 #include <climits>
 #include <new>
+#include <optional>
 #include <string>
 #include <utility>
 
 namespace terreate::platform {
 
+// Heap-owned, so its address is stable across Window moves: it is the GLFW
+// user pointer that Terreate's callbacks use to find the window and Runtime.
 struct Window::Impl {
   GLFWwindow *window = nullptr;
   Runtime::Impl *runtime = nullptr;
   WindowConfiguration configuration{};
+  WindowId id{};
 
   Impl() = default;
   Impl(const Impl &) = delete;
   Impl &operator=(const Impl &) = delete;
   ~Impl() {
     if (window != nullptr) {
+      // GLFW calls no callback for a destroyed window; clear the pointer too,
+      // so nothing can reach this Impl afterwards.
+      glfwSetWindowUserPointer(window, nullptr);
       glfwDestroyWindow(window);
       --runtime->live_windows;
     }
@@ -28,6 +36,115 @@ struct Window::Impl {
 };
 
 namespace {
+// Never reused for the life of the process, across Runtimes too.
+std::atomic<std::uint64_t> next_window_id{1};
+
+// Store one event for the next poll or wait. Runs inside GLFW on the Runtime
+// thread, so it must not throw; an event that cannot be stored is counted.
+void store(GLFWwindow *window, WindowEventData data) noexcept {
+  auto *impl = static_cast<Window::Impl *>(glfwGetWindowUserPointer(window));
+  if (impl == nullptr)
+    return;
+  try {
+    impl->runtime->pending_events.push_back(WindowEvent{impl->id, data});
+  } catch (const std::bad_alloc &) {
+    ++impl->runtime->dropped_events;
+  }
+}
+
+void countDropped(GLFWwindow *window) noexcept {
+  if (auto *impl = static_cast<Window::Impl *>(glfwGetWindowUserPointer(window)))
+    ++impl->runtime->dropped_events;
+}
+
+std::optional<InputAction> inputAction(int action) noexcept {
+  switch (action) {
+  case GLFW_RELEASE:
+    return InputAction::release;
+  case GLFW_PRESS:
+    return InputAction::press;
+  case GLFW_REPEAT:
+    return InputAction::repeat;
+  default:
+    return std::nullopt;
+  }
+}
+
+std::uint32_t nonNegative(int value) noexcept {
+  return static_cast<std::uint32_t>(value < 0 ? 0 : value);
+}
+
+void onClose(GLFWwindow *window) noexcept { store(window, CloseRequested{}); }
+void onSize(GLFWwindow *window, int width, int height) noexcept {
+  store(window, WindowResized{nonNegative(width), nonNegative(height)});
+}
+void onFramebufferSize(GLFWwindow *window, int width, int height) noexcept {
+  store(window, FramebufferResized{nonNegative(width), nonNegative(height)});
+}
+void onContentScale(GLFWwindow *window, float x, float y) noexcept {
+  store(window, ContentScaleChanged{x, y});
+}
+void onFocus(GLFWwindow *window, int focused) noexcept {
+  store(window, FocusChanged{focused == GLFW_TRUE});
+}
+void onIconify(GLFWwindow *window, int iconified) noexcept {
+  store(window, IconifiedChanged{iconified == GLFW_TRUE});
+}
+void onMaximize(GLFWwindow *window, int maximized) noexcept {
+  store(window, MaximizedChanged{maximized == GLFW_TRUE});
+}
+void onPosition(GLFWwindow *window, int x, int y) noexcept { store(window, WindowMoved{x, y}); }
+void onRefresh(GLFWwindow *window) noexcept { store(window, RefreshRequested{}); }
+// GLFW fixes these callback signatures.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+void onKey(GLFWwindow *window, int key, int scancode, int action, int mods) noexcept {
+  const auto mapped = inputAction(action);
+  if (!mapped) {
+    countDropped(window);
+    return;
+  }
+  store(window, KeyInput{key, scancode, *mapped, mods});
+}
+void onMouseButton(GLFWwindow *window, int button, int action, int mods) noexcept {
+  const auto mapped = inputAction(action);
+  if (!mapped) {
+    countDropped(window);
+    return;
+  }
+  store(window, MouseButtonInput{button, *mapped, mods});
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+void onCursorPosition(GLFWwindow *window, double x, double y) noexcept {
+  store(window, CursorMoved{x, y});
+}
+void onCursorEnter(GLFWwindow *window, int entered) noexcept {
+  store(window, CursorEntered{entered == GLFW_TRUE});
+}
+void onScroll(GLFWwindow *window, double x, double y) noexcept { store(window, Scrolled{x, y}); }
+void onCharacter(GLFWwindow *window, unsigned int codepoint) noexcept {
+  store(window, CharacterInput{static_cast<char32_t>(codepoint)});
+}
+
+// Terreate reserves the user pointer and these callbacks (documented).
+void registerCallbacks(GLFWwindow *window, Window::Impl *impl) noexcept {
+  glfwSetWindowUserPointer(window, impl);
+  glfwSetWindowCloseCallback(window, &onClose);
+  glfwSetWindowSizeCallback(window, &onSize);
+  glfwSetFramebufferSizeCallback(window, &onFramebufferSize);
+  glfwSetWindowContentScaleCallback(window, &onContentScale);
+  glfwSetWindowFocusCallback(window, &onFocus);
+  glfwSetWindowIconifyCallback(window, &onIconify);
+  glfwSetWindowMaximizeCallback(window, &onMaximize);
+  glfwSetWindowPosCallback(window, &onPosition);
+  glfwSetWindowRefreshCallback(window, &onRefresh);
+  glfwSetKeyCallback(window, &onKey);
+  glfwSetMouseButtonCallback(window, &onMouseButton);
+  glfwSetCursorPosCallback(window, &onCursorPosition);
+  glfwSetCursorEnterCallback(window, &onCursorEnter);
+  glfwSetScrollCallback(window, &onScroll);
+  glfwSetCharCallback(window, &onCharacter);
+}
+
 // Drop any GLFW error left by an earlier call, so a failure check after the
 // next call sees only that call's error. Dropped errors already reached the
 // Runtime's sink through the error callback.
@@ -97,7 +214,9 @@ auto createWindow(const Runtime &runtime, const WindowDescription &description)
 
   impl->window = window;
   impl->runtime = runtime.implementation_.get();
+  impl->id = WindowId{next_window_id.fetch_add(1, std::memory_order_relaxed)};
   ++impl->runtime->live_windows;
+  registerCallbacks(window, impl.get());
 
   // The effective configuration is part of the result, so its reads are
   // checked like any query. On failure `impl` destroys the new window.
@@ -126,6 +245,10 @@ Window::~Window() = default;
 
 bool Window::correlatedWith(const Runtime &runtime) const noexcept {
   return valid() && runtime.valid() && implementation_->runtime == runtime.implementation_.get();
+}
+
+WindowId Window::id() const noexcept {
+  return implementation_ == nullptr ? WindowId{} : implementation_->id;
 }
 
 const WindowConfiguration *Window::configuration() const noexcept {

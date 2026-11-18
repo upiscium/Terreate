@@ -16,6 +16,7 @@ add_library(terreate_platform STATIC
   src/runtime.cpp
   src/runtime_impl.hpp
   include/terreate/platform/runtime.hpp
+  include/terreate/platform/events.hpp
   src/window.cpp
   include/terreate/platform/window.hpp)
 target_include_directories(terreate_platform

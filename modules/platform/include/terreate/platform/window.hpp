@@ -69,10 +69,15 @@ public:
   [[nodiscard]] explicit operator bool() const noexcept { return valid(); }
   [[nodiscard]] bool valid() const noexcept { return implementation_ != nullptr; }
   [[nodiscard]] bool correlatedWith(const Runtime &runtime) const noexcept;
+  /// The identity this Window's events carry (#348); zero for a moved-from
+  /// Window. Moves keep the id.
+  [[nodiscard]] WindowId id() const noexcept;
   [[nodiscard]] const WindowConfiguration *configuration() const noexcept;
 
   /// The borrowed native handle: the escape hatch for GLFW calls Terreate
   /// does not wrap. Never destroy it; it is null for a moved-from Window.
+  /// Terreate reserves the window's GLFW user pointer and the event callbacks
+  /// it registers (#348); replacing them stops Terreate's events for it.
   [[nodiscard]] GLFWwindow *nativeHandle() const noexcept;
 
   /// Window size in screen coordinates (glfwGetWindowSize).

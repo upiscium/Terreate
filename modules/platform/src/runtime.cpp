@@ -5,6 +5,7 @@
 #include <GLFW/glfw3.h>
 
 #include <atomic>
+#include <cmath>
 #include <new>
 #include <string>
 #include <utility>
@@ -36,6 +37,8 @@ public:
       return "GLFW call failed";
     case PlatformError::allocation_failed:
       return "allocation failed";
+    case PlatformError::invalid_argument:
+      return "invalid argument";
     }
     return "unknown platform error";
   }
@@ -317,6 +320,62 @@ auto Runtime::requiredInstanceExtensions() const -> terreate::Result<std::vector
   } catch (const std::bad_alloc &) {
     return std::unexpected(terreate::Error{make_error_code(PlatformError::allocation_failed)});
   }
+}
+
+namespace {
+// Run one GLFW event call and hand over everything stored since the previous
+// one. On a GLFW error the stored events stay for the next call.
+template <typename Call>
+terreate::Result<EventBatch> processEvents(Runtime::Impl *runtime, const char *operation,
+                                           Call call) {
+  if (auto checked = detail::checkThread(runtime, operation); !checked)
+    return std::unexpected(std::move(checked.error()));
+  // Drop an error left by an earlier call; it already reached the sink.
+  glfwGetError(nullptr);
+  call();
+  const char *description = nullptr;
+  if (const int code = glfwGetError(&description); code != GLFW_NO_ERROR)
+    return std::unexpected(detail::glfwError(code, operation, description));
+  EventBatch batch;
+  // Moving the vector hands over its storage without allocating.
+  batch.events = std::move(runtime->pending_events);
+  runtime->pending_events.clear();
+  batch.dropped = std::exchange(runtime->dropped_events, 0);
+  return batch;
+}
+} // namespace
+
+auto Runtime::pollEvents() const -> terreate::Result<EventBatch> {
+  return processEvents(implementation_.get(), "pollEvents", [] { glfwPollEvents(); });
+}
+
+auto Runtime::waitEvents() const -> terreate::Result<EventBatch> {
+  return processEvents(implementation_.get(), "waitEvents", [] { glfwWaitEvents(); });
+}
+
+auto Runtime::waitEvents(std::chrono::duration<double> timeout) const
+    -> terreate::Result<EventBatch> {
+  constexpr auto operation = "waitEvents";
+  const double seconds = timeout.count();
+  if (!std::isfinite(seconds) || seconds <= 0.0)
+    return std::unexpected(detail::platformError(PlatformError::invalid_argument, operation,
+                                                 "timeout must be positive and finite"));
+  return processEvents(implementation_.get(), operation,
+                       [seconds] { glfwWaitEventsTimeout(seconds); });
+}
+
+auto Runtime::postEmptyEvent() const -> terreate::Result<void> {
+  constexpr auto operation = "postEmptyEvent";
+  if (implementation_ == nullptr)
+    return std::unexpected(
+        detail::platformError(PlatformError::invalid_runtime, operation, nullptr));
+  // GLFW keeps errors per thread, so this check sees only this call's error.
+  glfwGetError(nullptr);
+  glfwPostEmptyEvent();
+  const char *description = nullptr;
+  if (const int code = glfwGetError(&description); code != GLFW_NO_ERROR)
+    return std::unexpected(detail::glfwError(code, operation, description));
+  return {};
 }
 
 } // namespace terreate::platform
