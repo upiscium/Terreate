@@ -808,6 +808,20 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
     set_tests_properties(platform.runtime PROPERTIES
       PASS_REGULAR_EXPRESSION "platform\\.runtime: null-backend=PASS"
       FAIL_REGULAR_EXPRESSION "platform\\.runtime: (assertion=FAIL|.*BLOCKED)")
+    # #348: event processing. Window events come from native calls the null
+    # backend reports; input runs Terreate's own callbacks read back from GLFW.
+    add_executable(terreate_platform_events_tests tests/test_platform_events.cpp)
+    target_link_libraries(terreate_platform_events_tests PRIVATE Terreate::Platform)
+    terreate_configure_target(terreate_platform_events_tests)
+    add_test(NAME platform.events COMMAND terreate_platform_events_tests null)
+    set_tests_properties(platform.events PROPERTIES
+      PASS_REGULAR_EXPRESSION "platform\\.events: null-events=PASS"
+      FAIL_REGULAR_EXPRESSION "platform\\.events: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME platform.native_events COMMAND terreate_platform_events_tests native)
+    set_tests_properties(platform.native_events PROPERTIES
+      PASS_REGULAR_EXPRESSION "platform\\.native_events: native-events=PASS"
+      SKIP_REGULAR_EXPRESSION "platform\\.native_events: native-events=SKIP"
+      FAIL_REGULAR_EXPRESSION "platform\\.native_events: (assertion=FAIL|.*BLOCKED)")
     add_test(NAME platform.native_window COMMAND terreate_platform_runtime_tests native)
     set_tests_properties(platform.native_window PROPERTIES
       PASS_REGULAR_EXPRESSION "platform\\.native_window: native-window=PASS"
