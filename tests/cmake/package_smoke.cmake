@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|platform/(runtime|window|events)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|platform/(runtime|window|events)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -134,7 +134,7 @@ function(terreate_package_configure_and_install name platform graphics)
     endforeach()
   endif()
   if(graphics)
-    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write specialization pipeline_layout compute_pipeline graphics_pipeline pipeline_commands rendering_commands submission retirement image image_view sampler debug_utils)
+    foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write specialization pipeline_layout compute_pipeline graphics_pipeline pipeline_commands rendering_commands submission retirement image image_view sampler debug_utils surface)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
         message(FATAL_ERROR "${name} install is missing public Graphics ${_resource} header")
       endif()
@@ -252,6 +252,12 @@ set_target_properties(package_consumer PROPERTIES
      NOT "${_run_output}" MATCHES "package\\.debug_utils: runtime=PASS")
     message(FATAL_ERROR
       "${name} consumer did not exercise the installed Debug Utils API\n"
+      "${_run_output}\n${_run_error}")
+  endif()
+  if("${component}" STREQUAL "Graphics" AND
+     NOT "${_run_output}" MATCHES "package\\.surface: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise the installed Surface API\n"
       "${_run_output}\n${_run_error}")
   endif()
   if("${component}" STREQUAL "Graphics" AND
@@ -396,6 +402,7 @@ static_assert(std::is_trivially_copyable_v<terreate::graphics::Completion>);
 #include <terreate/graphics/image_view.hpp>
 #include <terreate/graphics/sampler.hpp>
 #include <terreate/graphics/debug_utils.hpp>
+#include <terreate/graphics/surface.hpp>
 #include <terreate/graphics/spirv_binary.hpp>
 #include <terreate/graphics/shader_module.hpp>
 #include <terreate/graphics/descriptor_set_layout.hpp>
@@ -732,6 +739,19 @@ int main() {
         named.error().code() != not_enabled)
       return 71;
     std::puts("package.debug_utils: runtime=PASS");
+  }
+  {
+    // #363: this Instance does not enable VK_KHR_surface, so the installed
+    // Surface API refuses before it looks at the creator; no Device is needed.
+    static_assert(std::is_nothrow_move_constructible_v<terreate::graphics::Surface>);
+    const auto surface = terreate::graphics::createSurface(*instance, {});
+    const auto adopted = terreate::graphics::adoptSurface(*instance, vk::SurfaceKHR{});
+    const auto refused = terreate::graphics::make_error_code(
+        terreate::graphics::SurfaceError::surface_extension_not_enabled);
+    if (surface || surface.error().code() != refused || adopted ||
+        adopted.error().code() != refused)
+      return 72;
+    std::puts("package.surface: runtime=PASS");
   }
   auto allocator = terreate::graphics::createAllocator(*instance, candidate, *device);
   if (!allocator || !allocator->valid() ||
