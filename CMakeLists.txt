@@ -742,6 +742,22 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       SKIP_REGULAR_EXPRESSION "graphics\\.debug_utils: debug-utils=SKIP"
       FAIL_REGULAR_EXPRESSION "graphics\\.debug_utils.*: (assertion=FAIL|.*BLOCKED)")
 
+    # #363: Surface ownership with no Platform and no Device. Destruction is
+    # observed through the SurfaceDestroyer the test supplies, so no linker
+    # interception is needed.
+    add_executable(terreate_graphics_surface_tests tests/test_graphics_surface.cpp)
+    target_link_libraries(terreate_graphics_surface_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_surface_tests)
+    add_test(NAME graphics.surface.cpu COMMAND terreate_graphics_surface_tests cpu)
+    set_tests_properties(graphics.surface.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.surface\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.surface.*: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.surface COMMAND terreate_graphics_surface_tests gpu)
+    set_tests_properties(graphics.surface PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.surface: surface=PASS"
+      SKIP_REGULAR_EXPRESSION "graphics\\.surface: surface=SKIP"
+      FAIL_REGULAR_EXPRESSION "graphics\\.surface.*: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_rendering_commands_tests
       tests/test_graphics_rendering_commands.cpp)
     target_link_libraries(terreate_graphics_rendering_commands_tests PRIVATE Terreate::Graphics)
