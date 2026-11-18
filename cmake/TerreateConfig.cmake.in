@@ -294,6 +294,45 @@ if(_Terreate_graphics_built AND _Terreate_graphics_requested AND
   endif()
 endif()
 
+# Platform is the only component that owns GLFW (#347).  As for Graphics and
+# Vulkan, a required Platform request makes a missing GLFW visible, an optional
+# one leaves Core usable, and Core or Graphics requests never search for GLFW.
+set(_Terreate_platform_requested FALSE)
+set(_Terreate_platform_required FALSE)
+if(Terreate_FIND_COMPONENTS)
+  foreach(_Terreate_requested_component IN LISTS Terreate_FIND_COMPONENTS)
+    if(_Terreate_requested_component STREQUAL "Platform")
+      set(_Terreate_platform_requested TRUE)
+      if(Terreate_FIND_REQUIRED_Platform)
+        set(_Terreate_platform_required TRUE)
+      endif()
+    endif()
+  endforeach()
+elseif(_Terreate_platform_built)
+  set(_Terreate_platform_requested TRUE)
+  set(_Terreate_platform_required TRUE)
+endif()
+
+set(_Terreate_platform_available FALSE)
+if(_Terreate_platform_built AND _Terreate_platform_requested)
+  include(CMakeFindDependencyMacro)
+  if(_Terreate_platform_required)
+    find_dependency(glfw3 3.4 CONFIG)
+  else()
+    find_package(glfw3 3.4 CONFIG QUIET)
+  endif()
+  set(PACKAGE_PREFIX_DIR "${_Terreate_package_prefix_dir}")
+  if(TARGET glfw)
+    set(_Terreate_platform_available TRUE)
+  else()
+    set(Terreate_NOT_FOUND_MESSAGE
+      "Terreate Platform is unavailable because GLFW 3.4 (glfw3 CONFIG) was not found")
+    if(_Terreate_platform_required)
+      set(Terreate_FOUND FALSE)
+    endif()
+  endif()
+endif()
+
 # Import exactly the requested component dependency closure.  Core is a
 # dependency of Platform and Graphics, but an explicit Core request must not
 # import either optional component merely because those targets were built.
@@ -306,7 +345,7 @@ if(NOT Terreate_FIND_COMPONENTS)
   if(_Terreate_core_built)
     set(_Terreate_import_Core TRUE)
   endif()
-  if(_Terreate_platform_built)
+  if(_Terreate_platform_built AND _Terreate_platform_available)
     set(_Terreate_import_Platform TRUE)
     set(_Terreate_import_Core TRUE)
   endif()
@@ -318,7 +357,8 @@ else()
   foreach(_Terreate_requested_component IN LISTS Terreate_FIND_COMPONENTS)
     if(_Terreate_requested_component STREQUAL "Core")
       set(_Terreate_import_Core TRUE)
-    elseif(_Terreate_requested_component STREQUAL "Platform")
+    elseif(_Terreate_requested_component STREQUAL "Platform" AND
+           _Terreate_platform_available)
       set(_Terreate_import_Platform TRUE)
       set(_Terreate_import_Core TRUE)
     elseif(_Terreate_requested_component STREQUAL "Graphics" AND
@@ -374,6 +414,13 @@ foreach(_Terreate_component IN LISTS Terreate_FIND_COMPONENTS)
       if(NOT Terreate_NOT_FOUND_MESSAGE)
         set(Terreate_NOT_FOUND_MESSAGE
           "Terreate Graphics is unavailable because Vulkan was not found")
+      endif()
+    elseif(_Terreate_component STREQUAL "Platform" AND
+           _Terreate_platform_built AND NOT _Terreate_platform_available)
+      # Keep the GLFW explanation set above.
+      if(NOT Terreate_NOT_FOUND_MESSAGE)
+        set(Terreate_NOT_FOUND_MESSAGE
+          "Terreate Platform is unavailable because GLFW 3.4 (glfw3 CONFIG) was not found")
       endif()
     else()
       string(CONCAT Terreate_NOT_FOUND_MESSAGE

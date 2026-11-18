@@ -791,6 +791,30 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       SKIP_REGULAR_EXPRESSION "graphics\\.image: capability-unavailable=SKIP")
   endif()
 
+  # #347: GLFW Runtime and Window. The null backend needs no display; the
+  # native case reports SKIP when no display is configured. The test needs no
+  # linker-specific interception, so it builds with any toolchain.
+  if(TERREATE_BUILD_PLATFORM)
+    add_executable(terreate_platform_runtime_tests tests/test_platform_runtime.cpp)
+    target_link_libraries(terreate_platform_runtime_tests PRIVATE Terreate::Platform)
+    if(TERREATE_BUILD_GRAPHICS)
+      # Exercises the hand-off of the Platform's extension list to an Instance.
+      target_link_libraries(terreate_platform_runtime_tests PRIVATE Terreate::Graphics)
+      target_compile_definitions(terreate_platform_runtime_tests PRIVATE
+        TERREATE_TEST_WITH_GRAPHICS=1)
+    endif()
+    terreate_configure_target(terreate_platform_runtime_tests)
+    add_test(NAME platform.runtime COMMAND terreate_platform_runtime_tests null)
+    set_tests_properties(platform.runtime PROPERTIES
+      PASS_REGULAR_EXPRESSION "platform\\.runtime: null-backend=PASS"
+      FAIL_REGULAR_EXPRESSION "platform\\.runtime: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME platform.native_window COMMAND terreate_platform_runtime_tests native)
+    set_tests_properties(platform.native_window PROPERTIES
+      PASS_REGULAR_EXPRESSION "platform\\.native_window: native-window=PASS"
+      SKIP_REGULAR_EXPRESSION "platform\\.native_window: native-window=SKIP"
+      FAIL_REGULAR_EXPRESSION "platform\\.native_window: (assertion=FAIL|.*BLOCKED)")
+  endif()
+
   add_test(
     NAME cmake.component_matrix
     COMMAND ${CMAKE_COMMAND}

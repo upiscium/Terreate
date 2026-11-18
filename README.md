@@ -86,8 +86,9 @@ searching inherited SDK or host defaults.
 The devShell dependencies are not, by themselves, consumer linkage. Core and
 Platform remain Vulkan-free and VMA-free. Graphics publicly depends on Vulkan
 and VMA through `Vulkan::Vulkan` and `GPUOpen::VulkanMemoryAllocator`, including
-their transitive header and linkage requirements. The project still does not
-link GLFW or optional shader backends.
+their transitive header and linkage requirements. Platform publicly depends on
+GLFW 3.4 through `glfw` (#347); Core and Graphics do not. The project still
+does not link optional shader backends.
 
 ## Components and package exports
 
@@ -114,7 +115,9 @@ failing a quiet package lookup, while required requests fail through
 consumers discover them only when Graphics is requested and available. Core-only
 and Graphics-OFF packages do not discover Vulkan or VMA. An optional Graphics
 request with unavailable dependencies must leave Core usable rather than force
-VMA on Core-only consumers. No component discovers or links GLFW.
+VMA on Core-only consumers. Only a Platform request discovers GLFW 3.4
+(`glfw3` CONFIG); a required Platform request fails when it is missing, and an
+optional one leaves Core usable.
 
 `cmake.package_smoke` checks this from outside the build tree (#285). It
 installs four packages (all components, Core only, Platform only, Graphics
@@ -126,7 +129,9 @@ only), then configures separate consumer projects that use only
 - installed package files and the include directories a consumer receives
   (including system include directories) do not refer to the source or build
   tree, and contain no unresolved generator expression;
-- Core and Graphics consumers import no GLFW target or link dependency.
+- Core and Graphics consumers import no GLFW target or link dependency, while a
+  Platform consumer receives `glfw` as `Terreate::Platform`'s link dependency
+  and runs a Runtime and Window on GLFW's null backend.
 
 Allocator integration is already merged into main. Its public-interface and
 installed-consumer contracts retain the same `Terreate::Graphics` target and

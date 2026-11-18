@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|platform/(runtime|window)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -126,6 +126,13 @@ function(terreate_package_configure_and_install name platform graphics)
   endif()
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
+  if(platform)
+    foreach(_resource IN ITEMS runtime window)
+      if(NOT EXISTS "${_prefix}/include/terreate/platform/${_resource}.hpp")
+        message(FATAL_ERROR "${name} install is missing public Platform ${_resource} header")
+      endif()
+    endforeach()
+  endif()
   if(graphics)
     foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write specialization pipeline_layout compute_pipeline graphics_pipeline pipeline_commands rendering_commands submission retirement image image_view sampler debug_utils)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
@@ -197,6 +204,12 @@ set_target_properties(package_consumer PROPERTIES
   if(NOT _run_result EQUAL 0)
     message(FATAL_ERROR
       "${name} consumer failed at runtime\n"
+      "${_run_output}\n${_run_error}")
+  endif()
+  if("${component}" STREQUAL "Platform" AND
+     NOT "${_run_output}" MATCHES "package\\.platform: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise the installed Platform Runtime and Window\n"
       "${_run_output}\n${_run_error}")
   endif()
   if("${component}" STREQUAL "Graphics" AND
@@ -1360,7 +1373,31 @@ terreate_build_consumer(core_only_runtime "${core_only_PREFIX}" Core
   "${_core_source}")
 
 terreate_package_configure_and_install(platform_only ON OFF)
-set(_platform_source "int main() { return 0; }\n")
+# The installed Platform runs on GLFW's null backend, which needs no display.
+set(_platform_source [=[
+#include <terreate/platform/runtime.hpp>
+#include <terreate/platform/window.hpp>
+
+#include <cstdio>
+#include <type_traits>
+
+int main() {
+  static_assert(!std::is_copy_constructible_v<terreate::platform::Runtime>);
+  auto runtime = terreate::platform::createRuntime(
+      {.backend = terreate::platform::PlatformBackend::null});
+  if (!runtime || runtime->backend() != terreate::platform::PlatformBackend::null) return 1;
+  {
+    auto window = terreate::platform::createWindow(
+        *runtime, {.width = 64, .height = 32, .title = "package"});
+    if (!window || window->nativeHandle() == nullptr || runtime->liveWindowCount() != 1) return 2;
+    const auto size = window->size();
+    if (!size || size->width != 64 || size->height != 32) return 3;
+  }
+  if (runtime->liveWindowCount() != 0) return 4;
+  std::puts("package.platform: runtime=PASS");
+  return 0;
+}
+]=])
 terreate_build_consumer(platform_only_runtime "${platform_only_PREFIX}" Platform
   "${_platform_source}")
 
@@ -1663,7 +1700,8 @@ if(NOT _source_independence_result EQUAL 0)
 endif()
 
 # 3. Core and Graphics consumers never receive a GLFW (windowing) dependency.
-#    GLFW is not a dependency yet (#347); this guards the boundary for later.
+#    Only a Platform request (#347) searches for GLFW; the all_components cases
+#    below have Platform installed, so this checks a real boundary.
 set(_no_glfw_check [=[
 get_property(_imported DIRECTORY PROPERTY IMPORTED_TARGETS)
 foreach(_target IN LISTS _imported)
@@ -1694,6 +1732,29 @@ foreach(_glfw_case IN ITEMS "core_only;Core" "graphics_only;Graphics" "all_compo
   if(NOT _no_glfw_result EQUAL 0)
     message(FATAL_ERROR
       "${_glfw_prefix_name} ${_glfw_components} consumer saw GLFW\n${_no_glfw_output}")
+  endif()
+endforeach()
+
+# 4. A Platform consumer does receive GLFW, as Terreate::Platform's link
+#    dependency, from the package lookup alone (#347).
+foreach(_platform_prefix_name IN ITEMS platform_only all_components)
+  terreate_configure_consumer("platform-glfw-${_platform_prefix_name}"
+    "${${_platform_prefix_name}_PREFIX}" [=[
+find_package(Terreate REQUIRED COMPONENTS Platform)
+if(NOT TARGET glfw)
+  message(FATAL_ERROR "a Platform request did not import the glfw target")
+endif()
+get_target_property(_links Terreate::Platform INTERFACE_LINK_LIBRARIES)
+if(NOT "glfw" IN_LIST _links)
+  message(FATAL_ERROR "Terreate::Platform does not link glfw: ${_links}")
+endif()
+if(TARGET Terreate::Graphics)
+  message(FATAL_ERROR "a Platform request imported Graphics")
+endif()
+]=] _platform_glfw_result _platform_glfw_output)
+  if(NOT _platform_glfw_result EQUAL 0)
+    message(FATAL_ERROR
+      "${_platform_prefix_name} Platform consumer did not receive GLFW\n${_platform_glfw_output}")
   endif()
 endforeach()
 
