@@ -24,6 +24,17 @@ option(TERREATE_BUILD_PLATFORM
   "Build the independently selectable Terreate Platform component" ON)
 option(TERREATE_BUILD_GRAPHICS
   "Build the independently selectable Terreate Graphics component" ON)
+# The Platform-Graphics Integration (#363) connects the two public APIs. It is
+# on by default only when both of its dependencies are; asking for it without
+# one of them is a configure error below, never a silent correction.
+if(TERREATE_BUILD_PLATFORM AND TERREATE_BUILD_GRAPHICS)
+  set(_terreate_integration_platform_graphics_default ON)
+else()
+  set(_terreate_integration_platform_graphics_default OFF)
+endif()
+option(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS
+  "Build the optional Terreate Platform-Graphics Integration component"
+  ${_terreate_integration_platform_graphics_default})
 
 set(TERREATE_MINIMUM_VULKAN_API_VERSION "1.3")
 
@@ -349,6 +360,18 @@ if((TERREATE_BUILD_PLATFORM OR TERREATE_BUILD_GRAPHICS) AND
     "set TERREATE_BUILD_CORE=ON instead of enabling Core implicitly")
 endif()
 
+if(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS)
+  foreach(_terreate_integration_dependency IN ITEMS PLATFORM GRAPHICS)
+    if(NOT TERREATE_BUILD_${_terreate_integration_dependency})
+      message(FATAL_ERROR
+        "TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=ON requires "
+        "TERREATE_BUILD_${_terreate_integration_dependency}=ON; Terreate does "
+        "not enable a component implicitly. Enable it, or set "
+        "TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=OFF")
+    endif()
+  endforeach()
+endif()
+
 # Keep C++ policy on every component target, including when Terreate is added
 # as a subdirectory by a consumer.  The private compiler context is applied as
 # compile options rather than a link dependency, so it can never leak into an
@@ -375,6 +398,9 @@ if(TERREATE_BUILD_PLATFORM)
 endif()
 if(TERREATE_BUILD_GRAPHICS)
   add_subdirectory(modules/graphics)
+endif()
+if(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS)
+  add_subdirectory(integrations/platform-graphics)
 endif()
 
 if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
@@ -845,6 +871,31 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       FAIL_REGULAR_EXPRESSION "platform\\.native_window: (assertion=FAIL|.*BLOCKED)")
   endif()
 
+  # #363 part 2: a Surface from a Platform Window. The null backend checks the
+  # explicit error paths; the native case needs a display and reports SKIP
+  # without one.
+  if(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS)
+    add_executable(terreate_integration_platform_graphics_tests
+      tests/test_integration_platform_graphics.cpp)
+    target_link_libraries(terreate_integration_platform_graphics_tests PRIVATE
+      Terreate::IntegrationPlatformGraphics)
+    terreate_configure_target(terreate_integration_platform_graphics_tests)
+    add_test(NAME integration.platform_graphics
+      COMMAND terreate_integration_platform_graphics_tests null)
+    set_tests_properties(integration.platform_graphics PROPERTIES
+      PASS_REGULAR_EXPRESSION "integration\\.platform_graphics: null-integration=PASS"
+      FAIL_REGULAR_EXPRESSION "integration\\.platform_graphics: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME integration.native_platform_graphics
+      COMMAND terreate_integration_platform_graphics_tests native)
+    set_tests_properties(integration.native_platform_graphics PROPERTIES
+      PASS_REGULAR_EXPRESSION
+        "integration\\.native_platform_graphics: native-integration=PASS"
+      SKIP_REGULAR_EXPRESSION
+        "integration\\.native_platform_graphics: native-integration=SKIP"
+      FAIL_REGULAR_EXPRESSION
+        "integration\\.native_platform_graphics: (assertion=FAIL|.*BLOCKED)")
+  endif()
+
   add_test(
     NAME cmake.component_matrix
     COMMAND ${CMAKE_COMMAND}
@@ -890,6 +941,11 @@ if(_terreate_has_components)
   if(TERREATE_BUILD_GRAPHICS)
     export(TARGETS terreate_graphics
       FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateGraphicsTargets.cmake"
+      NAMESPACE Terreate::)
+  endif()
+  if(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS)
+    export(TARGETS terreate_integration_platform_graphics
+      FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateIntegrationPlatformGraphicsTargets.cmake"
       NAMESPACE Terreate::)
   endif()
 
@@ -946,6 +1002,12 @@ if(_terreate_has_components)
   if(TERREATE_BUILD_GRAPHICS)
     install(EXPORT TerreateGraphicsTargets
       FILE TerreateGraphicsTargets.cmake
+      NAMESPACE Terreate::
+      DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
+  endif()
+  if(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS)
+    install(EXPORT TerreateIntegrationPlatformGraphicsTargets
+      FILE TerreateIntegrationPlatformGraphicsTargets.cmake
       NAMESPACE Terreate::
       DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
   endif()

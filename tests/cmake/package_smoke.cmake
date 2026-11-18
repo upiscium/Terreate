@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|platform/(runtime|window|events)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|platform/(runtime|window|events)|integration/platform_graphics/surface|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -91,6 +91,11 @@ function(terreate_package_configure_and_install name platform graphics)
     -DTERREATE_BUILD_CORE=ON
     "-DTERREATE_BUILD_PLATFORM=${platform}"
     "-DTERREATE_BUILD_GRAPHICS=${graphics}")
+  if(platform AND graphics)
+    list(APPEND _configure_command -DTERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=ON)
+  else()
+    list(APPEND _configure_command -DTERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=OFF)
+  endif()
 
   execute_process(
     COMMAND ${_configure_command}
@@ -132,6 +137,13 @@ function(terreate_package_configure_and_install name platform graphics)
         message(FATAL_ERROR "${name} install is missing public Platform ${_resource} header")
       endif()
     endforeach()
+  endif()
+  if(platform AND graphics)
+    if(NOT EXISTS "${_prefix}/include/terreate/integration/platform_graphics/surface.hpp")
+      message(FATAL_ERROR "${name} install is missing the public Integration surface header")
+    endif()
+  elseif(EXISTS "${_prefix}/include/terreate/integration")
+    message(FATAL_ERROR "${name} install has Integration headers without both dependencies")
   endif()
   if(graphics)
     foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write specialization pipeline_layout compute_pipeline graphics_pipeline pipeline_commands rendering_commands submission retirement image image_view sampler debug_utils surface)
@@ -210,6 +222,12 @@ set_target_properties(package_consumer PROPERTIES
      NOT "${_run_output}" MATCHES "package\\.platform: runtime=PASS")
     message(FATAL_ERROR
       "${name} consumer did not exercise the installed Platform Runtime and Window\n"
+      "${_run_output}\n${_run_error}")
+  endif()
+  if("${component}" STREQUAL "IntegrationPlatformGraphics" AND
+     NOT "${_run_output}" MATCHES "package\\.integration: runtime=PASS")
+    message(FATAL_ERROR
+      "${name} consumer did not exercise the installed Platform-Graphics Integration\n"
       "${_run_output}\n${_run_error}")
   endif()
   if("${component}" STREQUAL "Graphics" AND
@@ -1350,6 +1368,9 @@ endif()
 if(TARGET Terreate::Platform)
   message(FATAL_ERROR "Core+Graphics package request imported Platform")
 endif()
+if(TARGET Terreate::IntegrationPlatformGraphics)
+  message(FATAL_ERROR "Core+Graphics package request imported the Integration")
+endif()
 if(DEFINED Terreate_Future_FOUND AND Terreate_Future_FOUND)
   message(FATAL_ERROR "unknown optional component was reported as found")
 endif()
@@ -1424,6 +1445,45 @@ int main() {
 ]=])
 terreate_build_consumer(platform_only_runtime "${platform_only_PREFIX}" Platform
   "${_platform_source}")
+
+# The installed Integration (#363) on GLFW's null backend, which names no surface
+# extensions, so every refusal is explicit.
+set(_integration_source [=[
+#include <terreate/integration/platform_graphics/surface.hpp>
+
+#include <cstdio>
+#include <utility>
+
+int main() {
+  namespace integration = terreate::integration::platform_graphics;
+  namespace platform = terreate::platform;
+  auto runtime = platform::createRuntime({.backend = platform::PlatformBackend::null});
+  if (!runtime) return 1;
+  auto window = platform::createWindow(*runtime, {.width = 64, .height = 32, .title = "package"});
+  if (!window) return 2;
+  const auto capabilities = terreate::graphics::queryInstanceCapabilities();
+  if (!capabilities) return 3;
+  terreate::graphics::InstanceDescription description;
+  description.api_version = capabilities->loader_api_version;
+  const auto plan = terreate::graphics::resolveInstance(description, *capabilities);
+  if (!plan) return 4;
+  const auto instance = terreate::graphics::createInstance(*plan);
+  if (!instance) return 5;
+  const auto refused = integration::createWindowSurface(*instance, *runtime, *window);
+  if (refused || refused.error().code() !=
+                     platform::make_error_code(platform::PlatformError::vulkan_unavailable))
+    return 6;
+  platform::Window moved = std::move(*window);
+  const auto mismatch = integration::createWindowSurface(*instance, *runtime, *window);
+  if (mismatch || mismatch.error().code() !=
+                      integration::make_error_code(integration::SurfaceError::parent_mismatch))
+    return 7;
+  std::puts("package.integration: runtime=PASS");
+  return 0;
+}
+]=])
+terreate_build_consumer(integration_runtime "${all_components_PREFIX}"
+  IntegrationPlatformGraphics "${_integration_source}")
 
 terreate_package_configure_and_install(graphics_only OFF ON)
 terreate_build_consumer(graphics_only_runtime "${graphics_only_PREFIX}" Graphics
@@ -1639,7 +1699,10 @@ endfunction()
 # 1. Requesting a component that was not built is a clear configure error
 #    naming the component and the option to enable it.
 foreach(_disabled_case IN ITEMS "core_only;Graphics;GRAPHICS" "core_only;Platform;PLATFORM"
-                                "graphics_only;Platform;PLATFORM")
+                                "graphics_only;Platform;PLATFORM"
+                                "core_only;IntegrationPlatformGraphics;INTEGRATION_PLATFORM_GRAPHICS"
+                                "platform_only;IntegrationPlatformGraphics;INTEGRATION_PLATFORM_GRAPHICS"
+                                "graphics_only;IntegrationPlatformGraphics;INTEGRATION_PLATFORM_GRAPHICS")
   list(GET _disabled_case 0 _disabled_prefix_name)
   list(GET _disabled_case 1 _disabled_component)
   list(GET _disabled_case 2 _disabled_option)
@@ -1694,8 +1757,9 @@ foreach(_prefix_name IN ITEMS all_components core_only platform_only graphics_on
   endforeach()
 endforeach()
 terreate_configure_consumer(source-independence "${_all_prefix}" [=[
-find_package(Terreate REQUIRED COMPONENTS Core Platform Graphics)
-foreach(_target IN ITEMS Terreate::Core Terreate::Platform Terreate::Graphics)
+find_package(Terreate REQUIRED COMPONENTS Core Platform Graphics IntegrationPlatformGraphics)
+foreach(_target IN ITEMS Terreate::Core Terreate::Platform Terreate::Graphics
+                         Terreate::IntegrationPlatformGraphics)
   foreach(_property IN ITEMS INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
     get_target_property(_includes ${_target} ${_property})
     if(NOT _includes)
@@ -1781,6 +1845,27 @@ endif()
       "${_platform_prefix_name} Platform consumer did not receive GLFW\n${_platform_glfw_output}")
   endif()
 endforeach()
+
+# 5. An Integration consumer receives both dependencies of the components it
+#    connects: GLFW through Platform and Vulkan through Graphics, from the
+#    package lookup alone (#363).
+terreate_configure_consumer("integration-dependencies" "${all_components_PREFIX}" [=[
+find_package(Terreate REQUIRED COMPONENTS IntegrationPlatformGraphics)
+foreach(_needed IN ITEMS glfw Vulkan::Vulkan Terreate::Core Terreate::Platform
+                         Terreate::Graphics Terreate::IntegrationPlatformGraphics)
+  if(NOT TARGET ${_needed})
+    message(FATAL_ERROR "an Integration request did not import ${_needed}")
+  endif()
+endforeach()
+get_target_property(_links Terreate::IntegrationPlatformGraphics INTERFACE_LINK_LIBRARIES)
+if(NOT "Terreate::Platform" IN_LIST _links OR NOT "Terreate::Graphics" IN_LIST _links)
+  message(FATAL_ERROR "the Integration does not link Platform and Graphics: ${_links}")
+endif()
+]=] _integration_dependency_result _integration_dependency_output)
+if(NOT _integration_dependency_result EQUAL 0)
+  message(FATAL_ERROR
+    "an Integration consumer did not receive its dependencies\n${_integration_dependency_output}")
+endif()
 
 # Printed last: any failure above stops the script before this line.
 message(STATUS "package.external_consumer: disabled-diagnostic=PASS "

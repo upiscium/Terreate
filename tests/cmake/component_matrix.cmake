@@ -18,7 +18,18 @@ set(_terreate_matrix_root
 file(REMOVE_RECURSE "${_terreate_matrix_root}")
 file(MAKE_DIRECTORY "${_terreate_matrix_root}")
 
+# `ARGV5` overrides the expected presence of the Platform-Graphics Integration
+# (default: present when Platform and Graphics are), and `ARGV6` is one extra
+# -D definition, for explicit option cases.
 function(terreate_matrix_case name component core platform graphics)
+  if("${platform}" STREQUAL "ON" AND "${graphics}" STREQUAL "ON")
+    set(_expect_integration ON)
+  else()
+    set(_expect_integration OFF)
+  endif()
+  if(NOT "${ARGV5}" STREQUAL "")
+    set(_expect_integration "${ARGV5}")
+  endif()
   set(_binary_dir "${_terreate_matrix_root}/${name}")
   set(_configure_command
     "${CMAKE_COMMAND}"
@@ -39,9 +50,13 @@ function(terreate_matrix_case name component core platform graphics)
     "-DTERREATE_EXPECT_CORE=${core}"
     "-DTERREATE_EXPECT_PLATFORM=${platform}"
     "-DTERREATE_EXPECT_GRAPHICS=${graphics}"
+    "-DTERREATE_EXPECT_INTEGRATION_PLATFORM_GRAPHICS=${_expect_integration}"
     "-DTERREATE_BUILD_CORE=${core}"
     "-DTERREATE_BUILD_PLATFORM=${platform}"
     "-DTERREATE_BUILD_GRAPHICS=${graphics}")
+  if(NOT "${ARGV6}" STREQUAL "")
+    list(APPEND _configure_command "${ARGV6}")
+  endif()
 
   execute_process(
     COMMAND ${_configure_command}
@@ -113,6 +128,11 @@ endif()
 terreate_matrix_case(core_only Core ON OFF OFF)
 terreate_matrix_case(platform_only Platform ON ON OFF)
 terreate_matrix_case(graphics_only Graphics ON OFF ON)
+# The Integration (#363): on by default when both dependencies are, and an
+# explicit OFF is respected.
+terreate_matrix_case(integration IntegrationPlatformGraphics ON ON ON)
+terreate_matrix_case(integration_off Graphics ON ON ON OFF
+  -DTERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=OFF)
 
 # Source-subdirectory consumers must validate the effective Vulkan include
 # order.  The partial directory intentionally appears before a complete
@@ -281,3 +301,52 @@ if(NOT _contradictory_diagnostics MATCHES
     "contradictory options did not report the Core dependency:\n"
     "${_contradictory_diagnostics}")
 endif()
+
+# The Integration needs Platform and Graphics. Asking for it without one of
+# them is a configure error that names the missing dependency, never a silent
+# correction (#227).
+function(terreate_matrix_expect_integration_error name missing_option)
+  set(_binary "${_terreate_matrix_root}/${name}")
+  set(_command
+    "${CMAKE_COMMAND}"
+    -S "${_terreate_source_dir}/tests/cmake/matrix-project"
+    -B "${_binary}")
+  if(DEFINED TERREATE_CMAKE_GENERATOR AND
+     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+    list(APPEND _command -G "${TERREATE_CMAKE_GENERATOR}")
+  endif()
+  if(DEFINED TERREATE_CXX_COMPILER AND
+     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+    list(APPEND _command "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+  endif()
+  list(APPEND _command
+    "-DTERREATE_SOURCE_DIR:PATH=${_terreate_source_dir}"
+    -DTERREATE_MATRIX_COMPONENT=Core
+    -DTERREATE_BUILD_CORE=ON
+    -DTERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=ON)
+  foreach(_option IN ITEMS PLATFORM GRAPHICS)
+    if(_option STREQUAL missing_option)
+      list(APPEND _command "-DTERREATE_BUILD_${_option}=OFF")
+    else()
+      list(APPEND _command "-DTERREATE_BUILD_${_option}=ON")
+    endif()
+  endforeach()
+  execute_process(
+    COMMAND ${_command}
+    RESULT_VARIABLE _result
+    OUTPUT_VARIABLE _output
+    ERROR_VARIABLE _error)
+  if(_result EQUAL 0)
+    message(FATAL_ERROR "${name}: the contradictory options unexpectedly configured")
+  endif()
+  string(REGEX REPLACE "[ \n]+" " " _diagnostics "${_output} ${_error}")
+  if(NOT _diagnostics MATCHES
+     "TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=ON requires TERREATE_BUILD_${missing_option}=ON")
+    message(FATAL_ERROR
+      "${name}: the diagnostic did not name TERREATE_BUILD_${missing_option}:\n"
+      "${_output}\n${_error}")
+  endif()
+endfunction()
+
+terreate_matrix_expect_integration_error(integration_without_platform PLATFORM)
+terreate_matrix_expect_integration_error(integration_without_graphics GRAPHICS)

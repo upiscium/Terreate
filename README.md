@@ -100,6 +100,18 @@ Graphics require Core but never enable it implicitly.  These `TERREATE_BUILD_*`
 options are the sole component configuration API, including when reconfiguring
 an existing build tree.
 
+The first optional Integration (#227, #363), `Terreate::IntegrationPlatformGraphics`,
+connects Platform and Graphics through their public APIs: it creates a Vulkan
+Surface from a Platform Window (see
+[Surface ownership and the Window Integration](docs/architecture/surface.md)).
+Neither Platform nor Graphics depends on it. Its option,
+`TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS`, is on by default only when both
+of its dependencies are. Turning it on while Platform or Graphics is off is a
+configure error that names the missing option; Terreate does not enable a
+component implicitly. Request it with
+`find_package(Terreate REQUIRED COMPONENTS IntegrationPlatformGraphics)`, which
+also imports Platform and Graphics and their dependencies (GLFW and Vulkan).
+
 Install the selected targets and use the same namespace from a consumer:
 
 ```cmake
@@ -132,6 +144,10 @@ only), then configures separate consumer projects that use only
 - Core and Graphics consumers import no GLFW target or link dependency, while a
   Platform consumer receives `glfw` as `Terreate::Platform`'s link dependency
   and runs a Runtime and Window on GLFW's null backend.
+- an Integration consumer receives GLFW and Vulkan, imports Platform and
+  Graphics with it, and runs the installed Integration on the null backend,
+  where it refuses explicitly; every other package either has no Integration or
+  reports the disabled-component diagnostic.
 
 Allocator integration is already merged into main. Its public-interface and
 installed-consumer contracts retain the same `Terreate::Graphics` target and
