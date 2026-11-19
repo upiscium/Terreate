@@ -28,6 +28,36 @@ foreach(_component_name IN ITEMS Core Platform Graphics)
   endif()
 endforeach()
 
+# The Platform-Graphics Integration (#363): present exactly when expected, and
+# it connects Platform and Graphics, never the other way around.
+if(TERREATE_EXPECT_INTEGRATION_PLATFORM_GRAPHICS)
+  if(NOT TARGET Terreate::IntegrationPlatformGraphics)
+    message(FATAL_ERROR "expected enabled target Terreate::IntegrationPlatformGraphics")
+  endif()
+  get_target_property(_integration_links terreate_integration_platform_graphics
+    INTERFACE_LINK_LIBRARIES)
+  if(NOT "${_integration_links}" MATCHES "Platform" OR
+     NOT "${_integration_links}" MATCHES "Graphics")
+    message(FATAL_ERROR
+      "the Integration must publicly link Platform and Graphics: ${_integration_links}")
+  endif()
+elseif(TARGET Terreate::IntegrationPlatformGraphics)
+  message(FATAL_ERROR
+    "disabled component unexpectedly created Terreate::IntegrationPlatformGraphics")
+endif()
+foreach(_module IN ITEMS core platform graphics)
+  if(TARGET terreate_${_module})
+    foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+      get_target_property(_module_links terreate_${_module} ${_link_property})
+      if("${_module_links}" MATCHES "[Ii]ntegration")
+        message(FATAL_ERROR
+          "module ${_module} depends upward on an Integration in ${_link_property}: "
+          "${_module_links}")
+      endif()
+    endforeach()
+  endif()
+endforeach()
+
 foreach(_target_name IN ITEMS Core Platform Graphics)
   string(TOLOWER "${_target_name}" _target_lower)
   if(TARGET terreate_${_target_lower})
@@ -88,7 +118,7 @@ foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
   endif()
 endforeach()
 
-if(NOT _component MATCHES "^(Core|Platform|Graphics)$")
+if(NOT _component MATCHES "^(Core|Platform|Graphics|IntegrationPlatformGraphics)$")
   message(FATAL_ERROR "unknown matrix component ${_component}")
 endif()
 
@@ -115,6 +145,24 @@ int main() {
   const auto capabilities = terreate::graphics::queryInstanceCapabilities();
   return capabilities.has_value() ? 0 : 1;
 }
+]=])
+elseif(_component STREQUAL "IntegrationPlatformGraphics")
+  # The public header of the Integration pulls in Platform and Graphics, so one
+  # include proves all three usage requirements reach a consumer.
+  set(_consumer_source [=[
+#include <terreate/integration/platform_graphics/surface.hpp>
+
+#include <type_traits>
+#include <utility>
+
+static_assert(std::is_same_v<
+    decltype(terreate::integration::platform_graphics::createWindowSurface(
+        std::declval<const terreate::graphics::Instance &>(),
+        std::declval<const terreate::platform::Runtime &>(),
+        std::declval<const terreate::platform::Window &>())),
+    terreate::Result<terreate::graphics::Surface>>);
+
+int main() { return 0; }
 ]=])
 else()
   set(_consumer_source [=[

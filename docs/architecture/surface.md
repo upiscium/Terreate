@@ -1,4 +1,4 @@
-# Vulkan Surface ownership (#363)
+# Vulkan Surface ownership and the Window Integration (#363)
 
 `<terreate/graphics/surface.hpp>` gives the application explicit ownership of a
 `VkSurfaceKHR`. It knows nothing about windows: no Platform header, no GLFW. A
@@ -82,6 +82,65 @@ is a contract, not a check, and the Instance is borrowed, never retained. The
 Swapchain (#273) is what will hold a Surface; it will state the same order from
 its side.
 
+## Creating a Surface from a Window: the Integration
+
+`<terreate/integration/platform_graphics/surface.hpp>` is the one place Platform
+and Graphics meet. It is the repository's first Integration (#227): optional
+glue that connects two components through their public APIs only. The target is
+`Terreate::IntegrationPlatformGraphics`, in `integrations/platform-graphics/`.
+Platform stays Vulkan-free, Graphics knows nothing of windows, and neither
+depends on the Integration.
+
+```cpp
+auto surface = terreate::integration::platform_graphics::createWindowSurface(
+    instance, runtime, window);
+```
+
+It wraps `glfwCreateWindowSurface` as a `SurfaceCreator`, so the result is an
+ordinary `graphics::Surface` with the ownership rules above. No Device or Queue
+is needed. Every check runs before the native call, in this order:
+
+| Error | When |
+| --- | --- |
+| `parent_mismatch` | the Window was not created by this Runtime, or one is moved-from |
+| Platform `wrong_thread` | called on a thread other than the Runtime's; the thread rule comes from `runtime.requiredInstanceExtensions()` and is returned unchanged |
+| Platform `vulkan_unavailable` | GLFW names no surface extensions, as on the null backend: an explicit error, never a silent success |
+| `required_extension_not_enabled` | the Instance did not enable an extension GLFW needs; the Error's detail names it |
+| Graphics errors | an invalid Instance, `VK_KHR_surface` not enabled |
+
+A native `VkResult` failure from GLFW is returned as that native error, and GLFW's
+own errors also reach the Runtime's diagnostic sink. The application passes
+`runtime.requiredInstanceExtensions()` to `InstanceDescription::required_extensions`
+when it creates the Instance, before the Surface:
+
+```cpp
+auto extensions = runtime->requiredInstanceExtensions();
+description.required_extensions = *extensions;
+```
+
+The `Runtime` argument is explicit because a Window does not expose its Runtime.
+It also lets the Integration use Platform's thread-checked public API instead of
+anything private.
+
+### Destruction order
+
+The Surface is destroyed before the Window, before the Instance, and after every
+swapchain created for it. Nothing checks this. The Window is borrowed only during
+the call.
+
+### Build and package
+
+- Option `TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS`: on by default only when
+  Platform and Graphics are on. Turning it on while either is off is a configure
+  error that names the missing option; the component is never enabled or
+  disabled behind the application's back (#227).
+- Package component `IntegrationPlatformGraphics`. Requesting it also imports
+  Platform and Graphics and discovers GLFW and Vulkan, with the same
+  required-or-optional strength as the request itself. Core-only, Platform-only
+  and Graphics-only installs have no Integration, and requesting it there gives
+  the usual disabled-component diagnostic naming
+  `TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=ON`.
+
 ## Tests
 
 `graphics.surface` needs no window system. It makes surfaces with
@@ -104,6 +163,17 @@ when that extension is unavailable. It checks:
 
 The package smoke checks the installed header and the explicit
 `surface_extension_not_enabled` error from an installed consumer.
+
+`integration.platform_graphics` runs on GLFW's null backend, which names no
+surface extensions, so it checks the explicit paths: `vulkan_unavailable`, the
+thread rule (`wrong_thread` from another thread), and `parent_mismatch` for a
+moved-from Window or Runtime, including that this check comes first.
+`integration.native_platform_graphics` needs a display, and reports SKIP, never
+PASS, without one or when the Vulkan loader lacks GLFW's extensions. With a
+display it checks that an Instance without GLFW's extensions is refused with the
+missing name, then creates a real Surface from a real Window before any Device
+exists, and destroys it before the Window and Instance under the validation
+layer. Neither test uses linker interception.
 
 Not part of this issue: present support, formats and capabilities (#364) and the
 Swapchain (#273 onward). The Surface type is shaped for them: they take

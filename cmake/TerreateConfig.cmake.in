@@ -3,10 +3,12 @@
 set(Terreate_FOUND TRUE)
 unset(Terreate_NOT_FOUND_MESSAGE)
 set(Terreate_VERSION "@PROJECT_VERSION@")
-set(_Terreate_supported_components Core Platform Graphics)
+set(_Terreate_supported_components Core Platform Graphics IntegrationPlatformGraphics)
 set(_Terreate_core_built "@TERREATE_BUILD_CORE@")
 set(_Terreate_platform_built "@TERREATE_BUILD_PLATFORM@")
 set(_Terreate_graphics_built "@TERREATE_BUILD_GRAPHICS@")
+set(_Terreate_integration_platform_graphics_built
+  "@TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS@")
 set(_Terreate_minimum_vulkan_api_version "1.3")
 # CMake 3.28/3.29 let a dependency package overwrite PACKAGE_PREFIX_DIR in
 # this scope.  Preserve Terreate's prefix before any dependency is loaded so
@@ -30,9 +32,13 @@ set(_Terreate_graphics_requested FALSE)
 set(_Terreate_graphics_required FALSE)
 if(Terreate_FIND_COMPONENTS)
   foreach(_Terreate_requested_component IN LISTS Terreate_FIND_COMPONENTS)
-    if(_Terreate_requested_component STREQUAL "Graphics")
+    # The Platform-Graphics Integration needs Graphics, with the same
+    # required-or-optional strength, but only when it was built.
+    if(_Terreate_requested_component STREQUAL "Graphics" OR
+       (_Terreate_requested_component STREQUAL "IntegrationPlatformGraphics" AND
+        _Terreate_integration_platform_graphics_built))
       set(_Terreate_graphics_requested TRUE)
-      if(Terreate_FIND_REQUIRED_Graphics)
+      if(Terreate_FIND_REQUIRED_${_Terreate_requested_component})
         set(_Terreate_graphics_required TRUE)
       endif()
     endif()
@@ -301,9 +307,11 @@ set(_Terreate_platform_requested FALSE)
 set(_Terreate_platform_required FALSE)
 if(Terreate_FIND_COMPONENTS)
   foreach(_Terreate_requested_component IN LISTS Terreate_FIND_COMPONENTS)
-    if(_Terreate_requested_component STREQUAL "Platform")
+    if(_Terreate_requested_component STREQUAL "Platform" OR
+       (_Terreate_requested_component STREQUAL "IntegrationPlatformGraphics" AND
+        _Terreate_integration_platform_graphics_built))
       set(_Terreate_platform_requested TRUE)
-      if(Terreate_FIND_REQUIRED_Platform)
+      if(Terreate_FIND_REQUIRED_${_Terreate_requested_component})
         set(_Terreate_platform_required TRUE)
       endif()
     endif()
@@ -333,6 +341,15 @@ if(_Terreate_platform_built AND _Terreate_platform_requested)
   endif()
 endif()
 
+# The Platform-Graphics Integration (#363) is available when it was built and
+# both components it connects are. Their own blocks above already made a
+# missing dependency visible, with the strength of the Integration request.
+set(_Terreate_integration_platform_graphics_available FALSE)
+if(_Terreate_integration_platform_graphics_built AND _Terreate_platform_available AND
+   _Terreate_graphics_available)
+  set(_Terreate_integration_platform_graphics_available TRUE)
+endif()
+
 # Import exactly the requested component dependency closure.  Core is a
 # dependency of Platform and Graphics, but an explicit Core request must not
 # import either optional component merely because those targets were built.
@@ -341,6 +358,7 @@ endif()
 set(_Terreate_import_Core FALSE)
 set(_Terreate_import_Platform FALSE)
 set(_Terreate_import_Graphics FALSE)
+set(_Terreate_import_IntegrationPlatformGraphics FALSE)
 if(NOT Terreate_FIND_COMPONENTS)
   if(_Terreate_core_built)
     set(_Terreate_import_Core TRUE)
@@ -352,6 +370,9 @@ if(NOT Terreate_FIND_COMPONENTS)
   if(_Terreate_graphics_built AND _Terreate_graphics_available)
     set(_Terreate_import_Graphics TRUE)
     set(_Terreate_import_Core TRUE)
+  endif()
+  if(_Terreate_integration_platform_graphics_available)
+    set(_Terreate_import_IntegrationPlatformGraphics TRUE)
   endif()
 else()
   foreach(_Terreate_requested_component IN LISTS Terreate_FIND_COMPONENTS)
@@ -365,11 +386,20 @@ else()
            _Terreate_graphics_available)
       set(_Terreate_import_Graphics TRUE)
       set(_Terreate_import_Core TRUE)
+    elseif(_Terreate_requested_component STREQUAL "IntegrationPlatformGraphics" AND
+           _Terreate_integration_platform_graphics_available)
+      # It connects Platform and Graphics, so their targets come with it.
+      set(_Terreate_import_IntegrationPlatformGraphics TRUE)
+      set(_Terreate_import_Platform TRUE)
+      set(_Terreate_import_Graphics TRUE)
+      set(_Terreate_import_Core TRUE)
     endif()
   endforeach()
 endif()
 
-foreach(_Terreate_component IN ITEMS Core Platform Graphics)
+# The Integration is last: its exported targets name Terreate::Platform and
+# Terreate::Graphics, which the earlier iterations have just imported.
+foreach(_Terreate_component IN ITEMS Core Platform Graphics IntegrationPlatformGraphics)
   set(Terreate_${_Terreate_component}_FOUND FALSE)
   if(_Terreate_import_${_Terreate_component})
     set(_Terreate_component_file
@@ -395,7 +425,12 @@ foreach(_Terreate_component IN ITEMS Core Platform Graphics)
 endforeach()
 
 foreach(_Terreate_component IN LISTS Terreate_FIND_COMPONENTS)
-  string(TOUPPER "${_Terreate_component}" _Terreate_component_upper)
+  # The option spelling is not always the upper-cased component name.
+  if(_Terreate_component STREQUAL "IntegrationPlatformGraphics")
+    set(_Terreate_component_upper INTEGRATION_PLATFORM_GRAPHICS)
+  else()
+    string(TOUPPER "${_Terreate_component}" _Terreate_component_upper)
+  endif()
   list(FIND _Terreate_supported_components "${_Terreate_component}"
     _Terreate_component_index)
     if(_Terreate_component_index EQUAL -1)
@@ -403,7 +438,8 @@ foreach(_Terreate_component IN LISTS Terreate_FIND_COMPONENTS)
       if(NOT Terreate_NOT_FOUND_MESSAGE)
         string(CONCAT Terreate_NOT_FOUND_MESSAGE
           "Terreate does not provide requested component '${_Terreate_component}'; "
-          "supported components are Core, Platform, and Graphics")
+          "supported components are Core, Platform, Graphics, and "
+          "IntegrationPlatformGraphics")
       endif()
   elseif(NOT Terreate_${_Terreate_component}_FOUND)
     if(_Terreate_component STREQUAL "Graphics" AND
@@ -421,6 +457,15 @@ foreach(_Terreate_component IN LISTS Terreate_FIND_COMPONENTS)
       if(NOT Terreate_NOT_FOUND_MESSAGE)
         set(Terreate_NOT_FOUND_MESSAGE
           "Terreate Platform is unavailable because GLFW 3.4 (glfw3 CONFIG) was not found")
+      endif()
+    elseif(_Terreate_component STREQUAL "IntegrationPlatformGraphics" AND
+           _Terreate_integration_platform_graphics_built AND
+           NOT _Terreate_integration_platform_graphics_available)
+      # A dependency of the Integration is unavailable; keep the explanation
+      # the Platform or Graphics block set above.
+      if(NOT Terreate_NOT_FOUND_MESSAGE)
+        set(Terreate_NOT_FOUND_MESSAGE
+          "Terreate IntegrationPlatformGraphics is unavailable because Platform or Graphics is unavailable")
       endif()
     else()
       string(CONCAT Terreate_NOT_FOUND_MESSAGE
