@@ -784,6 +784,20 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       SKIP_REGULAR_EXPRESSION "graphics\\.surface: surface=SKIP"
       FAIL_REGULAR_EXPRESSION "graphics\\.surface.*: (assertion=FAIL|.*BLOCKED)")
 
+    # #364: presentation support and requirements, with no Platform and no window.
+    add_executable(terreate_graphics_presentation_tests tests/test_graphics_presentation.cpp)
+    target_link_libraries(terreate_graphics_presentation_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_presentation_tests)
+    add_test(NAME graphics.presentation.cpu COMMAND terreate_graphics_presentation_tests cpu)
+    set_tests_properties(graphics.presentation.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.presentation\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.presentation.*: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.presentation COMMAND terreate_graphics_presentation_tests gpu)
+    set_tests_properties(graphics.presentation PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.presentation: presentation=PASS"
+      SKIP_REGULAR_EXPRESSION "graphics\\.presentation: presentation=SKIP"
+      FAIL_REGULAR_EXPRESSION "graphics\\.presentation.*: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_rendering_commands_tests
       tests/test_graphics_rendering_commands.cpp)
     target_link_libraries(terreate_graphics_rendering_commands_tests PRIVATE Terreate::Graphics)

@@ -204,6 +204,8 @@ add_library(terreate_graphics STATIC
   include/terreate/graphics/debug_utils.hpp
   src/surface.cpp
   include/terreate/graphics/surface.hpp
+  src/presentation.cpp
+  include/terreate/graphics/presentation.hpp
   src/graphics.cpp
   src/graphics_diagnostics.cpp
   src/device.cpp
