@@ -243,6 +243,11 @@ int cpuTest() {
           "an undefined-format surface accepts the first preference");
     check(hasError(resolvePresentation(s, {}), Error::no_supported_format),
           "an undefined-format surface needs a stated format");
+    request.require_preferred_format = true;
+    const auto required = resolvePresentation(s, request);
+    check(required && same(required->format.effective, rgba) &&
+              required->format.reason == PresentationChoiceReason::any_format_accepted,
+          "a required preference is satisfied by an undefined-format surface");
   }
 
   // Hand-off into the Device and PhysicalDevice requirement structs.
@@ -481,11 +486,40 @@ int gpuTest() {
     const auto family =
         static_cast<std::uint32_t>(device_plan->queueAssignments().front().family_index);
     VkBool32 supported = VK_FALSE;
-    const auto result = vkGetPhysicalDeviceSurfaceSupportKHR(
-        static_cast<VkPhysicalDevice>(presenting->device().nativeHandle()), family,
-        surface->nativeSurface(), &supported);
+    // Load through vkGetInstanceProcAddr, as the library does.
+    const auto support_query = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceSupportKHR>(
+        vkGetInstanceProcAddr(static_cast<VkInstance>(instance->nativeHandle()),
+                              "vkGetPhysicalDeviceSurfaceSupportKHR"));
+    const auto result =
+        support_query == nullptr
+            ? VK_ERROR_EXTENSION_NOT_PRESENT
+            : support_query(static_cast<VkPhysicalDevice>(presenting->device().nativeHandle()),
+                            family, surface->nativeSurface(), &supported);
     check(result == VK_SUCCESS && supported == VK_TRUE,
           "the planned present queue's family supports presentation");
+  }
+  // The application's own graphics queue next to the present queue. The default
+  // forbid_alias needs two queues; the application edits the alias policy to
+  // allow sharing one, and the plan stays explicit about it.
+  {
+    DeviceDescription both;
+    DeviceQueueRequest graphics;
+    graphics.caller_id = "graphics";
+    graphics.required_flags = vk::QueueFlagBits::eGraphics;
+    both.queue_requests = {graphics};
+    auto shared = *resolution;
+    shared.queue_request.alias_policy = DeviceQueueAliasPolicy::prefer_alias_with_distinct_fallback;
+    shared.queue_request.alias_target = "graphics";
+    check(applyPresentation(both, shared).has_value(),
+          "applyPresentation next to a graphics queue");
+    const auto both_plan = resolveDevice(*presenting, both);
+    if (check(both_plan.has_value(), "resolveDevice with graphics and present queues")) {
+      auto both_device = createDevice(*instance, *both_plan);
+      if (check(both_device.has_value(), "createDevice with graphics and present queues")) {
+        check(both_device->queue("graphics").valid() && both_device->queue("present").valid(),
+              "both the graphics and the present queue exist");
+      }
+    }
   }
   // Destroy in lifetime order: Device, then Surfaces (before the Instances).
   {
