@@ -67,8 +67,35 @@ changes. `requirePresentationDevice(PhysicalDeviceRequirements&)` does the same
 for physical-device selection. Both edit the application's own structs and
 retain nothing.
 
+## Select among candidates
+
+`evaluateSurfaceCandidates(instance, candidates, surface, requirements, request)`
+evaluates every candidate in the order given and returns one
+`SurfaceCandidateEvaluation` each. `requirements` is copied and `VK_KHR_swapchain`
+is required on the copy. A candidate that cannot be used is data, not an error,
+and the others stay usable. Its `outcome` says why:
+
+| Outcome | Meaning |
+| --- | --- |
+| `selectable` | meets the device requirements and `resolvePresentation` succeeded; `resolution` is set |
+| `requirements_not_met` | fails the device requirements; the Surface is not queried for it |
+| `cannot_present` | no queue family can present to the Surface |
+| `presentation_unresolved` | it can present but the request cannot be met; `presentation_error` names the step |
+
+`classifySurfaceCandidate(evaluation, support, request)` is the pure core of this
+decision (no native call). An invalid `request` is an error for the whole call
+and is reported even when every candidate would be declined earlier. A native
+failure while querying a candidate (for example `VK_ERROR_SURFACE_LOST_KHR`) also
+fails the whole call: the Surface itself is then in doubt.
+
+`selectSurfacePhysicalDevice(instance, candidates, surface, requirements, request, policy)`
+runs the evaluation and then the existing `selectPhysicalDevice` over the
+selectable candidates only, with the same policy: one selectable candidate is
+selected, several need an explicit UUID or UUID order (`ambiguous_match`, never
+enumeration order), none is `no_selectable_candidate`. The result keeps every
+evaluation; `chosen().resolution` goes to `applyPresentation`. When selection
+fails, call `evaluateSurfaceCandidates` to see why each candidate was declined.
 ## Not in this change
 
-Filtering and selecting among several candidates by present support (a helper
-over `selectPhysicalDevice`), Swapchain creation and recreation, and
+Swapchain creation and recreation, and
 `VK_KHR_get_surface_capabilities2` / extended color spaces.

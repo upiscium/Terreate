@@ -295,6 +295,53 @@ int cpuTest() {
           "requirePresentationDevice deduplicates and promotes");
   }
 
+  // Per-candidate classification (pure): a decline is data, not an error.
+  {
+    PhysicalDeviceEvaluation matching;
+    matching.matches = true;
+    PhysicalDeviceEvaluation failing;
+    failing.matches = false;
+    using Outcome = SurfaceCandidateOutcome;
+
+    const auto selectable = classifySurfaceCandidate(matching, support(), {});
+    check(selectable && selectable->outcome == Outcome::selectable && selectable->selectable() &&
+              selectable->resolution.has_value() && !selectable->presentation_error,
+          "a presenting candidate that meets the requirements is selectable");
+
+    const auto unmet = classifySurfaceCandidate(failing, support(), {});
+    check(unmet && unmet->outcome == Outcome::requirements_not_met && !unmet->resolution &&
+              !unmet->support.canPresent(),
+          "a candidate that fails the requirements is declined without a Surface observation");
+
+    const auto none = classifySurfaceCandidate(matching, SurfaceSupport{}, {});
+    check(none && none->outcome == Outcome::cannot_present && !none->selectable(),
+          "a candidate that cannot present is declined");
+
+    auto no_graphics = support();
+    for (auto &family : no_graphics.present_queue_families)
+      family.flags = vk::QueueFlagBits::eTransfer;
+    const auto unresolved = classifySurfaceCandidate(matching, no_graphics, {});
+    check(unresolved && unresolved->outcome == Outcome::presentation_unresolved &&
+              unresolved->presentation_error == Error::no_present_queue_family,
+          "a presenting candidate the request cannot satisfy records why");
+
+    PresentationRequest required_format;
+    required_format.preferred_formats = {
+        vk::SurfaceFormatKHR{vk::Format::eR16G16B16A16Sfloat, vk::ColorSpaceKHR::eSrgbNonlinear}};
+    required_format.require_preferred_format = true;
+    const auto format = classifySurfaceCandidate(matching, support(), required_format);
+    check(format && format->outcome == Outcome::presentation_unresolved &&
+              format->presentation_error == Error::no_supported_format,
+          "an unsupported required format declines the candidate");
+
+    PresentationRequest invalid;
+    invalid.queue_caller_id.clear();
+    check(hasError(classifySurfaceCandidate(matching, support(), invalid), Error::invalid_request),
+          "an invalid request is an error, not a per-candidate decline");
+    check(hasError(classifySurfaceCandidate(failing, support(), invalid), Error::invalid_request),
+          "an invalid request is reported even for a candidate the requirements decline");
+  }
+
   if (failures != 0)
     return EXIT_FAILURE;
   std::puts("graphics.presentation.cpu: cpu=PASS");
@@ -520,6 +567,65 @@ int gpuTest() {
               "both the graphics and the present queue exist");
       }
     }
+  }
+  // Selection over every candidate: a device that cannot present is declined
+  // with a recorded reason and the presenting one stays usable.
+  {
+    const PhysicalDeviceRequirements base;
+    const auto evaluated =
+        evaluateSurfaceCandidates(*instance, inventory->candidates(), *surface, base, {});
+    std::size_t selectable_count = 0;
+    if (check(evaluated.has_value() && evaluated->size() == inventory->candidates().size(),
+              "evaluateSurfaceCandidates covers every candidate")) {
+      bool found = false;
+      for (const auto &entry : *evaluated) {
+        selectable_count += entry.selectable() ? 1U : 0U;
+        if (entry.enumeration_index == presenting->enumerationIndex()) {
+          found = true;
+          check(entry.selectable() && entry.resolution.has_value(),
+                "the presenting candidate is selectable");
+        } else if (entry.outcome == SurfaceCandidateOutcome::cannot_present) {
+          check(!entry.support.canPresent() && !entry.resolution.has_value(),
+                "a candidate that cannot present is declined without a resolution");
+        }
+      }
+      check(found, "the presenting candidate has an evaluation");
+    }
+    PhysicalDeviceSelectionPolicy policy;
+    const bool can_select =
+        selectable_count == 1 || presenting->capabilities().id_properties_available;
+    if (selectable_count != 1 && can_select)
+      policy.explicit_uuid = presenting->capabilities().device_uuid;
+    if (!can_select) {
+      std::puts(
+          "graphics.presentation: selection=SKIP reason=several candidates and no device UUID");
+    } else {
+      const auto selected = selectSurfacePhysicalDevice(*instance, inventory->candidates(),
+                                                        *surface, base, {}, policy);
+      const PresentationResolution *chosen_resolution = nullptr;
+      if (check(selected.has_value(), "selectSurfacePhysicalDevice selects a presenting device") &&
+          selected->chosen().resolution.has_value()) {
+        chosen_resolution = &*selected->chosen().resolution;
+      }
+      if (chosen_resolution != nullptr) {
+        check(selected->chosen().selectable(), "the chosen candidate is selectable");
+        check(selected->selection.candidate.enumerationIndex() == presenting->enumerationIndex(),
+              "the selected candidate is the presenting one");
+        DeviceDescription chosen_description;
+        check(applyPresentation(chosen_description, *chosen_resolution).has_value() &&
+                  resolveDevice(selected->selection.candidate, chosen_description).has_value(),
+              "the selected resolution feeds resolveDevice");
+      }
+    }
+    // A request no candidate can meet is an error with no silent fallback.
+    PresentationRequest impossible;
+    impossible.preferred_formats = {
+        vk::SurfaceFormatKHR{vk::Format::eR64Sfloat, vk::ColorSpaceKHR::eSrgbNonlinear}};
+    impossible.require_preferred_format = true;
+    check(hasError(selectSurfacePhysicalDevice(*instance, inventory->candidates(), *surface, base,
+                                               impossible, policy),
+                   Error::no_selectable_candidate),
+          "no candidate can meet an impossible required format");
   }
   // Destroy in lifetime order: Device, then Surfaces (before the Instances).
   {

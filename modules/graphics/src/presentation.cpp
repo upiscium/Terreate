@@ -29,6 +29,8 @@ public:
       return "the Surface offers no usable format for the request";
     case PresentationError::no_supported_present_mode:
       return "the Surface offers no usable present mode for the request";
+    case PresentationError::no_selectable_candidate:
+      return "no physical device can present to the Surface for the request";
     case PresentationError::allocation_failed:
       return "allocation failed";
     }
@@ -374,4 +376,118 @@ void requirePresentationDevice(PhysicalDeviceRequirements &requirements) {
               presentation_device_extension);
 }
 
+auto classifySurfaceCandidate(const PhysicalDeviceEvaluation &requirements,
+                              const SurfaceSupport &support, const PresentationRequest &request)
+    -> terreate::Result<SurfaceCandidateEvaluation> {
+  try {
+    SurfaceCandidateEvaluation out;
+    out.requirements = requirements;
+    // Resolve first so that an invalid request is reported for every candidate
+    // alike, whether or not it would have been declined earlier.
+    auto resolved = resolvePresentation(support, request);
+    std::optional<PresentationError> error;
+    if (!resolved) {
+      const auto &code = resolved.error().code();
+      if (code.category() != presentation_error_category())
+        return std::unexpected(resolved.error());
+      error = static_cast<PresentationError>(code.value());
+      if (error == PresentationError::allocation_failed ||
+          error == PresentationError::invalid_request)
+        return std::unexpected(resolved.error());
+    }
+    if (!requirements.matches) {
+      out.outcome = SurfaceCandidateOutcome::requirements_not_met;
+      return out;
+    }
+    out.support = support;
+    if (!support.canPresent()) {
+      out.outcome = SurfaceCandidateOutcome::cannot_present;
+      return out;
+    }
+    if (error) {
+      out.outcome = SurfaceCandidateOutcome::presentation_unresolved;
+      out.presentation_error = error;
+      return out;
+    }
+    out.outcome = SurfaceCandidateOutcome::selectable;
+    out.resolution = std::move(*resolved);
+    return out;
+  } catch (const std::bad_alloc &) {
+    return std::unexpected(terreate::Error{make_error_code(PresentationError::allocation_failed)});
+  }
+}
+
+auto evaluateSurfaceCandidates(const Instance &instance,
+                               std::span<const PhysicalDeviceCandidate> candidates,
+                               const Surface &surface,
+                               const PhysicalDeviceRequirements &requirements,
+                               const PresentationRequest &request)
+    -> terreate::Result<std::vector<SurfaceCandidateEvaluation>> {
+  try {
+    auto required = requirements;
+    requirePresentationDevice(required);
+    std::vector<SurfaceCandidateEvaluation> out;
+    out.reserve(candidates.size());
+    for (const auto &candidate : candidates) {
+      const auto evaluation = evaluatePhysicalDevice(candidate, required);
+      if (!evaluation)
+        return std::unexpected(evaluation.error());
+      SurfaceSupport support;
+      if (evaluation->matches) {
+        auto observed = querySurfaceSupport(instance, candidate, surface);
+        if (!observed)
+          return std::unexpected(observed.error());
+        support = std::move(*observed);
+      }
+      auto classified = classifySurfaceCandidate(*evaluation, support, request);
+      if (!classified)
+        return std::unexpected(classified.error());
+      classified->enumeration_index = candidate.enumerationIndex();
+      out.push_back(std::move(*classified));
+    }
+    return out;
+  } catch (const std::bad_alloc &) {
+    return std::unexpected(terreate::Error{make_error_code(PresentationError::allocation_failed)});
+  }
+}
+
+auto selectSurfacePhysicalDevice(const Instance &instance,
+                                 std::span<const PhysicalDeviceCandidate> candidates,
+                                 const Surface &surface,
+                                 const PhysicalDeviceRequirements &requirements,
+                                 const PresentationRequest &request,
+                                 const PhysicalDeviceSelectionPolicy &policy)
+    -> terreate::Result<SurfaceSelection> {
+  try {
+    auto evaluations =
+        evaluateSurfaceCandidates(instance, candidates, surface, requirements, request);
+    if (!evaluations)
+      return std::unexpected(evaluations.error());
+    std::vector<PhysicalDeviceCandidate> selectable;
+    selectable.reserve(candidates.size());
+    for (std::size_t i = 0; i < candidates.size(); ++i)
+      if ((*evaluations)[i].selectable())
+        selectable.push_back(candidates[i]);
+    if (selectable.empty())
+      return std::unexpected(fail(PresentationError::no_selectable_candidate,
+                                  "selectSurfacePhysicalDevice",
+                                  "no candidate meets the requirements and can present"));
+    auto required = requirements;
+    requirePresentationDevice(required);
+    auto selected = selectPhysicalDevice(selectable, required, policy);
+    if (!selected)
+      return std::unexpected(selected.error());
+    for (std::size_t i = 0; i < evaluations->size(); ++i) {
+      if ((*evaluations)[i].selectable() &&
+          (*evaluations)[i].enumeration_index == selected->candidate.enumerationIndex()) {
+        return SurfaceSelection{std::move(*selected), i, std::move(*evaluations)};
+      }
+    }
+    return std::unexpected(fail(PresentationError::no_selectable_candidate,
+                                "selectSurfacePhysicalDevice",
+                                "the selected candidate has no evaluation"));
+  } catch (const std::bad_alloc &) {
+    return std::unexpected(terreate::Error{make_error_code(PresentationError::allocation_failed)});
+  }
+}
 } // namespace terreate::graphics
