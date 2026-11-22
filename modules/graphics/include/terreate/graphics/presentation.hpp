@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -32,6 +33,10 @@ enum class PresentationError : std::uint8_t {
   no_supported_format,
   no_supported_present_mode,
   allocation_failed,
+  /// No candidate is selectable for the Surface (see `evaluateSurfaceCandidates`).
+  no_selectable_candidate,
+  /// A library invariant was broken (a defect, not a usage error).
+  internal_inconsistency,
 };
 
 [[nodiscard]] const std::error_category &presentation_error_category() noexcept;
@@ -171,6 +176,92 @@ struct PresentationResolution {
 /// (deduplicated; an optional entry is promoted to required). May throw
 /// std::bad_alloc, in which case the extension is still listed as before.
 void requirePresentationDevice(PhysicalDeviceRequirements &requirements);
+
+/// Why a candidate is, or is not, usable for presenting to one Surface.
+enum class SurfaceCandidateOutcome : std::uint8_t {
+  /// It meets the device requirements and `resolvePresentation` succeeded.
+  selectable,
+  /// It does not meet the device requirements (which include VK_KHR_swapchain);
+  /// the Surface was not queried for it.
+  requirements_not_met,
+  /// No queue family of the device can present to the Surface.
+  cannot_present,
+  /// It can present but the request cannot be satisfied; `presentation_error`
+  /// says which resolution step failed.
+  presentation_unresolved,
+};
+
+/// One candidate's evaluation for one Surface. A declined candidate is data, not
+/// an error: the others stay usable.
+struct SurfaceCandidateEvaluation {
+  /// Matches `PhysicalDeviceCandidate::enumerationIndex()`.
+  std::size_t enumeration_index = 0;
+  PhysicalDeviceEvaluation requirements{};
+  /// Empty when the Surface was not queried (`requirements_not_met`).
+  SurfaceSupport support{};
+  SurfaceCandidateOutcome outcome = SurfaceCandidateOutcome::requirements_not_met;
+  /// Set only for `presentation_unresolved`.
+  std::optional<PresentationError> presentation_error{};
+  /// Set only for `selectable`.
+  std::optional<PresentationResolution> resolution{};
+
+  [[nodiscard]] bool selectable() const noexcept {
+    return outcome == SurfaceCandidateOutcome::selectable;
+  }
+};
+
+/// Pure classification of one candidate from its device-requirement evaluation
+/// and its Surface observation; no native call. `enumeration_index` is copied into
+/// the result. A decline is a value; an invalid `request` (invalid_request) or an
+/// allocation failure (allocation_failed) is an error, reported even for a
+/// candidate the requirements decline.
+[[nodiscard]] auto classifySurfaceCandidate(std::size_t enumeration_index,
+                                            const PhysicalDeviceEvaluation &requirements,
+                                            const SurfaceSupport &support,
+                                            const PresentationRequest &request)
+    -> terreate::Result<SurfaceCandidateEvaluation>;
+
+/// Evaluate every candidate for `surface`, in the order given. `requirements` is
+/// copied and VK_KHR_swapchain is required on the copy (see
+/// `requirePresentationDevice`). A candidate that fails the requirements is not
+/// queried. A native query failure for a candidate that is queried (for example
+/// VK_ERROR_SURFACE_LOST_KHR) fails the whole call; it is not recorded as a
+/// decline, since the Surface itself is then in doubt. `invalid_request` from
+/// `request`, or from two candidates sharing an enumeration index, is returned as
+/// an error (also for an empty list), not recorded per candidate.
+[[nodiscard]] auto evaluateSurfaceCandidates(const Instance &instance,
+                                             std::span<const PhysicalDeviceCandidate> candidates,
+                                             const Surface &surface,
+                                             const PhysicalDeviceRequirements &requirements,
+                                             const PresentationRequest &request)
+    -> terreate::Result<std::vector<SurfaceCandidateEvaluation>>;
+
+/// The selected candidate and why, with every candidate's evaluation.
+struct SurfaceSelection {
+  PhysicalDeviceSelection selection;
+  /// Index into `evaluations` of the selected candidate.
+  std::size_t selected_evaluation = 0;
+  std::vector<SurfaceCandidateEvaluation> evaluations{};
+
+  [[nodiscard]] const SurfaceCandidateEvaluation &chosen() const {
+    return evaluations[selected_evaluation];
+  }
+};
+
+/// Evaluate the candidates for `surface` and select one through the existing
+/// `selectPhysicalDevice` policy over the selectable ones only (zero selectable:
+/// `no_selectable_candidate`; several and no policy: `ambiguous_match`, as for
+/// `selectPhysicalDevice`; enumeration order is never a fallback). The result's
+/// `chosen().resolution` feeds `applyPresentation`. Use
+/// `evaluateSurfaceCandidates` to see why candidates were declined when this
+/// fails.
+[[nodiscard]] auto selectSurfacePhysicalDevice(const Instance &instance,
+                                               std::span<const PhysicalDeviceCandidate> candidates,
+                                               const Surface &surface,
+                                               const PhysicalDeviceRequirements &requirements,
+                                               const PresentationRequest &request,
+                                               const PhysicalDeviceSelectionPolicy &policy = {})
+    -> terreate::Result<SurfaceSelection>;
 
 } // namespace terreate::graphics
 
