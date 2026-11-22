@@ -35,6 +35,8 @@ enum class PresentationError : std::uint8_t {
   allocation_failed,
   /// No candidate is selectable for the Surface (see `evaluateSurfaceCandidates`).
   no_selectable_candidate,
+  /// A library invariant was broken (a defect, not a usage error).
+  internal_inconsistency,
 };
 
 [[nodiscard]] const std::error_category &presentation_error_category() noexcept;
@@ -209,10 +211,12 @@ struct SurfaceCandidateEvaluation {
 };
 
 /// Pure classification of one candidate from its device-requirement evaluation
-/// and its Surface observation; no native call. `enumeration_index` is left 0 for
-/// the caller to set. An exception-free decline for each outcome; only an
-/// allocation failure is an error (allocation_failed).
-[[nodiscard]] auto classifySurfaceCandidate(const PhysicalDeviceEvaluation &requirements,
+/// and its Surface observation; no native call. `enumeration_index` is copied into
+/// the result. A decline is a value; an invalid `request` (invalid_request) or an
+/// allocation failure (allocation_failed) is an error, reported even for a
+/// candidate the requirements decline.
+[[nodiscard]] auto classifySurfaceCandidate(std::size_t enumeration_index,
+                                            const PhysicalDeviceEvaluation &requirements,
                                             const SurfaceSupport &support,
                                             const PresentationRequest &request)
     -> terreate::Result<SurfaceCandidateEvaluation>;
@@ -223,7 +227,8 @@ struct SurfaceCandidateEvaluation {
 /// queried. A native query failure for a candidate that is queried (for example
 /// VK_ERROR_SURFACE_LOST_KHR) fails the whole call; it is not recorded as a
 /// decline, since the Surface itself is then in doubt. `invalid_request` from
-/// `request` is returned as an error, not recorded per candidate.
+/// `request`, or from two candidates sharing an enumeration index, is returned as
+/// an error (also for an empty list), not recorded per candidate.
 [[nodiscard]] auto evaluateSurfaceCandidates(const Instance &instance,
                                              std::span<const PhysicalDeviceCandidate> candidates,
                                              const Surface &surface,

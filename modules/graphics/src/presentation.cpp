@@ -29,6 +29,8 @@ public:
       return "the Surface offers no usable format for the request";
     case PresentationError::no_supported_present_mode:
       return "the Surface offers no usable present mode for the request";
+    case PresentationError::internal_inconsistency:
+      return "internal inconsistency in presentation selection";
     case PresentationError::no_selectable_candidate:
       return "no physical device can present to the Surface for the request";
     case PresentationError::allocation_failed:
@@ -376,11 +378,13 @@ void requirePresentationDevice(PhysicalDeviceRequirements &requirements) {
               presentation_device_extension);
 }
 
-auto classifySurfaceCandidate(const PhysicalDeviceEvaluation &requirements,
+auto classifySurfaceCandidate(std::size_t enumeration_index,
+                              const PhysicalDeviceEvaluation &requirements,
                               const SurfaceSupport &support, const PresentationRequest &request)
     -> terreate::Result<SurfaceCandidateEvaluation> {
   try {
     SurfaceCandidateEvaluation out;
+    out.enumeration_index = enumeration_index;
     out.requirements = requirements;
     // Resolve first so that an invalid request is reported for every candidate
     // alike, whether or not it would have been declined earlier.
@@ -424,6 +428,20 @@ auto evaluateSurfaceCandidates(const Instance &instance,
                                const PresentationRequest &request)
     -> terreate::Result<std::vector<SurfaceCandidateEvaluation>> {
   try {
+    // Validate the request once, even for an empty candidate list or when every
+    // candidate is declined earlier (an empty support reaches the request checks
+    // of resolvePresentation first). Do not remove this as redundant.
+    if (auto probe = resolvePresentation(SurfaceSupport{}, request); !probe) {
+      const auto &code = probe.error().code();
+      if (code != make_error_code(PresentationError::no_present_queue_family))
+        return std::unexpected(probe.error());
+    }
+    for (std::size_t i = 0; i < candidates.size(); ++i)
+      for (std::size_t j = i + 1; j < candidates.size(); ++j)
+        if (candidates[i].enumerationIndex() == candidates[j].enumerationIndex())
+          return std::unexpected(fail(PresentationError::invalid_request,
+                                      "evaluateSurfaceCandidates",
+                                      "candidates must have distinct enumeration indices"));
     auto required = requirements;
     requirePresentationDevice(required);
     std::vector<SurfaceCandidateEvaluation> out;
@@ -439,10 +457,10 @@ auto evaluateSurfaceCandidates(const Instance &instance,
           return std::unexpected(observed.error());
         support = std::move(*observed);
       }
-      auto classified = classifySurfaceCandidate(*evaluation, support, request);
+      auto classified =
+          classifySurfaceCandidate(candidate.enumerationIndex(), *evaluation, support, request);
       if (!classified)
         return std::unexpected(classified.error());
-      classified->enumeration_index = candidate.enumerationIndex();
       out.push_back(std::move(*classified));
     }
     return out;
@@ -483,7 +501,7 @@ auto selectSurfacePhysicalDevice(const Instance &instance,
         return SurfaceSelection{std::move(*selected), i, std::move(*evaluations)};
       }
     }
-    return std::unexpected(fail(PresentationError::no_selectable_candidate,
+    return std::unexpected(fail(PresentationError::internal_inconsistency,
                                 "selectSurfacePhysicalDevice",
                                 "the selected candidate has no evaluation"));
   } catch (const std::bad_alloc &) {

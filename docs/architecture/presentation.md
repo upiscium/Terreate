@@ -95,7 +95,11 @@ selected, several need an explicit UUID or UUID order (`ambiguous_match`, never
 enumeration order), none is `no_selectable_candidate`. The result keeps every
 evaluation; `chosen().resolution` goes to `applyPresentation`. When selection
 fails, call `evaluateSurfaceCandidates` to see why each candidate was declined.
+Candidates must have distinct `enumerationIndex()` values (one inventory, each
+candidate once), else `invalid_request`; the Surface must belong to `instance`,
+as for `querySurfaceSupport`.
+
 ## Not in this change
 
-Swapchain creation and recreation, and
-`VK_KHR_get_surface_capabilities2` / extended color spaces.
+Swapchain creation and recreation, and `VK_KHR_get_surface_capabilities2` /
+extended color spaces.

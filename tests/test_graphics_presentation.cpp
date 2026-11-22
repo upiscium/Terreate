@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -303,24 +304,24 @@ int cpuTest() {
     failing.matches = false;
     using Outcome = SurfaceCandidateOutcome;
 
-    const auto selectable = classifySurfaceCandidate(matching, support(), {});
+    const auto selectable = classifySurfaceCandidate(0, matching, support(), {});
     check(selectable && selectable->outcome == Outcome::selectable && selectable->selectable() &&
               selectable->resolution.has_value() && !selectable->presentation_error,
           "a presenting candidate that meets the requirements is selectable");
 
-    const auto unmet = classifySurfaceCandidate(failing, support(), {});
+    const auto unmet = classifySurfaceCandidate(0, failing, support(), {});
     check(unmet && unmet->outcome == Outcome::requirements_not_met && !unmet->resolution &&
               !unmet->support.canPresent(),
           "a candidate that fails the requirements is declined without a Surface observation");
 
-    const auto none = classifySurfaceCandidate(matching, SurfaceSupport{}, {});
+    const auto none = classifySurfaceCandidate(0, matching, SurfaceSupport{}, {});
     check(none && none->outcome == Outcome::cannot_present && !none->selectable(),
           "a candidate that cannot present is declined");
 
     auto no_graphics = support();
     for (auto &family : no_graphics.present_queue_families)
       family.flags = vk::QueueFlagBits::eTransfer;
-    const auto unresolved = classifySurfaceCandidate(matching, no_graphics, {});
+    const auto unresolved = classifySurfaceCandidate(0, matching, no_graphics, {});
     check(unresolved && unresolved->outcome == Outcome::presentation_unresolved &&
               unresolved->presentation_error == Error::no_present_queue_family,
           "a presenting candidate the request cannot satisfy records why");
@@ -329,17 +330,19 @@ int cpuTest() {
     required_format.preferred_formats = {
         vk::SurfaceFormatKHR{vk::Format::eR16G16B16A16Sfloat, vk::ColorSpaceKHR::eSrgbNonlinear}};
     required_format.require_preferred_format = true;
-    const auto format = classifySurfaceCandidate(matching, support(), required_format);
+    const auto format = classifySurfaceCandidate(0, matching, support(), required_format);
     check(format && format->outcome == Outcome::presentation_unresolved &&
               format->presentation_error == Error::no_supported_format,
           "an unsupported required format declines the candidate");
 
     PresentationRequest invalid;
     invalid.queue_caller_id.clear();
-    check(hasError(classifySurfaceCandidate(matching, support(), invalid), Error::invalid_request),
-          "an invalid request is an error, not a per-candidate decline");
-    check(hasError(classifySurfaceCandidate(failing, support(), invalid), Error::invalid_request),
-          "an invalid request is reported even for a candidate the requirements decline");
+    check(
+        hasError(classifySurfaceCandidate(0, matching, support(), invalid), Error::invalid_request),
+        "an invalid request is an error, not a per-candidate decline");
+    check(
+        hasError(classifySurfaceCandidate(0, failing, support(), invalid), Error::invalid_request),
+        "an invalid request is reported even for a candidate the requirements decline");
   }
 
   if (failures != 0)
@@ -626,6 +629,18 @@ int gpuTest() {
                                                impossible, policy),
                    Error::no_selectable_candidate),
           "no candidate can meet an impossible required format");
+    // A bad request is an error even with no candidates, and a candidate given
+    // twice is rejected.
+    PresentationRequest nameless;
+    nameless.queue_caller_id.clear();
+    check(hasError(evaluateSurfaceCandidates(*instance, std::span<const PhysicalDeviceCandidate>{},
+                                             *surface, base, nameless),
+                   Error::invalid_request),
+          "an invalid request is reported for an empty candidate list");
+    const std::vector<PhysicalDeviceCandidate> twice{inventory->front(), inventory->front()};
+    check(hasError(evaluateSurfaceCandidates(*instance, twice, *surface, base, {}),
+                   Error::invalid_request),
+          "a candidate given twice is rejected");
   }
   // Destroy in lifetime order: Device, then Surfaces (before the Instances).
   {
