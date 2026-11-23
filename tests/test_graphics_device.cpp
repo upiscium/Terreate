@@ -669,6 +669,90 @@ void emit_runtime_marker(const char *marker) {
                                   }),
                    "Vulkan 1.2 capability boundary did not decline optional aggregate 1.3 feature");
 
+  // VK_KHR_swapchain_maintenance1: an extension feature with the same mask
+  // semantics, decision records and prerequisite rule as the core families.
+  {
+    auto maintenance1_capabilities = capabilities;
+    maintenance1_capabilities.extensions.push_back("VK_KHR_swapchain_maintenance1");
+    std::ranges::sort(maintenance1_capabilities.extensions);
+    maintenance1_capabilities.swapchain_maintenance1_available = true;
+    maintenance1_capabilities.swapchain_maintenance1.swapchainMaintenance1 = VK_TRUE;
+    DeviceDescription maintenance1;
+    maintenance1.queue_requests.push_back(queue_request(
+        "maintenance1", RequirementStrength::required, vk::QueueFlagBits::eGraphics, 0));
+
+    result = resolveDevice(maintenance1_capabilities, maintenance1);
+    passed &= check(result.has_value() &&
+                        result->enabledSwapchainMaintenance1().swapchainMaintenance1 == VK_FALSE,
+                    "a supported but unrequested swapchainMaintenance1 was implicitly enabled");
+
+    maintenance1.required_swapchain_maintenance1.swapchainMaintenance1 = VK_TRUE;
+    result = resolveDevice(maintenance1_capabilities, maintenance1);
+    passed &= check(!result &&
+                        result.error().code() ==
+                            make_error_code(DeviceError::contradictory_requirements),
+                    "swapchainMaintenance1 without its extension request was not rejected");
+
+    maintenance1.required_extensions = {"VK_KHR_swapchain_maintenance1"};
+    result = resolveDevice(maintenance1_capabilities, maintenance1);
+    passed &= check(
+        result.has_value() && result->enabledSwapchainMaintenance1().swapchainMaintenance1 == VK_TRUE &&
+            result->enabledSwapchainMaintenance1().pNext == nullptr &&
+            std::ranges::any_of(
+                result->featureDecisions(),
+                [](const auto &decision) {
+                  return decision.version == DeviceFeatureVersion::extension &&
+                         decision.structure == "VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR" &&
+                         decision.member == "swapchainMaintenance1" &&
+                         decision.strength == RequirementStrength::required &&
+                         decision.outcome == DeviceDecisionOutcome::accepted && decision.effective;
+                }),
+        "a requested supported swapchainMaintenance1 was not enabled with a decision record");
+
+    auto unsupported = maintenance1_capabilities;
+    unsupported.swapchain_maintenance1.swapchainMaintenance1 = VK_FALSE;
+    result = resolveDevice(unsupported, maintenance1);
+    passed &= check(!result &&
+                        result.error().code() ==
+                            make_error_code(DeviceError::unsupported_required_feature),
+                    "an unsupported required swapchainMaintenance1 was accepted");
+    auto unavailable = maintenance1_capabilities;
+    unavailable.swapchain_maintenance1_available = false;
+    result = resolveDevice(unavailable, maintenance1);
+    passed &= check(!result &&
+                        result.error().code() ==
+                            make_error_code(DeviceError::unsupported_required_feature),
+                    "a swapchainMaintenance1 query that was not available was treated as supported");
+
+    DeviceDescription optional_maintenance1;
+    optional_maintenance1.queue_requests = maintenance1.queue_requests;
+    optional_maintenance1.optional_swapchain_maintenance1.swapchainMaintenance1 = VK_TRUE;
+    result = resolveDevice(unsupported, optional_maintenance1);
+    passed &= check(
+        result.has_value() && result->enabledSwapchainMaintenance1().swapchainMaintenance1 == VK_FALSE &&
+            std::ranges::any_of(result->featureDecisions(),
+                                [](const auto &decision) {
+                                  return decision.version == DeviceFeatureVersion::extension &&
+                                         decision.outcome == DeviceDecisionOutcome::declined &&
+                                         !decision.supported && !decision.effective;
+                                }),
+        "an unsupported optional swapchainMaintenance1 did not decline cleanly");
+
+    auto overlapping = maintenance1;
+    overlapping.optional_swapchain_maintenance1.swapchainMaintenance1 = VK_TRUE;
+    result = resolveDevice(maintenance1_capabilities, overlapping);
+    passed &= check(!result &&
+                        result.error().code() ==
+                            make_error_code(DeviceError::contradictory_requirements),
+                    "swapchainMaintenance1 required and optional at once was not rejected");
+
+    auto borrowed = maintenance1;
+    vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR chained{};
+    borrowed.required_swapchain_maintenance1.pNext = &chained;
+    result = resolveDevice(maintenance1_capabilities, borrowed);
+    passed &= check(!result, "a borrowed pNext on the swapchainMaintenance1 request was accepted");
+  }
+
   auto variable_pointer_capabilities = capabilities;
   variable_pointer_capabilities.features_11.variablePointers = VK_TRUE;
   variable_pointer_capabilities.features_11.variablePointersStorageBuffer = VK_TRUE;
@@ -919,6 +1003,22 @@ template <typename NativeHandle>
   }
   const auto &candidate = inventory->front();
   bool passed = true;
+  // The swapchain maintenance1 feature snapshot exists exactly when the device lists
+  // the extension and a Properties2 path exists.
+  for (const auto &entry : *inventory) {
+    const auto &entry_capabilities = entry.capabilities();
+    const bool lists_extension =
+        std::ranges::find(entry_capabilities.extensions, std::string{"VK_KHR_swapchain_maintenance1"}) !=
+        entry_capabilities.extensions.end();
+    passed &= check(entry_capabilities.swapchain_maintenance1_available ==
+                        (lists_extension && entry_capabilities.properties2_available),
+                    "the swapchainMaintenance1 snapshot does not match the device extension list");
+    passed &= check(!entry_capabilities.swapchain_maintenance1_available ||
+                        (entry_capabilities.swapchain_maintenance1.sType ==
+                             vk::StructureType::ePhysicalDeviceSwapchainMaintenance1FeaturesKHR &&
+                         entry_capabilities.swapchain_maintenance1.pNext == nullptr),
+                    "the swapchainMaintenance1 snapshot has a bad sType or a pNext");
+  }
   const auto empty_queue_plan = resolveDevice(candidate, DeviceDescription{});
   passed &= check(!empty_queue_plan &&
                       empty_queue_plan.error().code() ==

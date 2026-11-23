@@ -159,6 +159,12 @@ struct PhysicalDeviceCapabilities {
   /// VK_EXT_memory_budget was not reported or the memory-properties2 query
   /// was not available for the parent instance API.
   std::optional<vk::PhysicalDeviceMemoryBudgetPropertiesEXT> memory_budget{};
+
+  /// VK_KHR_swapchain_maintenance1 feature observation. Available only when the
+  /// device lists the extension and a Properties2 query path exists; the value
+  /// is a pNext-free copy and is never interpreted as an enable request.
+  bool swapchain_maintenance1_available = false;
+  vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchain_maintenance1{};
 };
 
 /// A query result item: the borrowed native view is correlated with the

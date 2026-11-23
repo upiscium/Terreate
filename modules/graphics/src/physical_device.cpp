@@ -595,6 +595,29 @@ terreate::Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &i
         capabilities.memory_budget = memory_budget;
       }
 
+      if (capabilities.properties2_available &&
+          query_availability.properties2_route != detail::PhysicalDeviceQueryRoute::unavailable &&
+          has_name(capabilities.extensions, VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME)) {
+        vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR maintenance1{};
+        detail::dispatch_physical_device_query(
+            query_availability.properties2_route,
+            [&] {
+              const auto chain =
+                  get_features2<detail::PhysicalDeviceQueryRoute::core, vk::PhysicalDeviceFeatures2,
+                                vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR>(native);
+              maintenance1 = chain.get<vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR>();
+            },
+            [&] {
+              const auto chain =
+                  get_features2<detail::PhysicalDeviceQueryRoute::khr, vk::PhysicalDeviceFeatures2,
+                                vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR>(native);
+              maintenance1 = chain.get<vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR>();
+            });
+        maintenance1.pNext = nullptr;
+        capabilities.swapchain_maintenance1 = maintenance1;
+        capabilities.swapchain_maintenance1_available = true;
+      }
+
       const vk::PhysicalDevice native_handle{native};
       inventory.append(
           PhysicalDeviceCandidate{PhysicalDevice{native_handle, instance.implementation_.get()},

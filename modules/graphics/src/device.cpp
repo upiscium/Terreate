@@ -97,6 +97,9 @@ using FeatureField12 =
 using FeatureField13 =
     FeatureField<vk::PhysicalDeviceVulkan13Features,
                  decltype(vk::PhysicalDeviceVulkan13Features::robustImageAccess)>;
+using FeatureFieldSwapchainMaintenance1 =
+    FeatureField<vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR,
+                 decltype(vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR::swapchainMaintenance1)>;
 
 #define TERREATE_FEATURE_FIELD(type, member) FeatureField##type{#member, &vk::PhysicalDevice##type##Features::member}
 
@@ -244,6 +247,15 @@ constexpr std::array feature_fields_13{
     FeatureField13{"maintenance4", &vk::PhysicalDeviceVulkan13Features::maintenance4},
 };
 
+constexpr std::array feature_fields_swapchain_maintenance1{
+    FeatureFieldSwapchainMaintenance1{
+        "swapchainMaintenance1",
+        &vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR::swapchainMaintenance1},
+};
+
+inline constexpr const char *swapchain_maintenance1_structure =
+    "VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR";
+
 #undef TERREATE_FEATURE_FIELD
 
 template <typename Struct, typename Fields>
@@ -330,6 +342,8 @@ struct MergedFeatureMasks {
   vk::PhysicalDeviceVulkan12Features optional_12{};
   vk::PhysicalDeviceVulkan13Features required_13{};
   vk::PhysicalDeviceVulkan13Features optional_13{};
+  vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR required_swapchain_maintenance1{};
+  vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR optional_swapchain_maintenance1{};
 };
 
 enum class FeatureRequestFailureKind : std::uint8_t {
@@ -388,6 +402,11 @@ merge_feature_requests(const DeviceDescription &description, MergedFeatureMasks 
     return validate_feature_struct(features, feature_fields_13, label,
                                   vk::StructureType::ePhysicalDeviceVulkan13Features);
   };
+  const auto check_maintenance1 = [&](const auto &features, std::string_view label) {
+    return validate_feature_struct(
+        features, feature_fields_swapchain_maintenance1, label,
+        vk::StructureType::ePhysicalDeviceSwapchainMaintenance1FeaturesKHR);
+  };
 
   if (const auto error = check10(description.required_features, "1.0")) {
     return FeatureRequestFailure{.kind = FeatureRequestFailureKind::invalid_chain,
@@ -433,10 +452,29 @@ merge_feature_requests(const DeviceDescription &description, MergedFeatureMasks 
   merge_feature_values(masks.required_13, description.required_features_13, feature_fields_13);
   merge_feature_values(masks.optional_13, description.optional_features_13, feature_fields_13);
 
+  if (const auto error =
+          check_maintenance1(description.required_swapchain_maintenance1, "swapchain maintenance1")) {
+    return FeatureRequestFailure{.kind = FeatureRequestFailureKind::invalid_chain,
+                                 .detail = *error};
+  }
+  if (const auto error =
+          check_maintenance1(description.optional_swapchain_maintenance1, "swapchain maintenance1")) {
+    return FeatureRequestFailure{.kind = FeatureRequestFailureKind::invalid_chain,
+                                 .detail = *error};
+  }
+  merge_feature_values(masks.required_swapchain_maintenance1,
+                       description.required_swapchain_maintenance1,
+                       feature_fields_swapchain_maintenance1);
+  merge_feature_values(masks.optional_swapchain_maintenance1,
+                       description.optional_swapchain_maintenance1,
+                       feature_fields_swapchain_maintenance1);
+
   if (has_overlap(masks.required_10, masks.optional_10, feature_fields_10) ||
       has_overlap(masks.required_11, masks.optional_11, feature_fields_11) ||
       has_overlap(masks.required_12, masks.optional_12, feature_fields_12) ||
-      has_overlap(masks.required_13, masks.optional_13, feature_fields_13)) {
+      has_overlap(masks.required_13, masks.optional_13, feature_fields_13) ||
+      has_overlap(masks.required_swapchain_maintenance1, masks.optional_swapchain_maintenance1,
+                  feature_fields_swapchain_maintenance1)) {
     return FeatureRequestFailure{
         .kind = FeatureRequestFailureKind::contradictory,
         .detail = "a Vulkan feature was declared both required and optional",
@@ -499,6 +537,14 @@ validate_capability_feature_snapshots(const PhysicalDeviceCapabilities &capabili
   if (capabilities.features2.pNext != nullptr || capabilities.features_11.pNext != nullptr ||
       capabilities.features_12.pNext != nullptr || capabilities.features_13.pNext != nullptr) {
     return "physical-device feature snapshots must have null pNext members";
+  }
+  if (capabilities.swapchain_maintenance1_available &&
+      (capabilities.swapchain_maintenance1.sType !=
+           vk::StructureType::ePhysicalDeviceSwapchainMaintenance1FeaturesKHR ||
+       capabilities.swapchain_maintenance1.pNext != nullptr ||
+       has_invalid_boolean(capabilities.swapchain_maintenance1,
+                           feature_fields_swapchain_maintenance1))) {
+    return "the swapchain maintenance1 feature snapshot is invalid";
   }
   if (has_invalid_boolean(capabilities.features_10, feature_fields_10) ||
       (capabilities.features_11_available &&
@@ -1370,6 +1416,11 @@ resolve_queues(const PhysicalDeviceCapabilities &capabilities,
   return has_requested_feature(features, feature_fields_13);
 }
 
+[[nodiscard]] bool
+has_any_enabled(const vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR &features) noexcept {
+  return has_requested_feature(features, feature_fields_swapchain_maintenance1);
+}
+
 struct CanonicalExtensionRequest {
   std::map<std::string, RequirementStrength> requirements{};
 };
@@ -1443,6 +1494,7 @@ struct ResolvedDeviceData {
   vk::PhysicalDeviceVulkan11Features enabled_features_11{};
   vk::PhysicalDeviceVulkan12Features enabled_features_12{};
   vk::PhysicalDeviceVulkan13Features enabled_features_13{};
+  vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR enabled_swapchain_maintenance1{};
   std::vector<DeviceFeatureDecision> feature_decisions{};
   std::vector<DeviceExtensionDecision> extension_decisions{};
   std::vector<DeviceQueueDecision> queue_decisions{};
@@ -1520,12 +1572,16 @@ resolve_device_impl(const PhysicalDevice &physical_device,
   vk::PhysicalDeviceVulkan11Features enabled11{};
   vk::PhysicalDeviceVulkan12Features enabled12{};
   vk::PhysicalDeviceVulkan13Features enabled13{};
+  vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR enabled_maintenance1{};
   canonical_feature_header(enabled11, vk::StructureType::ePhysicalDeviceVulkan11Features,
                            feature_fields_11);
   canonical_feature_header(enabled12, vk::StructureType::ePhysicalDeviceVulkan12Features,
                            feature_fields_12);
   canonical_feature_header(enabled13, vk::StructureType::ePhysicalDeviceVulkan13Features,
                            feature_fields_13);
+  canonical_feature_header(enabled_maintenance1,
+                           vk::StructureType::ePhysicalDeviceSwapchainMaintenance1FeaturesKHR,
+                           feature_fields_swapchain_maintenance1);
   std::vector<DeviceFeatureDecision> feature_decisions;
   std::optional<std::string> required_feature_failure;
    append_feature_decisions(DeviceFeatureVersion::vulkan_1_0, "VkPhysicalDeviceFeatures",
@@ -1566,9 +1622,31 @@ resolve_device_impl(const PhysicalDevice &physical_device,
                             requested_features.optional_13,
                             input_capabilities.features_13, input_capabilities.features_13_available,
                             feature_fields_13, enabled13, feature_decisions, required_feature_failure);
+   append_feature_decisions(DeviceFeatureVersion::extension, swapchain_maintenance1_structure,
+                            RequirementStrength::required,
+                            requested_features.required_swapchain_maintenance1,
+                            input_capabilities.swapchain_maintenance1,
+                            input_capabilities.swapchain_maintenance1_available,
+                            feature_fields_swapchain_maintenance1, enabled_maintenance1,
+                            feature_decisions, required_feature_failure);
+   append_feature_decisions(DeviceFeatureVersion::extension, swapchain_maintenance1_structure,
+                            RequirementStrength::optional,
+                            requested_features.optional_swapchain_maintenance1,
+                            input_capabilities.swapchain_maintenance1,
+                            input_capabilities.swapchain_maintenance1_available,
+                            feature_fields_swapchain_maintenance1, enabled_maintenance1,
+                            feature_decisions, required_feature_failure);
   if (required_feature_failure) {
     return fail<ResolvedDeviceData>(DeviceError::unsupported_required_feature,
                                     "resolve Vulkan device", *required_feature_failure);
+  }
+  if (enabled_maintenance1.swapchainMaintenance1 == VK_TRUE &&
+      std::ranges::find(enabled_extensions, std::string{VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME}) ==
+          enabled_extensions.end()) {
+    return fail<ResolvedDeviceData>(
+        DeviceError::contradictory_requirements, "resolve Vulkan device",
+        "swapchainMaintenance1 requires the device extension VK_KHR_swapchain_maintenance1 to be "
+        "explicitly requested and enabled as a mandatory Vulkan prerequisite");
   }
   if (enabled11.variablePointers == VK_TRUE && enabled11.variablePointersStorageBuffer != VK_TRUE) {
     return fail<ResolvedDeviceData>(
@@ -1618,6 +1696,8 @@ resolve_device_impl(const PhysicalDevice &physical_device,
   requested_snapshot.optional_features_12.pNext = nullptr;
   requested_snapshot.required_features_13.pNext = nullptr;
   requested_snapshot.optional_features_13.pNext = nullptr;
+  requested_snapshot.required_swapchain_maintenance1.pNext = nullptr;
+  requested_snapshot.optional_swapchain_maintenance1.pNext = nullptr;
 
   return ResolvedDeviceData{
       .requested = std::move(requested_snapshot),
@@ -1629,6 +1709,7 @@ resolve_device_impl(const PhysicalDevice &physical_device,
       .enabled_features_11 = enabled11,
       .enabled_features_12 = enabled12,
       .enabled_features_13 = enabled13,
+      .enabled_swapchain_maintenance1 = enabled_maintenance1,
       .feature_decisions = std::move(feature_decisions),
       .extension_decisions = std::move(extension_decisions),
       .queue_decisions = std::move(queue_decisions),
@@ -1670,6 +1751,9 @@ validate_native_plan(const Instance &instance, const DevicePlan &plan) {
       plan.requested().optional_features_12.pNext != nullptr ||
       plan.requested().required_features_13.pNext != nullptr ||
       plan.requested().optional_features_13.pNext != nullptr ||
+      plan.requested().required_swapchain_maintenance1.pNext != nullptr ||
+      plan.requested().optional_swapchain_maintenance1.pNext != nullptr ||
+      plan.enabledSwapchainMaintenance1().pNext != nullptr ||
       plan.enabledFeatures11().pNext != nullptr || plan.enabledFeatures12().pNext != nullptr ||
       plan.enabledFeatures13().pNext != nullptr) {
     return "DevicePlan contains a borrowed feature pNext pointer";
@@ -1729,6 +1813,7 @@ terreate::Result<DevicePlan> resolveDevice(const PhysicalDeviceCandidate &candid
                     resolved->enabled_features_11,
                     resolved->enabled_features_12,
                     resolved->enabled_features_13,
+                    resolved->enabled_swapchain_maintenance1,
                     std::move(resolved->feature_decisions),
                     std::move(resolved->extension_decisions),
                     std::move(resolved->queue_decisions),
@@ -1753,6 +1838,7 @@ terreate::Result<DevicePlan> resolveDevice(const PhysicalDeviceCapabilities &cap
                     resolved->enabled_features_11,
                     resolved->enabled_features_12,
                     resolved->enabled_features_13,
+                    resolved->enabled_swapchain_maintenance1,
                     std::move(resolved->feature_decisions),
                     std::move(resolved->extension_decisions),
                     std::move(resolved->queue_decisions),
@@ -1952,12 +2038,19 @@ terreate::Result<Device> createDevice(const Instance &instance, const DevicePlan
   vk::PhysicalDeviceVulkan11Features features11 = plan.enabledFeatures11();
   vk::PhysicalDeviceVulkan12Features features12 = plan.enabledFeatures12();
   vk::PhysicalDeviceVulkan13Features features13 = plan.enabledFeatures13();
+  vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR maintenance1 =
+      plan.enabledSwapchainMaintenance1();
+  maintenance1.pNext = nullptr;
   features11.pNext = nullptr;
   features12.pNext = nullptr;
   features13.pNext = nullptr;
 
   void *feature_chain = nullptr;
+  if (has_any_enabled(maintenance1)) {
+    feature_chain = &maintenance1;
+  }
   if (has_any_enabled(features13)) {
+    features13.pNext = feature_chain;
     feature_chain = &features13;
   }
   if (has_any_enabled(features12)) {
