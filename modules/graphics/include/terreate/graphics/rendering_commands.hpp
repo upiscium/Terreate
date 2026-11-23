@@ -16,6 +16,9 @@
 
 namespace terreate::graphics {
 
+class Swapchain;
+class SwapchainImage;
+
 enum class RenderingCommandError : std::uint8_t {
   invalid_device = 1,
   invalid_command_buffer,
@@ -56,6 +59,18 @@ struct RenderingAttachmentDescription {
   vk::AttachmentLoadOp load_op = vk::AttachmentLoadOp::eLoad;
   vk::AttachmentStoreOp store_op = vk::AttachmentStoreOp::eStore;
   vk::ClearValue clear_value{};
+  /// Alternative to `image` and `view`, for a color attachment that is a Swapchain
+  /// image: set both `swapchain` and `swapchain_image` and leave `image` and
+  /// `view` null (mixing the two forms is `invalid_attachment`). Both are borrowed
+  /// only during recordBeginRendering. The image must belong to `swapchain`
+  /// (`Swapchain::owns`, so an image of a retired or other generation is
+  /// `invalid_attachment`), the Swapchain's usage must include color attachment,
+  /// the image must have a view, and a Swapchain image is only ever a color
+  /// attachment (never depth or stencil). The extent comes from the image; the
+  /// layer count is limited to the Swapchain's `image_array_layers`. Appended last
+  /// so positional initializers of the first six members keep working.
+  const Swapchain *swapchain = nullptr;
+  const SwapchainImage *swapchain_image = nullptr;
 };
 
 /// Explicit rendering instance: no flags, viewMask 0 and no resolve. Color
