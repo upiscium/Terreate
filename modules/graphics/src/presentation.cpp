@@ -428,6 +428,18 @@ auto evaluateSurfaceCandidates(const Instance &instance,
                                const PresentationRequest &request)
     -> terreate::Result<std::vector<SurfaceCandidateEvaluation>> {
   try {
+    // Parents first, so a wrong Surface or candidate is reported even when no
+    // candidate would be queried (every one declined, or an empty list).
+    if (!instance.valid())
+      return std::unexpected(fail(PresentationError::invalid_instance, "evaluateSurfaceCandidates",
+                                  "moved-from Instance"));
+    if (!surface.correlatedWith(instance))
+      return std::unexpected(fail(PresentationError::parent_mismatch, "evaluateSurfaceCandidates",
+                                  "the Surface belongs to another Instance or was moved from"));
+    for (const auto &candidate : candidates)
+      if (!candidate.device().correlatedWith(instance))
+        return std::unexpected(fail(PresentationError::parent_mismatch, "evaluateSurfaceCandidates",
+                                    "a PhysicalDevice belongs to another Instance"));
     // Validate the request once, even for an empty candidate list or when every
     // candidate is declined earlier (an empty support reaches the request checks
     // of resolvePresentation first). Do not remove this as redundant.

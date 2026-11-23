@@ -82,7 +82,7 @@ and the others stay usable. Its `outcome` says why:
 | `cannot_present` | no queue family can present to the Surface |
 | `presentation_unresolved` | it can present but the request cannot be met; `presentation_error` names the step |
 
-`classifySurfaceCandidate(evaluation, support, request)` is the pure core of this
+`classifySurfaceCandidate(enumeration_index, evaluation, support, request)` is the pure core of this
 decision (no native call). An invalid `request` is an error for the whole call
 and is reported even when every candidate would be declined earlier. A native
 failure while querying a candidate (for example `VK_ERROR_SURFACE_LOST_KHR`) also
@@ -96,7 +96,9 @@ enumeration order), none is `no_selectable_candidate`. The result keeps every
 evaluation; `chosen().resolution` goes to `applyPresentation`. When selection
 fails, call `evaluateSurfaceCandidates` to see why each candidate was declined.
 Candidates must have distinct `enumerationIndex()` values (one inventory, each
-candidate once), else `invalid_request`; the Surface must belong to `instance`,
+candidate once), else `invalid_request`; the Surface and every candidate must belong
+to `instance` (`parent_mismatch`, checked first, also when every candidate would be
+declined or the list is empty),
 as for `querySurfaceSupport`.
 
 ## Not in this change
