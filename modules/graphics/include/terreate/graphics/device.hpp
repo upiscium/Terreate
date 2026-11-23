@@ -103,7 +103,7 @@ struct DeviceDescription {
   /// be enabled without them, resolution fails with `contradictory_requirements`,
   /// like `variablePointers`, even for an optional feature. The physical device
   /// snapshot reports the feature only when the Instance enabled
-  /// `VK_EXT_surface_maintenance1`, which the extension depends on (enable it,
+  /// `VK_KHR_surface_maintenance1`, which the extension depends on (enable it,
   /// with `VK_KHR_get_surface_capabilities2`, in the Instance description).
   /// Appended last so existing initializers keep working.
   vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR required_swapchain_maintenance1{};

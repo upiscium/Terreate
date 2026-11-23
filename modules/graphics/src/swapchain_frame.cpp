@@ -29,6 +29,8 @@ public:
       return "a swapchain function could not be loaded";
     case SwapchainFrameError::allocation_failed:
       return "allocation failed";
+    case SwapchainFrameError::present_fence_not_supported:
+      return "the Device did not enable the swapchainMaintenance1 feature";
     }
     return "unknown swapchain frame error";
   }
@@ -163,6 +165,10 @@ auto presentImage(const Device &device, Queue queue, const Swapchain &swapchain,
     if (!semaphore)
       return std::unexpected(
           fail(SwapchainFrameError::invalid_description, operation, "a wait semaphore is null"));
+  if (description.fence &&
+      device.plan()->enabledSwapchainMaintenance1().swapchainMaintenance1 != VK_TRUE)
+    return std::unexpected(fail(SwapchainFrameError::present_fence_not_supported, operation,
+                                "a present fence needs the swapchainMaintenance1 feature"));
 
   const auto native_device = static_cast<VkDevice>(device.nativeHandle());
   const auto present = loadDevice<PFN_vkQueuePresentKHR>(native_device, "vkQueuePresentKHR");
@@ -184,6 +190,13 @@ auto presentImage(const Device &device, Queue queue, const Swapchain &swapchain,
     info.swapchainCount = 1;
     info.pSwapchains = &native_swapchain;
     info.pImageIndices = &index;
+    VkSwapchainPresentFenceInfoKHR fence_info{VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR};
+    const VkFence native_fence = static_cast<VkFence>(description.fence);
+    if (description.fence) {
+      fence_info.swapchainCount = 1;
+      fence_info.pFences = &native_fence;
+      info.pNext = &fence_info;
+    }
     const VkResult result = present(static_cast<VkQueue>(queue.nativeHandle()), &info);
     const auto status = classifyPresentResult(static_cast<vk::Result>(result));
     if (!status)

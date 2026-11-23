@@ -28,6 +28,9 @@ enum class SwapchainFrameError : std::uint8_t {
   /// A native function could not be loaded from the Device.
   function_unavailable,
   allocation_failed,
+  /// A present fence was given but the Device did not enable the
+  /// swapchainMaintenance1 feature (never ignored).
+  present_fence_not_supported,
 };
 
 [[nodiscard]] const std::error_category &swapchain_frame_error_category() noexcept;
@@ -123,6 +126,18 @@ struct PresentDescription {
   /// An image acquired from this same Swapchain; a copy is fine.
   SwapchainImage image{};
   std::span<const vk::Semaphore> wait_semaphores{};
+  /// Optional present fence (VK_KHR_swapchain_maintenance1). It is signaled when
+  /// this present no longer uses its wait semaphores and its image, which is the
+  /// non-blocking proof the old generation needs before its semaphores can be
+  /// reused and its Swapchain destroyed (see `SwapchainRetirementQueue`). It must
+  /// be unsignaled with no pending operation, belong to the Device, and stay
+  /// untouched (no reset, reuse or destruction) until it is signaled. Setting it
+  /// needs the Device to have enabled the swapchainMaintenance1 feature
+  /// (`DevicePlan::enabledSwapchainMaintenance1()`), else `present_fence_not_supported`.
+  /// If the present returns an error or `out_of_date`, the fence may never be
+  /// signaled: do not rely on it (and do not give it to a retirement queue); keep it
+  /// unused or make sure by other means that the Queue is done before reusing it.
+  vk::Fence fence{};
 };
 
 enum class PresentStatus : std::uint8_t {
