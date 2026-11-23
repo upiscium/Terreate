@@ -133,6 +133,8 @@ struct ValidationRecorder {
       return;
     for (const auto &category : event.categories) {
       if (category == "VALIDATION") {
+        std::fprintf(stderr, "graphics.swapchain_frame: validation message: %s\n",
+                     event.message.c_str());
         warnings_or_errors.fetch_add(1, std::memory_order_relaxed);
         break;
       }
@@ -331,20 +333,21 @@ int gpuTest() {
           "presenting an empty image is stale_image");
   }
 
-  // The application-owned loop: more frames than images, so every image index
-  // is acquired again and its present semaphore is reused only then.
-  const std::size_t frame_count = first->images().size() * 3;
-  std::set<std::uint32_t> seen;
-  std::size_t presented = 0;
-  for (std::size_t frame = 0; frame < frame_count; ++frame) {
+  // One application-owned frame on `chain`: acquire (semaphore and fence), a
+  // native submission that waits for the acquire semaphore and signals the
+  // present semaphore of this image index, present, and wait for the submission
+  // before the acquire semaphore is reused. `slot_offset` selects which
+  // present semaphore a given image index uses.
+  const auto runFrame = [&](const Swapchain &chain, bool probe_null_wait,
+                            std::set<std::uint32_t> *seen_indices) -> bool {
     AcquireDescription acquire;
     acquire.timeout_ns = UINT64_MAX;
     acquire.semaphore = vk::Semaphore{objects.acquire};
     acquire.fence = vk::Fence{objects.acquire_fence};
-    const auto acquired = acquireNextImage(*device, *first, acquire);
+    const auto acquired = acquireNextImage(*device, chain, acquire);
     if (!acquired.has_value() || !acquired->image.has_value()) {
       check(false, "acquire returns a usable image");
-      break;
+      return false;
     }
     const SwapchainImage image = *acquired->image;
     // The acquire fence is signaled once the image is ready; reset it for reuse.
@@ -352,23 +355,24 @@ int gpuTest() {
               VK_SUCCESS,
           "the acquire fence is signaled");
     vkResetFences(native_device, 1, &objects.acquire_fence);
-    if (frame == 0) {
+    if (probe_null_wait) {
       const std::array<vk::Semaphore, 1> null_wait{vk::Semaphore{}};
-      check(hasError(presentImage(*device, queue, *first, PresentDescription{image, null_wait}),
+      check(hasError(presentImage(*device, queue, chain, PresentDescription{image, null_wait}),
                      Error::invalid_description),
             "a null wait semaphore is invalid_description");
     }
-    check(first->owns(image) && (acquired->status == AcquireStatus::acquired ||
-                                 acquired->status == AcquireStatus::acquired_suboptimal),
+    check(chain.owns(image) && (acquired->status == AcquireStatus::acquired ||
+                                acquired->status == AcquireStatus::acquired_suboptimal),
           "the acquired image belongs to this Swapchain");
-    seen.insert(image.index());
+    if (seen_indices != nullptr)
+      seen_indices->insert(image.index());
 
     // Render (here: only the layout transition), waiting for the acquire semaphore.
     vkResetCommandPool(native_device, objects.pool, 0);
     if (!check(recordToPresent(objects.commands, static_cast<VkImage>(image.nativeImage())),
-               "record the frame commands")) {
-      break;
-    }
+               "record the frame commands"))
+      return false;
+    const VkSemaphore render_done = objects.render_done[image.index() % objects.render_done.size()];
     const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.waitSemaphoreCount = 1;
@@ -377,28 +381,38 @@ int gpuTest() {
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &objects.commands;
     submit.signalSemaphoreCount = 1;
-    submit.pSignalSemaphores = &objects.render_done[image.index()];
+    submit.pSignalSemaphores = &render_done;
     if (!check(vkQueueSubmit(static_cast<VkQueue>(queue.nativeHandle()), 1, &submit,
                              objects.fence) == VK_SUCCESS,
-               "native submit")) {
-      break;
-    }
+               "native submit"))
+      return false;
 
-    const std::array<vk::Semaphore, 1> waits{vk::Semaphore{objects.render_done[image.index()]}};
-    const auto result = presentImage(*device, queue, *first, PresentDescription{image, waits});
+    const std::array<vk::Semaphore, 1> waits{vk::Semaphore{render_done}};
+    const auto result = presentImage(*device, queue, chain, PresentDescription{image, waits});
     if (!result.has_value()) {
       check(false, "present succeeds");
-      break;
+      return false;
     }
     check(result->status == PresentStatus::presented ||
               result->status == PresentStatus::presented_suboptimal,
           "present reports presented or suboptimal");
-    ++presented;
     // The acquire semaphore is reused by the next acquire only after the
     // submission that waited on it has completed.
     check(vkWaitForFences(native_device, 1, &objects.fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS,
           "the submission completes");
     vkResetFences(native_device, 1, &objects.fence);
+    return true;
+  };
+
+  // The loop: more frames than images, so every image index is acquired again
+  // and its present semaphore is reused only then (the documented rule).
+  const std::size_t frame_count = first->images().size() * 3;
+  std::set<std::uint32_t> seen;
+  std::size_t presented = 0;
+  for (std::size_t frame = 0; frame < frame_count; ++frame) {
+    if (!runFrame(*first, frame == 0, &seen))
+      break;
+    ++presented;
   }
   check(presented == frame_count, "every frame was presented");
   check(!seen.empty() && seen.size() <= first->images().size(),
@@ -419,6 +433,22 @@ int gpuTest() {
                                   PresentDescription{first->images()[0], no_waits}),
                      Error::stale_image),
             "an image of the old generation is stale_image on the new Swapchain");
+      // The documented rule for a recreation: the old generation's present
+      // semaphores are reused for the new Swapchain only once the Queue is idle
+      // (the same-index proof does not carry over to a retired Swapchain).
+      vkQueueWaitIdle(static_cast<VkQueue>(queue.nativeHandle()));
+      std::set<std::uint32_t> second_seen;
+      std::size_t second_presented = 0;
+      for (std::size_t frame = 0; frame < second->images().size() * 2; ++frame) {
+        if (!runFrame(*second, false, &second_seen))
+          break;
+        ++second_presented;
+      }
+      check(second_presented == second->images().size() * 2,
+            "frames run on the new Swapchain with the old semaphores after a queue idle");
+      // Destroying a Swapchain needs its presented images to be done with: make the
+      // Queue idle before `second` goes out of scope.
+      vkQueueWaitIdle(static_cast<VkQueue>(queue.nativeHandle()));
     }
   }
 
