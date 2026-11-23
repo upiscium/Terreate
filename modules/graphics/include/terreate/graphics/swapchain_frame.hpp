@@ -134,6 +134,9 @@ struct PresentDescription {
   /// untouched (no reset, reuse or destruction) until it is signaled. Setting it
   /// needs the Device to have enabled the swapchainMaintenance1 feature
   /// (`DevicePlan::enabledSwapchainMaintenance1()`), else `present_fence_not_supported`.
+  /// If the present returns an error or `out_of_date`, the fence may never be
+  /// signaled: do not rely on it (and do not give it to a retirement queue); keep it
+  /// unused or make sure by other means that the Queue is done before reusing it.
   vk::Fence fence{};
 };
 

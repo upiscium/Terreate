@@ -20,6 +20,8 @@ public:
       return "the Swapchain, a submission or the queue belong to another Device";
     case SwapchainRetirementError::missing_evidence:
       return "explicit completion evidence required";
+    case SwapchainRetirementError::contradictory_evidence:
+      return "no_pending_present contradicts the declared present fences";
     case SwapchainRetirementError::invalid_fence:
       return "a present fence is null";
     case SwapchainRetirementError::invalid_submission:
@@ -84,9 +86,14 @@ auto SwapchainRetirementQueue::retire(const Device &device, Swapchain &swapchain
   if (!swapchain.correlatedWith(device) || (device_ != VK_NULL_HANDLE && device_ != native_device))
     return std::unexpected(fail(SwapchainRetirementError::parent_mismatch, operation,
                                 "the Swapchain and the queue must share one Device"));
-  if (uses.submissions.empty() && uses.present_fences.empty() && !uses.no_pending_present)
+  // Submission completion is never taken as present completion: the present side
+  // needs fences, or the explicit statement that no present can be pending.
+  if (uses.present_fences.empty() && !uses.no_pending_present)
     return std::unexpected(fail(SwapchainRetirementError::missing_evidence, operation,
-                                "declare submissions or present fences, or no_pending_present"));
+                                "declare present fences, or no_pending_present"));
+  if (!uses.present_fences.empty() && uses.no_pending_present)
+    return std::unexpected(fail(SwapchainRetirementError::contradictory_evidence, operation,
+                                "no_pending_present contradicts the present fences"));
   for (const auto fence : uses.present_fences)
     if (!fence)
       return std::unexpected(

@@ -446,6 +446,95 @@ int gpuTest() {
   check(collected && retirement.pendingCount() == 0 && retirement.requireEmpty().has_value(),
         "the old Swapchain is destroyed once its present fences are signaled, with no wait-idle");
 
+  // The queue with application-made fences: an unsignaled fence keeps its
+  // Swapchain, a signaled one releases it, and only the ready entry goes.
+  {
+    auto surface_d = createSurface(*instance, creator);
+    auto surface_e = createSurface(*instance, creator);
+    auto surface_g = createSurface(*instance, creator);
+    if (!check(surface_d.has_value() && surface_e.has_value() && surface_g.has_value(),
+               "three more headless surfaces"))
+      return EXIT_FAILURE;
+    const auto make = [&](const Surface &surface) -> std::optional<Swapchain> {
+      const auto support = querySurfaceSupport(*instance, *presenting, surface);
+      if (!support)
+        return std::nullopt;
+      const auto resolved = resolveSwapchain(*support, *presentation, request);
+      if (!resolved)
+        return std::nullopt;
+      auto created = createSwapchain(*instance, *device, surface, *resolved);
+      if (!created)
+        return std::nullopt;
+      return std::move(*created);
+    };
+    auto swapchain_d = make(*surface_d);
+    auto swapchain_e = make(*surface_e);
+    auto swapchain_g = make(*surface_g);
+    if (!swapchain_d.has_value() || !swapchain_e.has_value() || !swapchain_g.has_value()) {
+      check(false, "three more Swapchains");
+      return EXIT_FAILURE;
+    }
+
+    VkFence pending_fence = VK_NULL_HANDLE;
+    VkFence ready_fence = VK_NULL_HANDLE;
+    const VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (!check(vkCreateFence(native_device, &fence_info, nullptr, &pending_fence) == VK_SUCCESS &&
+                   vkCreateFence(native_device, &fence_info, nullptr, &ready_fence) == VK_SUCCESS,
+               "two application fences"))
+      return EXIT_FAILURE;
+    const auto native_queue = static_cast<VkQueue>(queue.nativeHandle());
+    const auto signal = [&](VkFence fence) {
+      // An empty submission signals the fence once the Queue's earlier work is done.
+      return vkQueueSubmit(native_queue, 0, nullptr, fence) == VK_SUCCESS &&
+             vkWaitForFences(native_device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+    };
+
+    SwapchainRetirementQueue fence_queue;
+    const std::array<vk::Fence, 1> pending_list{vk::Fence{pending_fence}};
+    const std::array<vk::Fence, 1> ready_list{vk::Fence{ready_fence}};
+    SwapchainRetirementUses pending_uses;
+    pending_uses.present_fences = pending_list;
+    SwapchainRetirementUses ready_uses;
+    ready_uses.present_fences = ready_list;
+    SwapchainRetirementUses never_presented;
+    never_presented.no_pending_present = true;
+    SwapchainRetirementUses contradictory = ready_uses;
+    contradictory.no_pending_present = true;
+
+    check(hasError(fence_queue.retire(*device, next, contradictory),
+                   SwapchainRetirementError::contradictory_evidence) &&
+              next.valid(),
+          "no_pending_present together with fences is contradictory_evidence");
+    check(hasError(fence_queue.retire(*device, next, SwapchainRetirementUses{}),
+                   SwapchainRetirementError::missing_evidence) &&
+              next.valid(),
+          "no fences and no no_pending_present is missing_evidence");
+
+    check(fence_queue.retire(*device, *swapchain_d, pending_uses).has_value() &&
+              fence_queue.retire(*device, *swapchain_e, ready_uses).has_value() &&
+              fence_queue.retire(*device, *swapchain_g, never_presented).has_value() &&
+              fence_queue.pendingCount() == 3,
+          "three entries: an unsignaled fence, a fence to be signaled and no pending present");
+    check(signal(ready_fence), "signal the ready fence");
+    const auto partial = fence_queue.collect(*device);
+    check(partial.has_value() && partial->collected == 2 && partial->pending == 1 &&
+              fence_queue.pendingCount() == 1,
+          "only the entries whose evidence is complete are destroyed; the unsignaled one stays");
+    check(hasError(fence_queue.collect(*plain_device), SwapchainRetirementError::parent_mismatch),
+          "collect with another Device is a parent_mismatch");
+    check(!fence_queue.requireEmpty().has_value(), "a pending queue is not empty");
+    check(signal(pending_fence), "signal the pending fence");
+    const auto final_report = fence_queue.collect(*device);
+    check(final_report.has_value() && final_report->collected == 1 && final_report->pending == 0 &&
+              fence_queue.requireEmpty().has_value(),
+          "the last entry goes once its fence is signaled");
+
+    vkQueueWaitIdle(native_queue);
+    vkDestroyFence(native_device, pending_fence, nullptr);
+    vkDestroyFence(native_device, ready_fence, nullptr);
+    // `surface_d`, `surface_e` and `surface_g` outlive their (collected) Swapchains.
+  }
+
   vkQueueWaitIdle(static_cast<VkQueue>(queue.nativeHandle()));
   objects.release();
   next_objects.release();

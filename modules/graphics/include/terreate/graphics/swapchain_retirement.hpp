@@ -22,6 +22,8 @@ enum class SwapchainRetirementError : std::uint8_t {
   parent_mismatch,
   /// No completion evidence was given and `no_pending_present` was not set.
   missing_evidence,
+  /// `no_pending_present` was set together with present fences.
+  contradictory_evidence,
   invalid_fence,
   invalid_submission,
   pending_entries,
@@ -41,10 +43,16 @@ struct SwapchainRetirementUses {
   /// The present fences (`PresentDescription::fence`, VK_KHR_swapchain_maintenance1)
   /// of every present of its images that may still be pending. Each is owned by
   /// the application and must stay untouched (no reset, reuse or destruction)
-  /// until the Swapchain is collected.
+  /// until the Swapchain is collected. Do not list the fence of a present that
+  /// returned an error or `out_of_date`: it may never be signaled, and the queue
+  /// would keep the Swapchain for ever (a non-empty queue terminates at
+  /// destruction). The application keeps such a fence and decides, by its own
+  /// synchronization, when the Swapchain can go.
   std::span<const vk::Fence> present_fences{};
   /// The application states that no present of this Swapchain can be pending (for
-  /// example it never presented). Without it, an empty evidence set is rejected.
+  /// example it never presented). Without it, present fences are required: a
+  /// submission receipt alone is never taken as present completion. Setting it
+  /// together with present fences is `contradictory_evidence`.
   bool no_pending_present = false;
 };
 
@@ -56,8 +64,14 @@ struct SwapchainRetirementUses {
 /// `recreateSwapchain` is the normal input, so the old generation goes away
 /// without a `vkDeviceWaitIdle`.
 ///
-/// The semaphores of the old generation's images (application-owned) may be
-/// reused or destroyed once their Swapchain has been collected.
+/// The present semaphores of the old generation's images (application-owned) may
+/// be reused or destroyed once their Swapchain has been collected. This covers
+/// presented images only: an image that was acquired and never presented is not
+/// covered (its acquire semaphore or fence stays the application's concern, and
+/// `vkReleaseSwapchainImagesKHR` is not offered here), so retire a Swapchain only
+/// when every image it acquired has been presented. `retire` also accepts a
+/// Swapchain that was not retired by a recreation (for example at shutdown). A
+/// latched device loss stays latched, also after `reclaimAfterDeviceLoss`.
 ///
 /// Destroying a non-empty queue is a fail-fast contract violation, as for
 /// `RetirementQueue`: collect every entry, or use `reclaimAfterDeviceLoss` after
