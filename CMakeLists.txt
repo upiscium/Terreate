@@ -823,6 +823,17 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.swapchain_frame: frames=PASS"
       SKIP_REGULAR_EXPRESSION "graphics\\.swapchain_frame: frames=SKIP"
       FAIL_REGULAR_EXPRESSION "graphics\\.swapchain_frame.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+    # #275: rendering into Swapchain images, with no Platform and no window.
+    add_executable(terreate_graphics_swapchain_rendering_tests
+      tests/test_graphics_swapchain_rendering.cpp)
+    target_link_libraries(terreate_graphics_swapchain_rendering_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_swapchain_rendering_tests)
+    add_test(NAME graphics.swapchain_rendering
+      COMMAND terreate_graphics_swapchain_rendering_tests gpu)
+    set_tests_properties(graphics.swapchain_rendering PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.swapchain_rendering: rendering=PASS"
+      SKIP_REGULAR_EXPRESSION "graphics\\.swapchain_rendering: rendering=SKIP"
+      FAIL_REGULAR_EXPRESSION "graphics\\.swapchain_rendering.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
 
     add_executable(terreate_graphics_rendering_commands_tests
       tests/test_graphics_rendering_commands.cpp)

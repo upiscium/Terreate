@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <terreate/graphics/pipeline_commands.hpp>
+#include <terreate/graphics/swapchain.hpp>
 #include <vulkan/vulkan_format_traits.hpp>
 
 namespace terreate::graphics {
@@ -149,11 +150,51 @@ std::uint32_t viewLayers(const ImageConfiguration &image,
   return range.baseArrayLayer < image.array_layers ? image.array_layers - range.baseArrayLayer : 0U;
 }
 
+// A Swapchain image as a color attachment: see
+// RenderingAttachmentDescription::swapchain.
+auto checkSwapchainAttachment(const Device &device, const RenderingDescription &description,
+                              const RenderingAttachmentDescription &attachment, AttachmentKind kind,
+                              RenderingAttachmentState &state, const char *name)
+    -> terreate::Result<void> {
+  const auto *swapchain = attachment.swapchain;
+  const auto *image = attachment.swapchain_image;
+  if (attachment.image != nullptr || attachment.view != nullptr || swapchain == nullptr ||
+      image == nullptr || kind != AttachmentKind::color || !swapchain->valid() || !image->valid())
+    return fail(RenderingCommandError::invalid_attachment, name);
+  if (!swapchain->correlatedWith(device))
+    return fail(RenderingCommandError::parent_mismatch, name);
+  const auto *config = swapchain->configuration();
+  if (config == nullptr || !swapchain->owns(*image) || !image->nativeImageView() ||
+      !(config->usage & vk::ImageUsageFlagBits::eColorAttachment) ||
+      !allowedLayout(kind, attachment.layout) ||
+      !allowedOps(attachment.load_op, attachment.store_op))
+    return fail(RenderingCommandError::invalid_attachment, name);
+  const vk::Extent2D extent = image->extent();
+  const auto &area = description.render_area;
+  if (std::uint64_t(area.offset.x) + area.extent.width > extent.width ||
+      std::uint64_t(area.offset.y) + area.extent.height > extent.height)
+    return fail(RenderingCommandError::invalid_render_area, name);
+  // The view made for a Swapchain image is a single-layer 2D view whatever the
+  // Swapchain's image_array_layers, so one layer is all that can be rendered.
+  if (description.layer_count > 1)
+    return fail(RenderingCommandError::invalid_layer_count, name);
+  state = {static_cast<VkImageView>(image->nativeImageView()),
+           image->format(),
+           extent,
+           attachment.layout,
+           attachment.load_op,
+           attachment.store_op,
+           attachment.clear_value};
+  return {};
+}
+
 // Validates one attachment against the Device and the rendering instance, and
 // returns its effective pointer-free state.
 auto checkAttachment(const Device &device, const RenderingDescription &description,
                      const RenderingAttachmentDescription &attachment, AttachmentKind kind,
                      RenderingAttachmentState &state, const char *name) -> terreate::Result<void> {
+  if (attachment.swapchain != nullptr || attachment.swapchain_image != nullptr)
+    return checkSwapchainAttachment(device, description, attachment, kind, state, name);
   const auto *image = attachment.image;
   const auto *view = attachment.view;
   if (!image || !view || !image->valid() || !view->valid() || !image->configuration() ||
