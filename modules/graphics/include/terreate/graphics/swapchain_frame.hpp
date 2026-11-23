@@ -39,7 +39,11 @@ enum class SwapchainFrameError : std::uint8_t {
 /// unsignaled and has no pending operation (see the lifetime rules below).
 struct AcquireDescription {
   /// 0 polls and never blocks (`not_ready` when no image is available);
-  /// UINT64_MAX waits without limit. There is no hidden default wait.
+  /// UINT64_MAX waits without limit. There is no hidden default wait. Do not
+  /// wait without limit while the application already holds more acquired,
+  /// not yet presented images than `imageCount - minImageCount` allows
+  /// (VUID-vkAcquireNextImageKHR-swapchain-01802): no image can become
+  /// available and the call would block forever.
   std::uint64_t timeout_ns = 0;
   vk::Semaphore semaphore{};
   vk::Fence fence{};
@@ -51,9 +55,11 @@ enum class AcquireStatus : std::uint8_t {
   /// `image` is set and usable now, but the Swapchain no longer matches the
   /// Surface (VK_SUBOPTIMAL_KHR): recreate when convenient.
   acquired_suboptimal,
-  /// No image: the Swapchain can no longer present to the Surface (VK_ERROR_OUT_OF_DATE_KHR)
-  /// and must be recreated before any further acquire. The semaphore and fence
-  /// were not signaled and stay unsignaled.
+  /// No image: the Swapchain can no longer present to the Surface
+  /// (VK_ERROR_OUT_OF_DATE_KHR) and must be recreated before any further
+  /// acquire. Drivers leave the semaphore and fence unsignaled, but Vulkan does
+  /// not promise it: do not rely on the semaphore or fence afterwards, and wait
+  /// for the device or destroy them before reusing them.
   out_of_date,
   /// No image: the timeout elapsed (VK_TIMEOUT); the semaphore and fence are untouched.
   timeout,
@@ -78,6 +84,14 @@ struct AcquireResult {
   }
 };
 
+/// The pure mapping from a native vkAcquireNextImageKHR result to a status
+/// (success, VK_SUBOPTIMAL_KHR, VK_ERROR_OUT_OF_DATE_KHR, VK_TIMEOUT,
+/// VK_NOT_READY). Any other result is not a status: `acquireNextImage` returns
+/// it as a native error. Also useful when the application calls the native
+/// function itself.
+[[nodiscard]] auto classifyAcquireResult(vk::Result result) noexcept
+    -> std::optional<AcquireStatus>;
+
 /// Acquire the next image of `swapchain`: exactly one vkAcquireNextImageKHR. The
 /// application chooses when to call it and what to do with the result; nothing
 /// is scheduled, retried or waited for beyond `timeout_ns`. Fails, before any
@@ -88,11 +102,17 @@ struct AcquireResult {
 /// that native error, never as a status.
 ///
 /// Synchronization lifetime. The application externally synchronizes the
-/// Swapchain, the semaphore and the fence. After `acquired*` the semaphore will
-/// be signaled and must be waited on (by the submission that renders into the
-/// image) before it is used by another acquire; reuse it only after that wait
-/// has completed. An acquired image must be presented or the Swapchain must be
-/// destroyed; an out-of-date or timed-out acquire acquired nothing.
+/// Swapchain, the semaphore and the fence. The semaphore must be binary,
+/// unsignaled and have no pending operation; the fence must be unsignaled and
+/// have no pending operation (VUID-vkAcquireNextImageKHR-fence-01287). After
+/// `acquired*` the semaphore will be signaled and must be waited on (by the
+/// submission that renders into the image) before another acquire uses it;
+/// reuse it only after that wait has completed. With a fence alone (no
+/// semaphore) the image must not be used until the fence is signaled. An
+/// acquired image must be presented or the Swapchain destroyed; a timed-out or
+/// not-ready acquire acquired nothing and leaves the semaphore and fence
+/// untouched. If the driver reports an impossible image index the call returns a
+/// native error and the semaphore and fence state is then unknown.
 [[nodiscard]] auto acquireNextImage(const Device &device, const Swapchain &swapchain,
                                     const AcquireDescription &description)
     -> terreate::Result<AcquireResult>;
@@ -122,6 +142,12 @@ struct PresentResult {
   }
 };
 
+/// The pure mapping from a native vkQueuePresentKHR result to a status (success,
+/// VK_SUBOPTIMAL_KHR, VK_ERROR_OUT_OF_DATE_KHR). Any other result is returned by
+/// `presentImage` as a native error.
+[[nodiscard]] auto classifyPresentResult(vk::Result result) noexcept
+    -> std::optional<PresentStatus>;
+
 /// Present `description.image` on `queue`: exactly one vkQueuePresentKHR for one
 /// swapchain. Fails, before any native call, with invalid_device, invalid_queue,
 /// invalid_swapchain, parent_mismatch, stale_image (the image does not belong to
@@ -130,15 +156,27 @@ struct PresentResult {
 /// returned as native errors. That the queue family can present to the Surface
 /// is not re-checked here (it was resolved before the Device existed).
 ///
+/// Preconditions the library does not check: the application externally
+/// synchronizes the Queue and the Swapchain; the image was acquired from this
+/// Swapchain, is not already presented, and is in VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+/// when the wait semaphores are signaled (`owns` cannot detect a double
+/// present). With no wait semaphores, ordering the rendering before the present
+/// is entirely the application's job.
+///
 /// Synchronization lifetime. A semaphore waited on by a present may be reused
 /// only after the presentation engine is done with it. Without a present fence
 /// (not offered here) that is known only when the same image index is acquired
-/// again from this Swapchain, which proves the earlier present of that image
-/// has finished waiting. A common safe scheme is one such semaphore per
-/// swapchain image index, reused when that index is acquired again. Never reuse
-/// it earlier, and never destroy it or the Swapchain while a present may still
-/// wait on it (destroying a Swapchain after the GPU is idle for its images is
-/// the application's synchronization).
+/// again from this same Swapchain, which proves the earlier present of that
+/// image has finished waiting. A common safe scheme is one such semaphore per
+/// swapchain image index, reused when that index is acquired again. The proof
+/// is valid only inside one Swapchain: after a recreation the old Swapchain
+/// cannot acquire (it is retired), so the semaphores of its images may be
+/// reused or destroyed only after the old Swapchain is destroyed or the Queue
+/// is idle. If a present returns an error or `out_of_date`, do not assume its
+/// wait semaphores were consumed: treat them like the old generation. Never
+/// destroy a semaphore or the Swapchain while a present may still wait on it
+/// (making the GPU idle for the Swapchain first is the application's
+/// synchronization).
 [[nodiscard]] auto presentImage(const Device &device, Queue queue, const Swapchain &swapchain,
                                 const PresentDescription &description)
     -> terreate::Result<PresentResult>;

@@ -92,6 +92,28 @@ int cpuTest() {
   presented.status = PresentStatus::out_of_date;
   check(presented.recreationNeeded(), "out_of_date needs recreation");
 
+  // The native-to-status mappings (headless surfaces cannot produce every result).
+  check(classifyAcquireResult(vk::Result::eSuccess) == AcquireStatus::acquired &&
+            classifyAcquireResult(vk::Result::eSuboptimalKHR) ==
+                AcquireStatus::acquired_suboptimal &&
+            classifyAcquireResult(vk::Result::eErrorOutOfDateKHR) == AcquireStatus::out_of_date &&
+            classifyAcquireResult(vk::Result::eTimeout) == AcquireStatus::timeout &&
+            classifyAcquireResult(vk::Result::eNotReady) == AcquireStatus::not_ready,
+        "every acquire status maps from its native result");
+  check(!classifyAcquireResult(vk::Result::eErrorSurfaceLostKHR) &&
+            !classifyAcquireResult(vk::Result::eErrorDeviceLost) &&
+            !classifyAcquireResult(vk::Result::eErrorOutOfHostMemory),
+        "a native failure is not an acquire status");
+  check(classifyPresentResult(vk::Result::eSuccess) == PresentStatus::presented &&
+            classifyPresentResult(vk::Result::eSuboptimalKHR) ==
+                PresentStatus::presented_suboptimal &&
+            classifyPresentResult(vk::Result::eErrorOutOfDateKHR) == PresentStatus::out_of_date,
+        "every present status maps from its native result");
+  check(!classifyPresentResult(vk::Result::eErrorSurfaceLostKHR) &&
+            !classifyPresentResult(vk::Result::eErrorDeviceLost) &&
+            !classifyPresentResult(vk::Result::eTimeout),
+        "a native failure is not a present status");
+
   // The default AcquireDescription never waits.
   const AcquireDescription description;
   check(description.timeout_ns == 0 && !description.semaphore && !description.fence,
@@ -141,6 +163,7 @@ struct FrameObjects {
   VkCommandBuffer commands = VK_NULL_HANDLE;
   VkSemaphore acquire = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
+  VkFence acquire_fence = VK_NULL_HANDLE;
   std::vector<VkSemaphore> render_done{};
 
   // Destroy the objects while the Device is still alive; the destructor is a
@@ -151,6 +174,7 @@ struct FrameObjects {
     for (const auto semaphore : render_done)
       vkDestroySemaphore(device, semaphore, nullptr);
     vkDestroyFence(device, fence, nullptr);
+    vkDestroyFence(device, acquire_fence, nullptr);
     vkDestroySemaphore(device, acquire, nullptr);
     vkDestroyCommandPool(device, pool, nullptr);
     device = VK_NULL_HANDLE;
@@ -186,6 +210,8 @@ bool makeObjects(FrameObjects &objects, const FrameSetup &setup) {
     return false;
   const VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   if (vkCreateFence(device, &fence_info, nullptr, &objects.fence) != VK_SUCCESS)
+    return false;
+  if (vkCreateFence(device, &fence_info, nullptr, &objects.acquire_fence) != VK_SUCCESS)
     return false;
   for (std::size_t i = 0; i < image_count; ++i) {
     VkSemaphore semaphore = VK_NULL_HANDLE;
@@ -314,12 +340,24 @@ int gpuTest() {
     AcquireDescription acquire;
     acquire.timeout_ns = UINT64_MAX;
     acquire.semaphore = vk::Semaphore{objects.acquire};
+    acquire.fence = vk::Fence{objects.acquire_fence};
     const auto acquired = acquireNextImage(*device, *first, acquire);
     if (!acquired.has_value() || !acquired->image.has_value()) {
       check(false, "acquire returns a usable image");
       break;
     }
     const SwapchainImage image = *acquired->image;
+    // The acquire fence is signaled once the image is ready; reset it for reuse.
+    check(vkWaitForFences(native_device, 1, &objects.acquire_fence, VK_TRUE, UINT64_MAX) ==
+              VK_SUCCESS,
+          "the acquire fence is signaled");
+    vkResetFences(native_device, 1, &objects.acquire_fence);
+    if (frame == 0) {
+      const std::array<vk::Semaphore, 1> null_wait{vk::Semaphore{}};
+      check(hasError(presentImage(*device, queue, *first, PresentDescription{image, null_wait}),
+                     Error::invalid_description),
+            "a null wait semaphore is invalid_description");
+    }
     check(first->owns(image) && (acquired->status == AcquireStatus::acquired ||
                                  acquired->status == AcquireStatus::acquired_suboptimal),
           "the acquired image belongs to this Swapchain");
@@ -363,7 +401,7 @@ int gpuTest() {
     vkResetFences(native_device, 1, &objects.fence);
   }
   check(presented == frame_count, "every frame was presented");
-  check(seen.size() >= 1 && seen.size() <= first->images().size(),
+  check(!seen.empty() && seen.size() <= first->images().size(),
         "acquired indices stay inside the image list");
 
   // A retired Swapchain cannot acquire; an image of another generation is stale.

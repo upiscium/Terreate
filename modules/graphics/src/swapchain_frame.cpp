@@ -65,6 +65,36 @@ std::error_code make_error_code(SwapchainFrameError error) noexcept {
   return {static_cast<int>(error), swapchain_frame_error_category()};
 }
 
+auto classifyAcquireResult(vk::Result result) noexcept -> std::optional<AcquireStatus> {
+  switch (result) {
+  case vk::Result::eSuccess:
+    return AcquireStatus::acquired;
+  case vk::Result::eSuboptimalKHR:
+    return AcquireStatus::acquired_suboptimal;
+  case vk::Result::eErrorOutOfDateKHR:
+    return AcquireStatus::out_of_date;
+  case vk::Result::eTimeout:
+    return AcquireStatus::timeout;
+  case vk::Result::eNotReady:
+    return AcquireStatus::not_ready;
+  default:
+    return std::nullopt;
+  }
+}
+
+auto classifyPresentResult(vk::Result result) noexcept -> std::optional<PresentStatus> {
+  switch (result) {
+  case vk::Result::eSuccess:
+    return PresentStatus::presented;
+  case vk::Result::eSuboptimalKHR:
+    return PresentStatus::presented_suboptimal;
+  case vk::Result::eErrorOutOfDateKHR:
+    return PresentStatus::out_of_date;
+  default:
+    return std::nullopt;
+  }
+}
+
 auto acquireNextImage(const Device &device, const Swapchain &swapchain,
                       const AcquireDescription &description) -> terreate::Result<AcquireResult> {
   constexpr auto operation = "acquireNextImage";
@@ -96,32 +126,20 @@ auto acquireNextImage(const Device &device, const Swapchain &swapchain,
       acquire(native_device, swapchain.nativeSwapchain(), description.timeout_ns,
               static_cast<VkSemaphore>(description.semaphore),
               static_cast<VkFence>(description.fence), &index);
+  const auto status = classifyAcquireResult(static_cast<vk::Result>(result));
+  if (!status)
+    return std::unexpected(nativeFailure(result, "vkAcquireNextImageKHR", "native acquire failed"));
   AcquireResult out;
   out.native_result = static_cast<vk::Result>(result);
-  switch (result) {
-  case VK_SUCCESS:
-  case VK_SUBOPTIMAL_KHR: {
+  out.status = *status;
+  if (*status == AcquireStatus::acquired || *status == AcquireStatus::acquired_suboptimal) {
     const auto images = swapchain.images();
     if (index >= images.size())
       return std::unexpected(nativeFailure(VK_ERROR_UNKNOWN, "vkAcquireNextImageKHR",
                                            "the driver returned an out-of-range image index"));
-    out.status =
-        result == VK_SUCCESS ? AcquireStatus::acquired : AcquireStatus::acquired_suboptimal;
     out.image = images[index];
-    return out;
   }
-  case VK_ERROR_OUT_OF_DATE_KHR:
-    out.status = AcquireStatus::out_of_date;
-    return out;
-  case VK_TIMEOUT:
-    out.status = AcquireStatus::timeout;
-    return out;
-  case VK_NOT_READY:
-    out.status = AcquireStatus::not_ready;
-    return out;
-  default:
-    return std::unexpected(nativeFailure(result, "vkAcquireNextImageKHR", "native acquire failed"));
-  }
+  return out;
 }
 
 auto presentImage(const Device &device, Queue queue, const Swapchain &swapchain,
@@ -167,21 +185,13 @@ auto presentImage(const Device &device, Queue queue, const Swapchain &swapchain,
     info.pSwapchains = &native_swapchain;
     info.pImageIndices = &index;
     const VkResult result = present(static_cast<VkQueue>(queue.nativeHandle()), &info);
+    const auto status = classifyPresentResult(static_cast<vk::Result>(result));
+    if (!status)
+      return std::unexpected(nativeFailure(result, "vkQueuePresentKHR", "native present failed"));
     PresentResult out;
     out.native_result = static_cast<vk::Result>(result);
-    switch (result) {
-    case VK_SUCCESS:
-      out.status = PresentStatus::presented;
-      return out;
-    case VK_SUBOPTIMAL_KHR:
-      out.status = PresentStatus::presented_suboptimal;
-      return out;
-    case VK_ERROR_OUT_OF_DATE_KHR:
-      out.status = PresentStatus::out_of_date;
-      return out;
-    default:
-      return std::unexpected(nativeFailure(result, "vkQueuePresentKHR", "native present failed"));
-    }
+    out.status = *status;
+    return out;
   } catch (const std::bad_alloc &) {
     return std::unexpected(
         terreate::Error{make_error_code(SwapchainFrameError::allocation_failed)});
