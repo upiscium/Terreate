@@ -797,6 +797,19 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.presentation: presentation=PASS"
       SKIP_REGULAR_EXPRESSION "graphics\\.presentation: presentation=SKIP"
       FAIL_REGULAR_EXPRESSION "graphics\\.presentation.*: (assertion=FAIL|.*BLOCKED)")
+    # #273: explicit Swapchain creation, with no Platform and no window.
+    add_executable(terreate_graphics_swapchain_tests tests/test_graphics_swapchain.cpp)
+    target_link_libraries(terreate_graphics_swapchain_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_swapchain_tests)
+    add_test(NAME graphics.swapchain.cpu COMMAND terreate_graphics_swapchain_tests cpu)
+    set_tests_properties(graphics.swapchain.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.swapchain\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.swapchain.*: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.swapchain COMMAND terreate_graphics_swapchain_tests gpu)
+    set_tests_properties(graphics.swapchain PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.swapchain: swapchain=PASS"
+      SKIP_REGULAR_EXPRESSION "graphics\\.swapchain: swapchain=SKIP"
+      FAIL_REGULAR_EXPRESSION "graphics\\.swapchain.*: (assertion=FAIL|.*BLOCKED)")
 
     add_executable(terreate_graphics_rendering_commands_tests
       tests/test_graphics_rendering_commands.cpp)
