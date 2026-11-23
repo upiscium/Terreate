@@ -232,6 +232,49 @@ private:
                                    const Surface &surface, const SwapchainDescription &description)
     -> terreate::Result<Swapchain>;
 
+enum class RecreationStatus : std::uint8_t {
+  /// `RecreationResult::swapchain` is set; the old Swapchain is now retired.
+  recreated,
+  /// The Surface has no extent right now (for example a minimized window) and
+  /// the request does not give one: nothing was created and the old Swapchain is
+  /// untouched. The application decides when to try again; there is no loop,
+  /// sleep or retry inside the library, so no busy loop can start here.
+  deferred_zero_extent,
+};
+
+struct RecreationResult {
+  RecreationStatus status = RecreationStatus::deferred_zero_extent;
+  /// Set exactly for `recreated`.
+  std::optional<Swapchain> swapchain{};
+};
+
+/// Recreate `old` for `surface`: observe the Surface again (its capabilities,
+/// formats and extent change with the window), re-resolve the presentation and
+/// the Swapchain with the application's own requests, and create the new
+/// Swapchain with `old` as its old Swapchain. The application chooses when to
+/// call it (after a resize, `out_of_date` or `suboptimal`) and when to retry.
+/// There is no `vkDeviceWaitIdle` here and nothing is scheduled or retried.
+///
+/// On `recreated` the old Swapchain is `retired()`: it cannot acquire any more,
+/// images already acquired from it may still be presented, and it (with the
+/// semaphores of its images) may be destroyed only when the application knows
+/// the GPU is done with them (see `presentImage`). A second recreation from the
+/// same retired Swapchain is `old_swapchain_retired`. Recreating one
+/// Swapchain touches no other Swapchain, Surface or Device, so several windows
+/// recreate independently.
+///
+/// Fails with the errors of `querySurfaceSupport`, `resolvePresentation`,
+/// `resolveSwapchain` (except `no_image_extent`, which is the deferred status)
+/// and `createSwapchain`; a native failure (for example
+/// VK_ERROR_SURFACE_LOST_KHR, which needs a new Surface) is returned as that
+/// native error and `old` is untouched.
+[[nodiscard]] auto recreateSwapchain(const Instance &instance, const Device &device,
+                                     const PhysicalDeviceCandidate &candidate,
+                                     const Surface &surface, const Swapchain &old,
+                                     const PresentationRequest &presentation,
+                                     const SwapchainRequest &request)
+    -> terreate::Result<RecreationResult>;
+
 } // namespace terreate::graphics
 
 namespace std {

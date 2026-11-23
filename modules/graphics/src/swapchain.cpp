@@ -384,4 +384,34 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
   }
 }
 
+auto recreateSwapchain(const Instance &instance, const Device &device,
+                       const PhysicalDeviceCandidate &candidate, const Surface &surface,
+                       const Swapchain &old, const PresentationRequest &presentation,
+                       const SwapchainRequest &request) -> terreate::Result<RecreationResult> {
+  constexpr auto operation = "recreateSwapchain";
+  if (!old.valid() || !old.correlatedWith(device) || !old.correlatedWith(surface))
+    return std::unexpected(fail(SwapchainError::parent_mismatch, operation,
+                                "the old Swapchain must be live and share the Device and Surface"));
+  if (old.retired())
+    return std::unexpected(fail(SwapchainError::old_swapchain_retired, operation,
+                                "the old Swapchain was already passed to a creation"));
+  const auto support = querySurfaceSupport(instance, candidate, surface);
+  if (!support)
+    return std::unexpected(support.error());
+  const auto resolution = resolvePresentation(*support, presentation);
+  if (!resolution)
+    return std::unexpected(resolution.error());
+  auto description = resolveSwapchain(*support, *resolution, request);
+  if (!description) {
+    if (description.error().code() == make_error_code(SwapchainError::no_image_extent))
+      return RecreationResult{RecreationStatus::deferred_zero_extent, std::nullopt};
+    return std::unexpected(description.error());
+  }
+  description->old_swapchain = &old;
+  auto created = createSwapchain(instance, device, surface, *description);
+  if (!created)
+    return std::unexpected(created.error());
+  return RecreationResult{RecreationStatus::recreated, std::move(*created)};
+}
+
 } // namespace terreate::graphics
