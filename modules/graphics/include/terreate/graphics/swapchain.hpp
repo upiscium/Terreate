@@ -49,7 +49,8 @@ enum class SwapchainError : std::uint8_t {
 /// resulting `SwapchainDescription` and `SwapchainConfiguration`.
 struct SwapchainRequest {
   /// Used only when the Surface leaves its extent to the Swapchain
-  /// (`currentExtent` is 0xFFFFFFFF); then it is clamped to the supported range
+  /// (`currentExtent` is 0xFFFFFFFF; a defined `currentExtent`, even 0, wins and
+  /// this field is ignored); then it is clamped to the supported range
   /// and a zero extent is `no_image_extent`. A Surface with a defined
   /// `currentExtent` always wins (Vulkan requires it).
   vk::Extent2D extent{};
@@ -71,9 +72,12 @@ struct SwapchainRequest {
 /// The complete, explicit creation input. `resolveSwapchain` fills it from the
 /// observation and the presentation resolution; an application may also write
 /// it by hand. `old_swapchain` is the recreation hook: a borrowed pointer, used
-/// only during `createSwapchain` (it is not retained). It may be passed only once: after a
-/// successful createSwapchain it is `retired()`, and passing it again is `old_swapchain_retired`.
-/// Retiring the old Swapchain and recreating on resize belong to a later change.
+/// only during `createSwapchain` (it is not retained). It may be passed only once:
+/// Vulkan retires it as soon as the native creation is attempted with it, even
+/// if that creation fails, so after such an attempt it is `retired()` and passing
+/// it again is `old_swapchain_retired`. To recover from a failed creation, make
+/// sure the GPU is done with the old Swapchain, destroy it, and create a new
+/// Swapchain without `old_swapchain`. `recreateSwapchain` builds on this hook.
 struct SwapchainDescription {
   vk::SurfaceFormatKHR format{};
   vk::PresentModeKHR present_mode = vk::PresentModeKHR::eFifo;
@@ -174,8 +178,8 @@ struct SwapchainConfiguration {
 /// images. The Device and Surface are borrowed, not retained. Lifetime
 /// contract, not checked: destroy it before its Surface and before its Device,
 /// after the GPU has finished with its images (the caller owns that
-/// synchronization), and do not destroy the images. Acquire, present and
-/// recreation runtime are not part of this type.
+/// synchronization), and do not destroy the images. Acquire and present are in
+/// swapchain_frame.hpp; recreation is `recreateSwapchain` below.
 class Swapchain final {
 public:
   Swapchain() = delete;
@@ -231,6 +235,63 @@ private:
 [[nodiscard]] auto createSwapchain(const Instance &instance, const Device &device,
                                    const Surface &surface, const SwapchainDescription &description)
     -> terreate::Result<Swapchain>;
+
+enum class RecreationStatus : std::uint8_t {
+  /// `RecreationResult::swapchain` is set; the old Swapchain is now retired.
+  recreated,
+  /// The Surface has no extent right now (for example a minimized window) and
+  /// the request does not give one: nothing was created and the old Swapchain is
+  /// untouched. The application decides when to try again; there is no loop,
+  /// sleep or retry inside the library, so no busy loop can start here.
+  deferred_zero_extent,
+};
+
+struct RecreationResult {
+  RecreationStatus status = RecreationStatus::deferred_zero_extent;
+  /// Set exactly for `recreated`.
+  std::optional<Swapchain> swapchain{};
+};
+
+/// Recreate `old` for `surface`: observe the Surface again (its capabilities,
+/// formats and extent change with the window), re-resolve the presentation and
+/// the Swapchain with the application's own requests, and create the new
+/// Swapchain with `old` as its old Swapchain. The application chooses when to
+/// call it (after a resize, `out_of_date` or `suboptimal`) and when to retry.
+/// There is no `vkDeviceWaitIdle` here and nothing is scheduled or retried.
+///
+/// On `recreated` the old Swapchain is `retired()`: it cannot acquire any more,
+/// images already acquired from it may still be presented, and it (with the
+/// semaphores of its images) may be destroyed only when the application knows
+/// the GPU is done with them (see `presentImage`). A second recreation from the
+/// same retired Swapchain is `old_swapchain_retired`. Recreating one
+/// Swapchain touches no other Swapchain, Surface or Device, so several windows
+/// recreate independently.
+///
+/// What may change: the Surface is observed again, so the resolved format, color
+/// space, present mode, extent, image count and the present queue family can
+/// differ from the previous Swapchain (a preference that is not `require_*`
+/// falls back as the default policy says). Compare `configuration()` of the new
+/// Swapchain with the old one (a changed format needs matching pipeline and
+/// attachment formats), or use `require_*` to fail instead. `createSwapchain`
+/// does not re-check that the present queue family can present to the Surface.
+/// `candidate` must be the physical device that `device` was created from (not
+/// checked).
+///
+/// Failure. Errors of `querySurfaceSupport`, `resolvePresentation` and
+/// `resolveSwapchain` are returned before any native creation call, with `old`
+/// untouched; `resolveSwapchain` checks the extent first, so with an empty extent a
+/// different request error shows up only once the extent is available (the
+/// deferred status hides it meanwhile). Once the native creation was attempted
+/// (`createSwapchain`), `old` is retired even if it failed: see
+/// `SwapchainDescription::old_swapchain` for recovery. A native failure such as
+/// VK_ERROR_SURFACE_LOST_KHR is returned as that native error (it needs a new
+/// Surface).
+[[nodiscard]] auto recreateSwapchain(const Instance &instance, const Device &device,
+                                     const PhysicalDeviceCandidate &candidate,
+                                     const Surface &surface, const Swapchain &old,
+                                     const PresentationRequest &presentation,
+                                     const SwapchainRequest &request)
+    -> terreate::Result<RecreationResult>;
 
 } // namespace terreate::graphics
 

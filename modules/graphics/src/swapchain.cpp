@@ -312,6 +312,10 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
     info.oldSwapchain = old != nullptr ? old->swapchain : VK_NULL_HANDLE;
 
     VkSwapchainKHR created = VK_NULL_HANDLE;
+    // Vulkan retires `oldSwapchain` as soon as vkCreateSwapchainKHR is called with it,
+    // even when the creation fails, so record that before the native call.
+    if (description.old_swapchain != nullptr)
+      description.old_swapchain->implementation_->retired = true;
     auto result = create(native_device, &info, nullptr, &created);
     if (result != VK_SUCCESS)
       return std::unexpected(
@@ -320,11 +324,6 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
       return std::unexpected(nativeFailure(VK_ERROR_INITIALIZATION_FAILED, "vkCreateSwapchainKHR",
                                            "native success returned a null swapchain"));
     impl->swapchain = created;
-    // The driver retires the old Swapchain as soon as creation succeeds, whatever
-    // happens to the image views below.
-    if (description.old_swapchain != nullptr)
-      description.old_swapchain->implementation_->retired = true;
-
     std::uint32_t count = 0;
     result = get_images(native_device, created, &count, nullptr);
     if (result != VK_SUCCESS || count == 0)
@@ -382,6 +381,36 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
   } catch (const std::bad_alloc &) {
     return std::unexpected(terreate::Error{make_error_code(SwapchainError::allocation_failed)});
   }
+}
+
+auto recreateSwapchain(const Instance &instance, const Device &device,
+                       const PhysicalDeviceCandidate &candidate, const Surface &surface,
+                       const Swapchain &old, const PresentationRequest &presentation,
+                       const SwapchainRequest &request) -> terreate::Result<RecreationResult> {
+  constexpr auto operation = "recreateSwapchain";
+  if (!old.valid() || !old.correlatedWith(device) || !old.correlatedWith(surface))
+    return std::unexpected(fail(SwapchainError::parent_mismatch, operation,
+                                "the old Swapchain must be live and share the Device and Surface"));
+  if (old.retired())
+    return std::unexpected(fail(SwapchainError::old_swapchain_retired, operation,
+                                "the old Swapchain was already passed to a creation"));
+  const auto support = querySurfaceSupport(instance, candidate, surface);
+  if (!support)
+    return std::unexpected(support.error());
+  const auto resolution = resolvePresentation(*support, presentation);
+  if (!resolution)
+    return std::unexpected(resolution.error());
+  auto description = resolveSwapchain(*support, *resolution, request);
+  if (!description) {
+    if (description.error().code() == make_error_code(SwapchainError::no_image_extent))
+      return RecreationResult{RecreationStatus::deferred_zero_extent, std::nullopt};
+    return std::unexpected(description.error());
+  }
+  description->old_swapchain = &old;
+  auto created = createSwapchain(instance, device, surface, *description);
+  if (!created)
+    return std::unexpected(created.error());
+  return RecreationResult{RecreationStatus::recreated, std::move(*created)};
 }
 
 } // namespace terreate::graphics
