@@ -120,12 +120,9 @@ struct SwapchainImageInit {
 /// detect a view of a retired Swapchain (`Swapchain::owns`).
 class SwapchainImage final {
 public:
+  /// An empty value (`valid()` is false). Only createSwapchain makes a real one,
+  /// so a generation cannot be forged to satisfy `Swapchain::owns`.
   SwapchainImage() noexcept = default;
-  /// Made by the Swapchain; a hand-built value is unrelated to any Swapchain
-  /// (`Swapchain::owns` is false for it) and owns nothing.
-  explicit SwapchainImage(const SwapchainImageInit &init) noexcept
-      : image_(init.image), view_(init.view), index_(init.index), generation_(init.generation),
-        format_(init.format), extent_(init.extent), usage_(init.usage) {}
 
   [[nodiscard]] bool valid() const noexcept { return image_ != VK_NULL_HANDLE; }
   [[nodiscard]] vk::Image nativeImage() const noexcept { return vk::Image{image_}; }
@@ -147,6 +144,13 @@ private:
   vk::Format format_ = vk::Format::eUndefined;
   vk::Extent2D extent_{};
   vk::ImageUsageFlags usage_{};
+
+  explicit SwapchainImage(const SwapchainImageInit &init) noexcept
+      : image_(init.image), view_(init.view), index_(init.index), generation_(init.generation),
+        format_(init.format), extent_(init.extent), usage_(init.usage) {}
+
+  friend auto createSwapchain(const Instance &, const Device &, const Surface &,
+                              const SwapchainDescription &) -> terreate::Result<Swapchain>;
 };
 
 /// The effective state, observable after creation.
@@ -218,10 +222,11 @@ private:
 
 /// Create a Swapchain for `surface` on `device`. Fails, before any native call,
 /// with invalid_instance, parent_mismatch, swapchain_extension_not_enabled,
-/// function_unavailable, invalid_description or, for the old Swapchain, a
-/// parent_mismatch. A native VkResult failure is returned as that native error.
-/// The Device must have been created with the present queue and VK_KHR_swapchain
-/// the presentation resolution asked for (see `applyPresentation`); that the
+/// function_unavailable, invalid_description, parent_mismatch (also for an old
+/// Swapchain of another Device or Surface) or old_swapchain_retired. A native
+/// VkResult failure is returned as that native error. The Device must have been
+/// created with the present queue and the VK_KHR_swapchain requirement that the
+/// presentation resolution produced (see `applyPresentation`); that the
 /// queue family can present to this Surface is not re-checked here.
 [[nodiscard]] auto createSwapchain(const Instance &instance, const Device &device,
                                    const Surface &surface, const SwapchainDescription &description)

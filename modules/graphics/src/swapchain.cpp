@@ -174,6 +174,7 @@ struct Swapchain::Impl {
   VkSurfaceKHR surface = VK_NULL_HANDLE;
   VkSwapchainKHR swapchain = VK_NULL_HANDLE;
   PFN_vkDestroySwapchainKHR destroy_swapchain = nullptr;
+  PFN_vkDestroyImageView destroy_view = nullptr;
   std::uint64_t generation = 0;
   SwapchainConfiguration configuration{};
   std::vector<SwapchainImage> images{};
@@ -182,7 +183,7 @@ struct Swapchain::Impl {
   ~Impl() {
     for (const auto &image : images)
       if (image.nativeImageView())
-        vkDestroyImageView(device, static_cast<VkImageView>(image.nativeImageView()), nullptr);
+        destroy_view(device, static_cast<VkImageView>(image.nativeImageView()), nullptr);
     if (swapchain != VK_NULL_HANDLE && destroy_swapchain != nullptr)
       destroy_swapchain(device, swapchain, nullptr);
   }
@@ -245,6 +246,13 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
       description.image_array_layers == 0 || !description.usage)
     return std::unexpected(fail(SwapchainError::invalid_description, operation,
                                 "format, image count, extent, layers and usage must be set"));
+  {
+    auto families = description.queue_family_indices;
+    std::ranges::sort(families);
+    if (std::ranges::adjacent_find(families) != families.end())
+      return std::unexpected(fail(SwapchainError::invalid_description, operation,
+                                  "queue family indices must be distinct"));
+  }
   if (description.sharing_mode == vk::SharingMode::eConcurrent
           ? description.queue_family_indices.size() < 2
           : !description.queue_family_indices.empty())
@@ -269,7 +277,10 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
       loadDevice<PFN_vkDestroySwapchainKHR>(native_device, "vkDestroySwapchainKHR");
   const auto get_images =
       loadDevice<PFN_vkGetSwapchainImagesKHR>(native_device, "vkGetSwapchainImagesKHR");
-  if (create == nullptr || destroy == nullptr || get_images == nullptr)
+  const auto create_view = loadDevice<PFN_vkCreateImageView>(native_device, "vkCreateImageView");
+  const auto destroy_view = loadDevice<PFN_vkDestroyImageView>(native_device, "vkDestroyImageView");
+  if (create == nullptr || destroy == nullptr || get_images == nullptr || create_view == nullptr ||
+      destroy_view == nullptr)
     return std::unexpected(
         fail(SwapchainError::function_unavailable, operation, "vkGetDeviceProcAddr returned null"));
 
@@ -278,6 +289,7 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
     impl->device = native_device;
     impl->surface = surface.nativeSurface();
     impl->destroy_swapchain = destroy;
+    impl->destroy_view = destroy_view;
     impl->generation = nextGeneration();
 
     VkSwapchainCreateInfoKHR info{};
@@ -340,19 +352,19 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
       view_info.format = info.imageFormat;
       view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
       VkImageView view = VK_NULL_HANDLE;
-      result =
-          create_views ? vkCreateImageView(native_device, &view_info, nullptr, &view) : VK_SUCCESS;
+      result = create_views ? create_view(native_device, &view_info, nullptr, &view) : VK_SUCCESS;
       if (result != VK_SUCCESS)
         return std::unexpected(
             nativeFailure(result, "vkCreateImageView", "swapchain image view creation failed"));
       // Recorded at once, so Impl's destructor releases it on a later failure.
-      impl->images.emplace_back(SwapchainImageInit{.image = native_images[i],
-                                                   .view = view,
-                                                   .index = i,
-                                                   .generation = impl->generation,
-                                                   .format = description.format.format,
-                                                   .extent = description.extent,
-                                                   .usage = description.usage});
+      const SwapchainImage entry{SwapchainImageInit{.image = native_images[i],
+                                                    .view = view,
+                                                    .index = i,
+                                                    .generation = impl->generation,
+                                                    .format = description.format.format,
+                                                    .extent = description.extent,
+                                                    .usage = description.usage}};
+      impl->images.push_back(entry);
     }
 
     auto &configuration = impl->configuration;
