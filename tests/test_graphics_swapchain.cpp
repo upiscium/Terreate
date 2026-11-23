@@ -329,6 +329,10 @@ int gpuTest() {
     bad.sharing_mode = vk::SharingMode::eConcurrent;
     check(hasError(createSwapchain(*instance, *device, *surface, bad), Error::invalid_description),
           "concurrent sharing without families is invalid_description");
+    bad.queue_family_indices = {0, 0};
+    check(hasError(createSwapchain(*instance, *device, *surface, bad), Error::invalid_description),
+          "duplicated concurrent families are invalid_description");
+    check(!SwapchainImage{}.valid(), "a default SwapchainImage is empty");
     check(hasError(createSwapchain(*instance, *device, *other_surface, *swapchain_description),
                    Error::parent_mismatch),
           "a Surface of another Instance is a parent_mismatch");
