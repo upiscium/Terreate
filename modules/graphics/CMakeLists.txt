@@ -147,8 +147,9 @@ target_link_libraries(terreate_graphics_vma_impl PRIVATE
 terreate_configure_target(terreate_graphics_vma_impl)
 
 # Graphics is intentionally independent of Platform.  Vulkan is the first
-# Graphics-owned native dependency; Window/GLFW and Surface presentation remain
-# outside this component; explicit VMA Allocator, Buffer, Image, ImageView and
+# Graphics-owned native dependency; Window/GLFW remain outside this component, while Surface
+# ownership and presentation-support queries (loaded at run time, no extra link
+# dependency) belong to Graphics; explicit VMA Allocator, Buffer, Image, ImageView and
 # Sampler ownership belong to Graphics. The Graphics API below owns
 # logical devices; physical devices remain borrowed from their parent Instance
 # and queues remain borrowed from Device.

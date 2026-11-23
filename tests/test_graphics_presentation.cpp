@@ -641,6 +641,22 @@ int gpuTest() {
     check(hasError(evaluateSurfaceCandidates(*instance, twice, *surface, base, {}),
                    Error::invalid_request),
           "a candidate given twice is rejected");
+    // Parents are checked before any candidate is evaluated, so a Surface of
+    // another Instance is reported even when every candidate is declined.
+    PhysicalDeviceRequirements unmeetable;
+    unmeetable.minimum_api_version = 0xFFFFFFFFU;
+    check(hasError(evaluateSurfaceCandidates(*instance, inventory->candidates(), *other_surface,
+                                             unmeetable, {}),
+                   Error::parent_mismatch),
+          "a Surface of another Instance is a parent_mismatch even if all candidates decline");
+    check(hasError(evaluateSurfaceCandidates(*instance, std::span<const PhysicalDeviceCandidate>{},
+                                             *other_surface, base, {}),
+                   Error::parent_mismatch),
+          "a Surface of another Instance is a parent_mismatch for an empty candidate list");
+    check(hasError(evaluateSurfaceCandidates(*instance, other_inventory->candidates(), *surface,
+                                             unmeetable, {}),
+                   Error::parent_mismatch),
+          "candidates of another Instance are a parent_mismatch even if all decline");
   }
   // Destroy in lifetime order: Device, then Surfaces (before the Instances).
   {
