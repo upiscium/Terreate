@@ -209,6 +209,8 @@ add_library(terreate_graphics STATIC
   include/terreate/graphics/presentation.hpp
   src/swapchain.cpp
   include/terreate/graphics/swapchain.hpp
+  src/swapchain_frame.cpp
+  include/terreate/graphics/swapchain_frame.hpp
   src/graphics.cpp
   src/graphics_diagnostics.cpp
   src/device.cpp
