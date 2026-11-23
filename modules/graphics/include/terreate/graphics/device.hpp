@@ -97,11 +97,15 @@ struct DeviceDescription {
   /// VK_KHR_swapchain_maintenance1 features (present fences and the other
   /// swapchain maintenance additions). Same mask semantics as the other feature
   /// structures: VK_TRUE means requested, a member declared both required and
-  /// optional is a contradiction. Enabling the feature also needs the device
-  /// extension `VK_KHR_swapchain_maintenance1` named in the extension requests
-  /// (resolution fails otherwise, like `variablePointers`), and the Instance
-  /// needs `VK_EXT_surface_maintenance1` to use it with a Surface. Appended last
-  /// so existing initializers keep working.
+  /// optional is a contradiction. Enabling the feature (required or optional) also
+  /// needs the device extensions `VK_KHR_swapchain_maintenance1` and
+  /// `VK_KHR_swapchain` named in the extension requests: when the feature would
+  /// be enabled without them, resolution fails with `contradictory_requirements`,
+  /// like `variablePointers`, even for an optional feature. The physical device
+  /// snapshot reports the feature only when the Instance enabled
+  /// `VK_EXT_surface_maintenance1`, which the extension depends on (enable it,
+  /// with `VK_KHR_get_surface_capabilities2`, in the Instance description).
+  /// Appended last so existing initializers keep working.
   vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR required_swapchain_maintenance1{};
   vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR optional_swapchain_maintenance1{};
 };

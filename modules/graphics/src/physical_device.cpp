@@ -597,7 +597,8 @@ terreate::Result<PhysicalDeviceInventory> queryPhysicalDevices(const Instance &i
 
       if (capabilities.properties2_available &&
           query_availability.properties2_route != detail::PhysicalDeviceQueryRoute::unavailable &&
-          has_name(capabilities.extensions, VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME)) {
+          has_name(capabilities.extensions, VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME) &&
+          instance_ext(*plan, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME)) {
         vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR maintenance1{};
         detail::dispatch_physical_device_query(
             query_availability.properties2_route,

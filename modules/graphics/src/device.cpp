@@ -1640,13 +1640,18 @@ resolve_device_impl(const PhysicalDevice &physical_device,
     return fail<ResolvedDeviceData>(DeviceError::unsupported_required_feature,
                                     "resolve Vulkan device", *required_feature_failure);
   }
-  if (enabled_maintenance1.swapchainMaintenance1 == VK_TRUE &&
-      std::ranges::find(enabled_extensions, std::string{VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME}) ==
-          enabled_extensions.end()) {
-    return fail<ResolvedDeviceData>(
-        DeviceError::contradictory_requirements, "resolve Vulkan device",
-        "swapchainMaintenance1 requires the device extension VK_KHR_swapchain_maintenance1 to be "
-        "explicitly requested and enabled as a mandatory Vulkan prerequisite");
+  if (enabled_maintenance1.swapchainMaintenance1 == VK_TRUE) {
+    const auto has_enabled = [&](const char *name) {
+      return std::ranges::find(enabled_extensions, std::string{name}) != enabled_extensions.end();
+    };
+    if (!has_enabled(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME) ||
+        !has_enabled(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+      return fail<ResolvedDeviceData>(
+          DeviceError::contradictory_requirements, "resolve Vulkan device",
+          "swapchainMaintenance1 requires the device extensions VK_KHR_swapchain_maintenance1 and "
+          "VK_KHR_swapchain to be explicitly requested and enabled as mandatory Vulkan "
+          "prerequisites");
+    }
   }
   if (enabled11.variablePointers == VK_TRUE && enabled11.variablePointersStorageBuffer != VK_TRUE) {
     return fail<ResolvedDeviceData>(

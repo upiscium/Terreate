@@ -674,6 +674,7 @@ void emit_runtime_marker(const char *marker) {
   {
     auto maintenance1_capabilities = capabilities;
     maintenance1_capabilities.extensions.push_back("VK_KHR_swapchain_maintenance1");
+    maintenance1_capabilities.extensions.push_back("VK_KHR_swapchain");
     std::ranges::sort(maintenance1_capabilities.extensions);
     maintenance1_capabilities.swapchain_maintenance1_available = true;
     maintenance1_capabilities.swapchain_maintenance1.swapchainMaintenance1 = VK_TRUE;
@@ -694,6 +695,12 @@ void emit_runtime_marker(const char *marker) {
                     "swapchainMaintenance1 without its extension request was not rejected");
 
     maintenance1.required_extensions = {"VK_KHR_swapchain_maintenance1"};
+    result = resolveDevice(maintenance1_capabilities, maintenance1);
+    passed &= check(!result &&
+                        result.error().code() ==
+                            make_error_code(DeviceError::contradictory_requirements),
+                    "swapchainMaintenance1 without VK_KHR_swapchain was not rejected");
+    maintenance1.required_extensions = {"VK_KHR_swapchain_maintenance1", "VK_KHR_swapchain"};
     result = resolveDevice(maintenance1_capabilities, maintenance1);
     passed &= check(
         result.has_value() && result->enabledSwapchainMaintenance1().swapchainMaintenance1 == VK_TRUE &&
@@ -727,6 +734,28 @@ void emit_runtime_marker(const char *marker) {
     DeviceDescription optional_maintenance1;
     optional_maintenance1.queue_requests = maintenance1.queue_requests;
     optional_maintenance1.optional_swapchain_maintenance1.swapchainMaintenance1 = VK_TRUE;
+    // Supported and the extensions requested: enabled as a supported optional feature.
+    auto optional_with_extensions = optional_maintenance1;
+    optional_with_extensions.optional_extensions = {"VK_KHR_swapchain_maintenance1",
+                                                    "VK_KHR_swapchain"};
+    result = resolveDevice(maintenance1_capabilities, optional_with_extensions);
+    passed &= check(
+        result.has_value() &&
+            result->enabledSwapchainMaintenance1().swapchainMaintenance1 == VK_TRUE &&
+            std::ranges::any_of(result->featureDecisions(),
+                                [](const auto &decision) {
+                                  return decision.version == DeviceFeatureVersion::extension &&
+                                         decision.strength == RequirementStrength::optional &&
+                                         decision.reason == DeviceDecisionReason::supported &&
+                                         decision.effective;
+                                }),
+        "a supported optional swapchainMaintenance1 was not enabled");
+    // Supported but the extensions not requested: not a silent decline, a contradiction.
+    result = resolveDevice(maintenance1_capabilities, optional_maintenance1);
+    passed &= check(!result &&
+                        result.error().code() ==
+                            make_error_code(DeviceError::contradictory_requirements),
+                    "an optional swapchainMaintenance1 without its extensions was not rejected");
     result = resolveDevice(unsupported, optional_maintenance1);
     passed &= check(
         result.has_value() && result->enabledSwapchainMaintenance1().swapchainMaintenance1 == VK_FALSE &&
@@ -1003,16 +1032,17 @@ template <typename NativeHandle>
   }
   const auto &candidate = inventory->front();
   bool passed = true;
-  // The swapchain maintenance1 feature snapshot exists exactly when the device lists
-  // the extension and a Properties2 path exists.
+  // The swapchain maintenance1 feature snapshot never exists without the device
+  // extension and a Properties2 path (it also needs the Instance extension, which
+  // this Instance may not enable).
   for (const auto &entry : *inventory) {
     const auto &entry_capabilities = entry.capabilities();
     const bool lists_extension =
         std::ranges::find(entry_capabilities.extensions, std::string{"VK_KHR_swapchain_maintenance1"}) !=
         entry_capabilities.extensions.end();
-    passed &= check(entry_capabilities.swapchain_maintenance1_available ==
+    passed &= check(!entry_capabilities.swapchain_maintenance1_available ||
                         (lists_extension && entry_capabilities.properties2_available),
-                    "the swapchainMaintenance1 snapshot does not match the device extension list");
+                    "a swapchainMaintenance1 snapshot exists without the device extension");
     passed &= check(!entry_capabilities.swapchain_maintenance1_available ||
                         (entry_capabilities.swapchain_maintenance1.sType ==
                              vk::StructureType::ePhysicalDeviceSwapchainMaintenance1FeaturesKHR &&
