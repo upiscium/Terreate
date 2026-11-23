@@ -339,6 +339,23 @@ int gpuTest() {
           "the old Swapchain is untouched and still renders after a deferred recreation");
   }
 
+  // Failures before any native creation leave the old Swapchain untouched.
+  {
+    check(hasError(recreateSwapchain(*instance, *device, *presenting, *surface_b, *window_a, {},
+                                     request),
+                   SwapchainError::parent_mismatch),
+          "an old Swapchain of another Surface is a parent_mismatch");
+    PresentationRequest impossible;
+    impossible.preferred_formats = {
+        vk::SurfaceFormatKHR{vk::Format::eR64Sfloat, vk::ColorSpaceKHR::eSrgbNonlinear}};
+    impossible.require_preferred_format = true;
+    check(hasError(recreateSwapchain(*instance, *device, *presenting, *surface_a, *window_a,
+                                     impossible, request),
+                   PresentationError::no_supported_format),
+          "an unsatisfiable required format fails before any native creation");
+    check(!window_a->retired(), "those failures left the old Swapchain untouched");
+  }
+
   // Recreate window A with another extent; window B must not notice.
   const auto generation_b = window_b->generation();
   const auto images_b = window_b->images().size();
@@ -412,9 +429,9 @@ int gpuTest() {
   }
 
   check(recorder.warnings_or_errors.load() == 0, "no validation warnings or errors");
-  std::puts("graphics.swapchain_recreation: validation-layer=PASS");
   if (failures != 0)
     return EXIT_FAILURE;
+  std::puts("graphics.swapchain_recreation: validation-layer=PASS");
   std::puts("graphics.swapchain_recreation: recreation=PASS");
   return EXIT_SUCCESS;
 }

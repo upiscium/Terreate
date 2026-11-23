@@ -312,6 +312,10 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
     info.oldSwapchain = old != nullptr ? old->swapchain : VK_NULL_HANDLE;
 
     VkSwapchainKHR created = VK_NULL_HANDLE;
+    // Vulkan retires `oldSwapchain` as soon as vkCreateSwapchainKHR is called with it,
+    // even when the creation fails, so record that before the native call.
+    if (description.old_swapchain != nullptr)
+      description.old_swapchain->implementation_->retired = true;
     auto result = create(native_device, &info, nullptr, &created);
     if (result != VK_SUCCESS)
       return std::unexpected(
@@ -320,11 +324,6 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
       return std::unexpected(nativeFailure(VK_ERROR_INITIALIZATION_FAILED, "vkCreateSwapchainKHR",
                                            "native success returned a null swapchain"));
     impl->swapchain = created;
-    // The driver retires the old Swapchain as soon as creation succeeds, whatever
-    // happens to the image views below.
-    if (description.old_swapchain != nullptr)
-      description.old_swapchain->implementation_->retired = true;
-
     std::uint32_t count = 0;
     result = get_images(native_device, created, &count, nullptr);
     if (result != VK_SUCCESS || count == 0)
