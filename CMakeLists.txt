@@ -810,6 +810,19 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.swapchain: swapchain=PASS"
       SKIP_REGULAR_EXPRESSION "graphics\\.swapchain: swapchain=SKIP"
       FAIL_REGULAR_EXPRESSION "graphics\\.swapchain.*: (assertion=FAIL|.*BLOCKED)")
+    # #274: explicit swapchain image acquire and present, with no Platform and no window.
+    add_executable(terreate_graphics_swapchain_frame_tests tests/test_graphics_swapchain_frame.cpp)
+    target_link_libraries(terreate_graphics_swapchain_frame_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_swapchain_frame_tests)
+    add_test(NAME graphics.swapchain_frame.cpu COMMAND terreate_graphics_swapchain_frame_tests cpu)
+    set_tests_properties(graphics.swapchain_frame.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.swapchain_frame\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.swapchain_frame.*: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.swapchain_frame COMMAND terreate_graphics_swapchain_frame_tests gpu)
+    set_tests_properties(graphics.swapchain_frame PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.swapchain_frame: frames=PASS"
+      SKIP_REGULAR_EXPRESSION "graphics\\.swapchain_frame: frames=SKIP"
+      FAIL_REGULAR_EXPRESSION "graphics\\.swapchain_frame.*: (assertion=FAIL|.*BLOCKED)")
 
     add_executable(terreate_graphics_rendering_commands_tests
       tests/test_graphics_rendering_commands.cpp)
