@@ -36,6 +36,9 @@ enum class SwapchainError : std::uint8_t {
   /// created; try again once the window has an extent.
   no_image_extent,
   allocation_failed,
+  /// The old Swapchain was already passed to a successful createSwapchain (the
+  /// driver retired it; it can be passed only once).
+  old_swapchain_retired,
 };
 
 [[nodiscard]] const std::error_category &swapchain_error_category() noexcept;
@@ -68,8 +71,9 @@ struct SwapchainRequest {
 /// The complete, explicit creation input. `resolveSwapchain` fills it from the
 /// observation and the presentation resolution; an application may also write
 /// it by hand. `old_swapchain` is the recreation hook: a borrowed pointer, used
-/// only during `createSwapchain` (it is not retained). Retiring the old
-/// Swapchain and recreating on resize belong to a later change.
+/// only during `createSwapchain` (it is not retained). It may be passed only once: after a
+/// successful createSwapchain it is `retired()`, and passing it again is `old_swapchain_retired`.
+/// Retiring the old Swapchain and recreating on resize belong to a later change.
 struct SwapchainDescription {
   vk::SurfaceFormatKHR format{};
   vk::PresentModeKHR present_mode = vk::PresentModeKHR::eFifo;
@@ -94,13 +98,6 @@ struct SwapchainDescription {
                                     const SwapchainRequest &request)
     -> terreate::Result<SwapchainDescription>;
 
-/// A plain, copyable, non-owning view of one swapchain image and of the
-/// Swapchain-owned image view created for it. The native Image is owned by the
-/// Swapchain (it is never a VMA allocation and must not be passed to a
-/// destroy path); the image view is owned by the Swapchain too. Both die with
-/// the Swapchain generation that produced them: use after that Swapchain is
-/// destroyed is invalid by contract, like Queue, but `generation()` lets code
-/// detect a view of a retired Swapchain (`Swapchain::owns`).
 /// The values of one swapchain image, named so none can be swapped by mistake.
 struct SwapchainImageInit {
   VkImage image = VK_NULL_HANDLE;
@@ -112,6 +109,15 @@ struct SwapchainImageInit {
   vk::ImageUsageFlags usage{};
 };
 
+/// A plain, copyable, non-owning view of one swapchain image and of the
+/// Swapchain-owned image view created for it. The native Image is owned by the
+/// Swapchain (it is never a VMA allocation and must not be passed to a
+/// destroy path); the image view, when there is one, is owned by the Swapchain too. A view exists
+/// only when `usage` includes a view-capable bit (sampled, storage, color, depth-stencil or input
+/// attachment); a transfer-only Swapchain has none and `nativeImageView()` is null. Both die with
+/// the Swapchain generation that produced them: use after that Swapchain is
+/// destroyed is invalid by contract, like Queue, but `generation()` lets code
+/// detect a view of a retired Swapchain (`Swapchain::owns`).
 class SwapchainImage final {
 public:
   SwapchainImage() noexcept = default;
@@ -191,6 +197,11 @@ public:
   /// True when `image` belongs to this Swapchain (same generation). Use it to
   /// reject an image or view that belongs to a retired Swapchain.
   [[nodiscard]] bool owns(const SwapchainImage &image) const noexcept;
+  /// True once this Swapchain was passed as `old_swapchain` to a successful
+  /// createSwapchain. A retired Swapchain stays valid until the application
+  /// destroys it (after the GPU is done with its images) but cannot be passed
+  /// as `old_swapchain` again.
+  [[nodiscard]] bool retired() const noexcept;
   [[nodiscard]] bool correlatedWith(const Device &device) const noexcept;
   [[nodiscard]] bool correlatedWith(const Surface &surface) const noexcept;
 

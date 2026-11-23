@@ -31,6 +31,8 @@ public:
       return "the Swapchain image extent is zero";
     case SwapchainError::allocation_failed:
       return "allocation failed";
+    case SwapchainError::old_swapchain_retired:
+      return "the old Swapchain was already retired by a successful creation";
     }
     return "unknown swapchain error";
   }
@@ -175,6 +177,7 @@ struct Swapchain::Impl {
   std::uint64_t generation = 0;
   SwapchainConfiguration configuration{};
   std::vector<SwapchainImage> images{};
+  bool retired = false;
 
   ~Impl() {
     for (const auto &image : images)
@@ -211,6 +214,7 @@ std::span<const SwapchainImage> Swapchain::images() const noexcept {
     return {};
   return implementation_->images;
 }
+bool Swapchain::retired() const noexcept { return implementation_ && implementation_->retired; }
 bool Swapchain::owns(const SwapchainImage &image) const noexcept {
   return implementation_ && image.valid() && image.generation() == implementation_->generation;
 }
@@ -253,6 +257,9 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
       return std::unexpected(
           fail(SwapchainError::parent_mismatch, operation,
                "the old Swapchain must be live and share the Device and Surface"));
+    if (description.old_swapchain->retired())
+      return std::unexpected(fail(SwapchainError::old_swapchain_retired, operation,
+                                  "the old Swapchain was already passed to a creation"));
     old = description.old_swapchain->implementation_.get();
   }
 
@@ -298,9 +305,13 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
       return std::unexpected(
           nativeFailure(result, "vkCreateSwapchainKHR", "native swapchain creation failed"));
     if (created == VK_NULL_HANDLE)
-      return std::unexpected(fail(SwapchainError::invalid_description, operation,
-                                  "native success returned a null swapchain"));
+      return std::unexpected(nativeFailure(VK_ERROR_INITIALIZATION_FAILED, "vkCreateSwapchainKHR",
+                                           "native success returned a null swapchain"));
     impl->swapchain = created;
+    // The driver retires the old Swapchain as soon as creation succeeds, whatever
+    // happens to the image views below.
+    if (description.old_swapchain != nullptr)
+      description.old_swapchain->implementation_->retired = true;
 
     std::uint32_t count = 0;
     result = get_images(native_device, created, &count, nullptr);
@@ -315,6 +326,11 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
           nativeFailure(result, "vkGetSwapchainImagesKHR", "image query failed"));
     native_images.resize(count);
 
+    constexpr auto view_usage =
+        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage |
+        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eDepthStencilAttachment |
+        vk::ImageUsageFlagBits::eInputAttachment;
+    const bool create_views = static_cast<bool>(description.usage & view_usage);
     impl->images.reserve(count);
     for (std::uint32_t i = 0; i < count; ++i) {
       VkImageViewCreateInfo view_info{};
@@ -324,7 +340,8 @@ auto createSwapchain(const Instance &instance, const Device &device, const Surfa
       view_info.format = info.imageFormat;
       view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
       VkImageView view = VK_NULL_HANDLE;
-      result = vkCreateImageView(native_device, &view_info, nullptr, &view);
+      result =
+          create_views ? vkCreateImageView(native_device, &view_info, nullptr, &view) : VK_SUCCESS;
       if (result != VK_SUCCESS)
         return std::unexpected(
             nativeFailure(result, "vkCreateImageView", "swapchain image view creation failed"));

@@ -377,10 +377,33 @@ int gpuTest() {
           "the lineage grows and the generation is unique");
     check(!second->owns(first->images().front()) && !first->owns(second->images().front()),
           "an image of another generation is rejected by owns");
+    check(first->retired() && !second->retired(),
+          "the old Swapchain is retired by a successful creation");
+    check(hasError(createSwapchain(*instance, *device, *surface, next_description),
+                   Error::old_swapchain_retired),
+          "a retired Swapchain cannot be passed as old_swapchain again");
     auto stale = Swapchain{std::move(*second)};
     check(!second->valid() && second->images().empty() && !second->owns(stale.images().front()) &&
               second->generation() == 0,
           "a moved-from Swapchain observes nothing");
+  }
+
+  // A transfer-only Swapchain (a blit or readback target) has no image view,
+  // since a view needs a view-capable usage.
+  if (presenting_support.capabilities.supportedUsageFlags & vk::ImageUsageFlagBits::eTransferDst) {
+    SwapchainRequest transfer_request = request;
+    transfer_request.usage = vk::ImageUsageFlagBits::eTransferDst;
+    const auto transfer_description =
+        resolveSwapchain(presenting_support, *presentation, transfer_request);
+    if (check(transfer_description.has_value(), "resolveSwapchain for a transfer-only usage")) {
+      auto transfer = createSwapchain(*instance, *device, *surface, *transfer_description);
+      if (check(transfer.has_value(), "createSwapchain for a transfer-only usage")) {
+        bool no_views = !transfer->images().empty();
+        for (const auto &image : transfer->images())
+          no_views = no_views && image.valid() && !image.nativeImageView();
+        check(no_views, "a transfer-only Swapchain has images and no image views");
+      }
+    }
   }
 
   // Destroy in lifetime order: Swapchains, Device, then Surfaces (before the Instances).
