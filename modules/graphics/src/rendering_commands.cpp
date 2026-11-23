@@ -174,7 +174,9 @@ auto checkSwapchainAttachment(const Device &device, const RenderingDescription &
   if (std::uint64_t(area.offset.x) + area.extent.width > extent.width ||
       std::uint64_t(area.offset.y) + area.extent.height > extent.height)
     return fail(RenderingCommandError::invalid_render_area, name);
-  if (description.layer_count > config->requested.image_array_layers)
+  // The view made for a Swapchain image is a single-layer 2D view whatever the
+  // Swapchain's image_array_layers, so one layer is all that can be rendered.
+  if (description.layer_count > 1)
     return fail(RenderingCommandError::invalid_layer_count, name);
   state = {static_cast<VkImageView>(image->nativeImageView()),
            image->format(),

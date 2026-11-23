@@ -377,7 +377,39 @@ int gpuTest() {
       rendering.render_area = vk::Rect2D{{0, 0}, good.extent()};
       rendering.layer_count = 2;
       check(hasError(recordBeginRendering(*device, *probe, rendering), Error::invalid_layer_count),
-            "more layers than the Swapchain has is invalid_layer_count");
+            "more than one layer is invalid_layer_count (a Swapchain image view has one layer)");
+      rendering.layer_count = 1;
+      rendering.color_attachments = {clearTo(*first, good)};
+      rendering.stencil_attachment = clearTo(*first, good);
+      check(hasError(recordBeginRendering(*device, *probe, rendering), Error::invalid_attachment),
+            "a Swapchain image is never a stencil attachment");
+      rendering.stencil_attachment.reset();
+      // A transfer-only Swapchain has no image view and no color attachment usage.
+      if (presenting_support.capabilities.supportedUsageFlags &
+          vk::ImageUsageFlagBits::eTransferDst) {
+        auto transfer_request = request;
+        transfer_request.usage = vk::ImageUsageFlagBits::eTransferDst;
+        auto transfer_description =
+            resolveSwapchain(presenting_support, *presentation, transfer_request);
+        if (check(transfer_description.has_value(), "resolveSwapchain for transfer usage")) {
+          transfer_description->old_swapchain = &*second;
+          auto third = createSwapchain(*instance, *device, *surface, *transfer_description);
+          if (check(third.has_value(), "createSwapchain for transfer usage")) {
+            rendering.color_attachments = {clearTo(*third, third->images().front())};
+            check(hasError(recordBeginRendering(*device, *probe, rendering),
+                           Error::invalid_attachment),
+                  "a Swapchain without color attachment usage and views is invalid_attachment");
+            const SwapchainImage kept = third->images().front();
+            const Swapchain moved_to{std::move(*third)};
+            // NOLINTNEXTLINE(bugprone-use-after-move): the moved-from state is the test.
+            rendering.color_attachments = {clearTo(*third, kept)};
+            check(hasError(recordBeginRendering(*device, *probe, rendering),
+                           Error::invalid_attachment),
+                  "a moved-from Swapchain is invalid_attachment");
+            vkQueueWaitIdle(static_cast<VkQueue>(queue.nativeHandle()));
+          }
+        }
+      }
       check(probe->end().has_value(), "end the probe CommandBuffer");
     }
     vkQueueWaitIdle(static_cast<VkQueue>(queue.nativeHandle()));

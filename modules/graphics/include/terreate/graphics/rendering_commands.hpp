@@ -63,12 +63,13 @@ struct RenderingAttachmentDescription {
   /// image: set both `swapchain` and `swapchain_image` and leave `image` and
   /// `view` null (mixing the two forms is `invalid_attachment`). Both are borrowed
   /// only during recordBeginRendering. The image must belong to `swapchain`
-  /// (`Swapchain::owns`, so an image of a retired or other generation is
-  /// `invalid_attachment`), the Swapchain's usage must include color attachment,
-  /// the image must have a view, and a Swapchain image is only ever a color
-  /// attachment (never depth or stencil). The extent comes from the image; the
-  /// layer count is limited to the Swapchain's `image_array_layers`. Appended last
-  /// so positional initializers of the first six members keep working.
+  /// (`Swapchain::owns`): an image of another generation is `invalid_attachment`,
+  /// while a retired Swapchain's own image paired with that Swapchain is accepted
+  /// (it is the application's job to use only images it acquired). The Swapchain's
+  /// usage must include color attachment, the image must have a view, and a Swapchain image is only
+  /// ever a color attachment (never depth or stencil). The extent comes from the image; the layer
+  /// count is limited to 1 (the image view made for a Swapchain image has a single layer). Appended
+  /// last so positional initializers of the first six members keep working.
   const Swapchain *swapchain = nullptr;
   const SwapchainImage *swapchain_image = nullptr;
 };
