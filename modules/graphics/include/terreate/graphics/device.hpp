@@ -28,6 +28,9 @@ enum class DeviceFeatureVersion : std::uint8_t {
   vulkan_1_1,
   vulkan_1_2,
   vulkan_1_3,
+  /// A feature structure that belongs to a device extension (see
+  /// `DeviceFeatureDecision::structure`).
+  extension,
 };
 
 /// Queue aliasing is a relation between one request and the request named by
@@ -90,6 +93,21 @@ struct DeviceDescription {
   vk::PhysicalDeviceVulkan13Features optional_features_13{};
 
   std::vector<DeviceQueueRequest> queue_requests{};
+
+  /// VK_KHR_swapchain_maintenance1 features (present fences and the other
+  /// swapchain maintenance additions). Same mask semantics as the other feature
+  /// structures: VK_TRUE means requested, a member declared both required and
+  /// optional is a contradiction. Enabling the feature (required or optional) also
+  /// needs the device extensions `VK_KHR_swapchain_maintenance1` and
+  /// `VK_KHR_swapchain` named in the extension requests: when the feature would
+  /// be enabled without them, resolution fails with `contradictory_requirements`,
+  /// like `variablePointers`, even for an optional feature. The physical device
+  /// snapshot reports the feature only when the Instance enabled
+  /// `VK_EXT_surface_maintenance1`, which the extension depends on (enable it,
+  /// with `VK_KHR_get_surface_capabilities2`, in the Instance description).
+  /// Appended last so existing initializers keep working.
+  vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR required_swapchain_maintenance1{};
+  vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR optional_swapchain_maintenance1{};
 };
 
 enum class DeviceDecisionOutcome : std::uint8_t {
@@ -231,6 +249,11 @@ public:
   [[nodiscard]] const vk::PhysicalDeviceVulkan13Features &enabledFeatures13() const noexcept {
     return data_.enabled_features_13;
   }
+  /// The effective VK_KHR_swapchain_maintenance1 features (sType set, no pNext).
+  [[nodiscard]] const vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR &
+  enabledSwapchainMaintenance1() const noexcept {
+    return data_.enabled_swapchain_maintenance1;
+  }
 
   [[nodiscard]] const std::vector<DeviceFeatureDecision> &featureDecisions() const noexcept {
     return data_.feature_decisions;
@@ -265,6 +288,7 @@ private:
     vk::PhysicalDeviceVulkan11Features enabled_features_11{};
     vk::PhysicalDeviceVulkan12Features enabled_features_12{};
     vk::PhysicalDeviceVulkan13Features enabled_features_13{};
+    vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR enabled_swapchain_maintenance1{};
     std::vector<DeviceFeatureDecision> feature_decisions{};
     std::vector<DeviceExtensionDecision> extension_decisions{};
     std::vector<DeviceQueueDecision> queue_decisions{};
@@ -282,6 +306,7 @@ private:
              vk::PhysicalDeviceVulkan11Features enabled_features_11,
              vk::PhysicalDeviceVulkan12Features enabled_features_12,
              vk::PhysicalDeviceVulkan13Features enabled_features_13,
+             vk::PhysicalDeviceSwapchainMaintenance1FeaturesKHR enabled_swapchain_maintenance1,
              std::vector<DeviceFeatureDecision> feature_decisions,
              std::vector<DeviceExtensionDecision> extension_decisions,
              std::vector<DeviceQueueDecision> queue_decisions,
@@ -299,6 +324,7 @@ private:
     data_.enabled_features_11 = enabled_features_11;
     data_.enabled_features_12 = enabled_features_12;
     data_.enabled_features_13 = enabled_features_13;
+    data_.enabled_swapchain_maintenance1 = enabled_swapchain_maintenance1;
     data_.feature_decisions = std::move(feature_decisions);
     data_.extension_decisions = std::move(extension_decisions);
     data_.queue_decisions = std::move(queue_decisions);
