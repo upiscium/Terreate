@@ -845,6 +845,17 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.swapchain_recreation: recreation=PASS"
       SKIP_REGULAR_EXPRESSION "graphics\\.swapchain_recreation: recreation=SKIP"
       FAIL_REGULAR_EXPRESSION "graphics\\.swapchain_recreation.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+    # #275: old-generation Swapchain retirement with present fences, no Platform and no window.
+    add_executable(terreate_graphics_swapchain_retirement_tests
+      tests/test_graphics_swapchain_retirement.cpp)
+    target_link_libraries(terreate_graphics_swapchain_retirement_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_swapchain_retirement_tests)
+    add_test(NAME graphics.swapchain_retirement
+      COMMAND terreate_graphics_swapchain_retirement_tests gpu)
+    set_tests_properties(graphics.swapchain_retirement PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.swapchain_retirement: retirement=PASS"
+      SKIP_REGULAR_EXPRESSION "graphics\\.swapchain_retirement: retirement=SKIP"
+      FAIL_REGULAR_EXPRESSION "graphics\\.swapchain_retirement.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
 
     add_executable(terreate_graphics_rendering_commands_tests
       tests/test_graphics_rendering_commands.cpp)

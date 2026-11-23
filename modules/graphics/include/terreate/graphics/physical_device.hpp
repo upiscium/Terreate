@@ -162,7 +162,7 @@ struct PhysicalDeviceCapabilities {
 
   /// VK_KHR_swapchain_maintenance1 feature observation. Available only when the
   /// device lists the extension, a Properties2 query path exists and the parent
-  /// Instance enabled VK_EXT_surface_maintenance1 (the extension depends on it, so
+  /// Instance enabled VK_KHR_surface_maintenance1 (the extension depends on it, so
   /// "available" means usable with this Instance). The value is a pNext-free copy
   /// and is never interpreted as an enable request.
   bool swapchain_maintenance1_available = false;
