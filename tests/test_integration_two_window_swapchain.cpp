@@ -6,8 +6,10 @@
 // surface extensions GLFW needs, or when no device can present to both windows.
 // It checks: both windows render and present; resizing one window and
 // recreating its Swapchain leaves the other untouched; the second window keeps
-// rendering after the first is closed and its Swapchain, Surface and Window are
-// destroyed; and the contract that does not prevent a later multi-Device
+// rendering after the first is marked to close and its Swapchain, Surface and
+// Window are destroyed (the close request that a window manager sends is not
+// injected here: GLFW offers no portable way to send it, so only the
+// destruction of one window is tested); and the contract that does not prevent a later multi-Device
 // application (a Swapchain belongs to its own Device, a second Device refuses
 // it). Resizing uses the GLFW window handle (the escape hatch), like the
 // platform tests. The validation layer must be available. No linker or platform
@@ -37,6 +39,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -395,11 +398,19 @@ int nativeTest() {
   // Resize window A only; recreate only A's Swapchain. B must not notice.
   const auto generation_b = swapchain_b->generation();
   const auto extent_b = swapchain_b->configuration()->extent;
+  // Drop events that arrived while the windows were created and shown, so a stale
+  // resize event is not taken for the one asked for below.
+  if (!check(runtime->pollEvents().has_value(), "drain the creation events"))
+    return EXIT_FAILURE;
+  const auto old_size_a = window_a->framebufferSize();
+  if (!check(old_size_a.has_value(), "window A framebuffer size before the resize"))
+    return EXIT_FAILURE;
   glfwSetWindowSize(window_a->nativeHandle(), 400, 300);
   bool resize_seen = false;
   bool resize_seen_on_b = false;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (!resize_seen && std::chrono::steady_clock::now() < deadline) {
+  while (!(resize_seen && window_a->framebufferSize().value_or(*old_size_a) != *old_size_a) &&
+         std::chrono::steady_clock::now() < deadline) {
     const auto batch = runtime->waitEvents(std::chrono::milliseconds(100));
     if (!batch)
       break;
@@ -410,12 +421,16 @@ int nativeTest() {
       }
     }
   }
-  if (!check(resize_seen, "window A reports its resize as an event"))
+  if (!check(resize_seen && window_a->framebufferSize().value_or(*old_size_a) != *old_size_a,
+             "window A reports its resize as an event and its framebuffer size changed"))
     return EXIT_FAILURE;
   check(!resize_seen_on_b, "window B reports no resize");
 
   // The application sees what the resized window does: out_of_date or
-  // suboptimal on the next frames, or neither (the platform may not say).
+  // suboptimal on the next frames, or neither. Whether the platform reports it is
+  // platform-dependent, so it is logged, not asserted (a present that returned
+  // out_of_date is not given another turn: its present semaphore is not assumed
+  // consumed, and the old objects are released only after a queue idle below).
   bool recreation_requested = false;
   const char *recreation_reason = "none";
   for (std::size_t frame = 0; frame < 4 && !recreation_requested; ++frame) {
@@ -521,6 +536,10 @@ int nativeTest() {
   }
   {
     const auto gone = std::move(*window_a);
+  }
+  {
+    // The Instance goes before the count, so a message from its destruction counts.
+    const auto gone = std::move(*instance);
   }
 
   check(recorder.warnings_or_errors.load() == 0, "no validation warnings or errors");
