@@ -20,6 +20,8 @@
 //   --frames N          present N frames, then exit
 //   --resize-at K       ask the window system to resize the window at frame K
 //   --require-validation  fail unless the validation layer is present and silent
+//   --require-resize    needs --resize-at; reports SKIP, never PASS, when the window
+//                       system does not resize the window
 #include <terreate/graphics/command_buffer.hpp>
 #include <terreate/graphics/command_pool.hpp>
 #include <terreate/graphics/completion.hpp>
@@ -76,6 +78,7 @@ namespace integration = terreate::integration::platform_graphics;
 
 struct Options {
   bool require_validation = false;
+  bool require_resize = false;
   std::optional<std::size_t> frames{};
   std::optional<std::size_t> resize_at{};
 };
@@ -110,6 +113,27 @@ struct ValidationSink {
       }
     }
   }
+};
+
+// What the run actually did, counted where each path is taken (nothing is
+// inferred), and printed on one line at the end so a green run says what it covered.
+struct Paths {
+  std::size_t acquire_out_of_date = 0;
+  std::size_t acquire_suboptimal = 0;
+  std::size_t acquire_no_image = 0; // timeout or not_ready
+  std::size_t present_out_of_date = 0;
+  std::size_t present_suboptimal = 0;
+  std::size_t zero_size_waits = 0;
+  std::size_t deferred_zero_extent = 0;
+  std::size_t recreations = 0;
+  std::size_t retired_via_queue = 0;
+  std::size_t retired_via_queue_idle = 0;
+};
+
+struct Outcome {
+  std::size_t presented = 0;
+  // --require-resize was given and the window system did not resize the window.
+  bool resize_skipped = false;
 };
 
 // Everything that belongs to one Swapchain generation. It is dropped (or handed
@@ -166,17 +190,22 @@ bool parseOptions(int argc, char **argv, Options &options) {
         return false;
     } else if (argument == "--require-validation") {
       options.require_validation = true;
+    } else if (argument == "--require-resize") {
+      options.require_resize = true;
     } else {
       return false;
     }
   }
+  // Requiring a resize needs one to be asked for.
+  if (options.require_resize && !options.resize_at)
+    return false;
   // A resize that is asked for after the last frame would never happen.
   if (options.frames && options.resize_at && *options.resize_at >= *options.frames)
     return false;
   return true;
 }
 
-int runApplication(const Options &options, ValidationSink &validation, std::size_t &presented_out) {
+int runApplication(const Options &options, ValidationSink &validation, Outcome &outcome) {
   // ---- Platform: a Runtime and a Window ----
   auto runtime = platform::createRuntime();
   if (!runtime)
@@ -389,6 +418,8 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
   if (!acquire_semaphore || !frame_fence)
     return fail("create the frame synchronization objects");
 
+  Paths paths;
+
   // Whatever happens next, including an early return on an error, this runs
   // before anything it covers is destroyed (it is declared after them): no GPU
   // work may still use the objects, and the retirement queue must be empty
@@ -407,8 +438,11 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
     vkQueueWaitIdle(native_queue);
     // After the idle every present fence is signaled, so one collect drains the
     // queue; a lost device is the only reason it may not.
-    if (const auto collected = retirement.collect(*device); !collected) [[maybe_unused]]
+    const bool collected = retirement.collect(*device).has_value();
+    if (!collected) [[maybe_unused]]
       const auto reclaimed = retirement.reclaimAfterDeviceLoss(*device);
+    std::printf("example.triangle: shutdown retirement=queue-idle drained=%s\n",
+                collected ? "by-collect" : "by-device-loss-reclaim");
     retired.clear();
   };
 
@@ -417,7 +451,9 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
   const auto drop_current = [&]() {
     if (!current)
       return;
+    const char *fallback_reason = "no present fences on this device";
     if (use_present_fences && !current->tainted) {
+      fallback_reason = "the retirement queue refused the generation";
       std::vector<vk::Fence> fences;
       for (std::size_t i = 0; i < current->present_fences.size(); ++i)
         if (current->armed[i])
@@ -426,12 +462,18 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
       uses.present_fences = fences;
       uses.no_pending_present = fences.empty();
       if (retirement.retire(*device, current->swapchain, uses)) {
+        ++paths.retired_via_queue;
+        std::puts("example.triangle: retired generation=queue");
         retired.push_back(
             Retired{std::move(current->render_done), std::move(current->present_fences)});
         current.reset();
         return;
       }
     }
+    if (use_present_fences && current->tainted)
+      fallback_reason = "a present was out_of_date, its fence may never signal";
+    ++paths.retired_via_queue_idle;
+    std::printf("example.triangle: retired generation=queue-idle reason=%s\n", fallback_reason);
     vkQueueWaitIdle(native_queue);
     current.reset();
   };
@@ -482,14 +524,18 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
   vk::Extent2D size_at_resize_request{};
   bool close_requested = false;
   bool needs_recreation = false;
+  bool resize_event_after_request = false;
 
   // Events, from poll or wait alike: nothing the window reports is dropped.
   const auto handle_events = [&](const platform::EventBatch &batch) {
     for (const auto &event : batch.events) {
       if (std::holds_alternative<platform::CloseRequested>(event.data))
         close_requested = true;
-      else if (std::holds_alternative<platform::FramebufferResized>(event.data))
+      else if (std::holds_alternative<platform::FramebufferResized>(event.data)) {
         needs_recreation = true;
+        if (resize_requested)
+          resize_event_after_request = true;
+      }
     }
   };
   // A suboptimal status only asks for a recreation when the Swapchain really has
@@ -544,6 +590,7 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
       return fail("framebuffer size", size);
     if (size->width == 0 || size->height == 0) {
       needs_recreation = true; // the size will differ when the window comes back
+      ++paths.zero_size_waits;
       const auto waited = runtime->waitEvents(std::chrono::milliseconds(100));
       if (!waited)
         return fail("wait for events", waited);
@@ -555,6 +602,7 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
       if (done == Recreated::failed)
         return fail("recreate the Swapchain");
       if (done == Recreated::deferred) {
+        ++paths.deferred_zero_extent;
         const auto waited = runtime->waitEvents(std::chrono::milliseconds(100));
         if (!waited)
           return fail("wait for events", waited);
@@ -563,6 +611,7 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
       }
       needs_recreation = false;
       ++recreations;
+      ++paths.recreations;
     }
 
     // 3. The previous frame must be done before its objects are reused.
@@ -579,12 +628,19 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
     if (!acquired)
       return fail("acquire an image", acquired);
     if (!acquired->image) {
-      if (acquired->status == graphics::AcquireStatus::out_of_date)
+      if (acquired->status == graphics::AcquireStatus::out_of_date) {
+        ++paths.acquire_out_of_date;
         needs_recreation = true;
+      } else {
+        ++paths.acquire_no_image;
+      }
       continue; // out_of_date, timeout or not_ready: nothing was acquired
     }
-    if (acquired->status == graphics::AcquireStatus::acquired_suboptimal && extent_differs())
-      needs_recreation = true;
+    if (acquired->status == graphics::AcquireStatus::acquired_suboptimal) {
+      ++paths.acquire_suboptimal;
+      if (extent_differs())
+        needs_recreation = true;
+    }
     const graphics::SwapchainImage image = *acquired->image;
     const std::size_t index = image.index();
 
@@ -675,11 +731,14 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
     if (!result)
       return fail("present", result);
     if (result->status == graphics::PresentStatus::out_of_date) {
+      ++paths.present_out_of_date;
       current->tainted = true;
       needs_recreation = true;
     } else {
       if (use_present_fences)
         current->armed[index] = true;
+      if (result->status == graphics::PresentStatus::presented_suboptimal)
+        ++paths.present_suboptimal;
       if (result->recreationNeeded() && extent_differs())
         needs_recreation = true;
     }
@@ -693,7 +752,7 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
       if (current->armed[i] && !current->present_fences[i].wait(UINT64_MAX))
         return fail("wait for a present fence at shutdown");
 
-  presented_out = presented;
+  outcome.presented = presented;
   int status = EXIT_SUCCESS;
   if (options.frames && presented < *options.frames) {
     std::fprintf(stderr, "example.triangle: error: presented %zu of %zu frames\n", presented,
@@ -702,8 +761,11 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
   }
   if (options.resize_at && resize_requested) {
     const auto after = window->framebufferSize();
-    const bool changed = after && (after->width != size_at_resize_request.width ||
-                                   after->height != size_at_resize_request.height);
+    // The window system accepted the resize if the size differs from the one at the
+    // request or it reported a framebuffer-resized event after the request.
+    const bool changed =
+        resize_event_after_request || (after && (after->width != size_at_resize_request.width ||
+                                                 after->height != size_at_resize_request.height));
     const std::size_t recreated = recreations - recreations_at_resize_request;
     if (changed && recreated == 0) {
       std::fprintf(stderr,
@@ -711,9 +773,32 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
                    "recreated\n");
       status = EXIT_FAILURE;
     }
-    std::printf("example.triangle: resize=%s recreations-since-request=%zu\n",
-                changed ? "observed" : "refused-by-the-window-system", recreated);
+    if (changed) {
+      std::printf("example.triangle: resize=observed recreations-since-request=%zu\n", recreated);
+    } else if (options.require_resize) {
+      // The window system did not resize the window (a tiling compositor, for
+      // one): this run did not test a resize. run() reports it as SKIP, but only
+      // when nothing else failed.
+      outcome.resize_skipped = true;
+    } else {
+      std::printf("example.triangle: resize=refused-by-the-window-system\n");
+    }
   }
+  if (options.require_resize && !resize_requested) {
+    std::fprintf(stderr, "example.triangle: error: --require-resize but no resize was requested\n");
+    status = EXIT_FAILURE;
+  }
+  // Counted where each path is taken. Shutdown always idles the Queue first (the
+  // scope guard, which reports its own path), so it never exercises the retirement
+  // queue on its own. A queue idle before a pipeline rebuild is not counted here.
+  std::printf("example.triangle: paths acquire_out_of_date=%zu acquire_suboptimal=%zu "
+              "acquire_no_image=%zu present_out_of_date=%zu present_suboptimal=%zu "
+              "zero_size_waits=%zu deferred_zero_extent=%zu recreations=%zu "
+              "retired_via_queue=%zu retired_via_queue_idle=%zu\n",
+              paths.acquire_out_of_date, paths.acquire_suboptimal, paths.acquire_no_image,
+              paths.present_out_of_date, paths.present_suboptimal, paths.zero_size_waits,
+              paths.deferred_zero_extent, paths.recreations, paths.retired_via_queue,
+              paths.retired_via_queue_idle);
   return status;
 }
 
@@ -722,14 +807,16 @@ int runApplication(const Options &options, ValidationSink &validation, std::size
 // declared before anything that reports to it).
 int run(const Options &options) {
   ValidationSink validation;
-  std::size_t presented = 0;
-  int status = runApplication(options, validation, presented);
+  Outcome outcome;
+  int status = runApplication(options, validation, outcome);
   if (options.require_validation && validation.messages.load() != 0) {
     std::fprintf(stderr, "example.triangle: error: the validation layer reported messages\n");
     status = EXIT_FAILURE;
   }
-  if (status == EXIT_SUCCESS)
-    std::printf("example.triangle: frames=PASS presented=%zu\n", presented);
+  if (status == EXIT_SUCCESS && outcome.resize_skipped)
+    std::puts("example.triangle: resize=SKIP reason=the window system did not resize the window");
+  else if (status == EXIT_SUCCESS)
+    std::printf("example.triangle: frames=PASS presented=%zu\n", outcome.presented);
   return status;
 }
 } // namespace
@@ -737,8 +824,9 @@ int run(const Options &options) {
 int main(int argc, char **argv) {
   Options options;
   if (!parseOptions(argc, argv, options)) {
-    std::fprintf(stderr, "usage: terreate_example_triangle [--frames N] [--resize-at K] "
-                         "[--require-validation]   (K must be smaller than N)\n");
+    std::fprintf(stderr,
+                 "usage: terreate_example_triangle [--frames N] [--resize-at K] "
+                 "[--require-validation] [--require-resize]   (K must be smaller than N)\n");
     return EXIT_FAILURE;
   }
   // A scripted run without a window system is reported as SKIP, never PASS.

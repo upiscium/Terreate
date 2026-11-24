@@ -7,10 +7,17 @@ on resize and retirement of the old generation.
 
 ```sh
 terreate_example_triangle                     # run until the window is closed
-terreate_example_triangle --frames 90 --resize-at 30 --require-validation
+terreate_example_triangle --frames 90 --resize-at 30 --require-validation --require-resize
 ```
 
-`--resize-at K` must be smaller than `--frames N`.
+`--resize-at K` must be smaller than `--frames N`. `--require-resize` needs `--resize-at`:
+it fails when the window was resized but the Swapchain was not recreated, and reports
+`resize=SKIP` (never PASS) when the window system did not resize the window.
+
+The run ends with a `paths` line that counts what actually happened: acquire and present
+`out_of_date` and suboptimal, zero-size waits, recreations, and how many old generations
+went through the retirement queue or behind a queue idle (each recreation also prints its
+retirement path and the reason for a queue idle). Shutdown always idles the Queue first.
 
 The scripted form is what the CTest `example.triangle` runs. It reports
 `frames=SKIP` (never PASS) without a window system.
