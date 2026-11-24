@@ -534,6 +534,7 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       FAIL_REGULAR_EXPRESSION "graphics\\.submission: (assertion=FAIL|.*BLOCKED)")
     add_test(NAME graphics.submission.timeline COMMAND terreate_graphics_submission_tests timeline)
     set_tests_properties(graphics.submission.timeline PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.submission: headless-timeline=PASS"
       SKIP_RETURN_CODE 77
       FAIL_REGULAR_EXPRESSION "graphics\\.submission: (assertion=FAIL|.*BLOCKED)")
 
@@ -1028,6 +1029,14 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       -DTERREATE_CMAKE_GENERATOR=${CMAKE_GENERATOR}
       -DTERREATE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
       -P ${PROJECT_SOURCE_DIR}/tests/cmake/package_smoke.cmake)
+  add_test(
+    NAME cmake.test_outcomes
+    COMMAND ${CMAKE_COMMAND}
+      -DTERREATE_CTEST_COMMAND=${CMAKE_CTEST_COMMAND}
+      -DTERREATE_BUILD_DIR=${CMAKE_BINARY_DIR}
+      -P ${PROJECT_SOURCE_DIR}/tests/cmake/test_outcomes.cmake)
+  set_tests_properties(cmake.test_outcomes PROPERTIES
+    PASS_REGULAR_EXPRESSION "cmake\\.test_outcomes: outcome-rule=PASS")
   # #285: the external-consumer checks print this marker as the script's last line.
   set_tests_properties(cmake.package_smoke PROPERTIES
     PASS_REGULAR_EXPRESSION

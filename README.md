@@ -11,6 +11,7 @@ is an optional external, isolated Work Unit developer tool rather than a reposit
 - [Core error and result contract](docs/architecture/error-result.md)
 - [Structured diagnostics contract](docs/architecture/diagnostics.md)
 - [Graphics allocator integration and ownership](docs/architecture/allocator.md)
+- [Graphics validation and integration test matrix](docs/development/graphics-test-matrix.md)
 
 ## Development shell
 
