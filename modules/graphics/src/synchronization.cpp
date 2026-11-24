@@ -261,6 +261,10 @@ auto createSemaphore(const Device &device, const SemaphoreDescription &descripti
   if (!device.valid() || device.plan() == nullptr)
     return std::unexpected(
         fail(SynchronizationError::invalid_device, operation, "moved-from Device"));
+  if (description.kind != SubmissionSemaphoreKind::binary &&
+      description.kind != SubmissionSemaphoreKind::timeline)
+    return std::unexpected(fail(SynchronizationError::invalid_description, operation,
+                                "the Semaphore kind is neither binary nor timeline"));
   const bool timeline = description.kind == SubmissionSemaphoreKind::timeline;
   if (!timeline && description.initial_value != 0)
     return std::unexpected(fail(SynchronizationError::invalid_description, operation,

@@ -103,9 +103,12 @@ struct SemaphoreDescription {
 };
 
 /// A move-only owner of one VkSemaphore, binary or timeline, with the same
-/// lifetime and synchronization contract as `Fence`. A binary Semaphore is
-/// used through its native handle (submit, acquire and present take it); the
-/// timeline operations below are single native calls.
+/// lifetime and synchronization contract as `Fence`. The timeline operations
+/// use the Vulkan 1.2 core entry points (the `timelineSemaphore` feature is a 1.2
+/// feature, as `submit` already assumes). The Device may be moved while the
+/// object lives (its VkDevice handle is what is kept) but must not be destroyed. A binary Semaphore
+/// is used through its native handle (submit, acquire and present take it); the timeline operations
+/// below are single native calls.
 class Semaphore final {
 public:
   Semaphore() = delete;
@@ -146,13 +149,13 @@ private:
     -> terreate::Result<Semaphore>;
 
 /// Build the `SubmissionSemaphore` for a submission wait or signal with every
-/// field explicit: the stage mask is the caller's, and `value` is the timeline
-/// value (0 for a binary Semaphore, which `submit` requires). These only build
+/// field explicit: the stage mask is the caller's, and `value` is always passed: the timeline
+/// value, or 0 for a binary Semaphore (which `submit` requires). These only build
 /// a value; nothing is called and nothing is inferred.
 [[nodiscard]] auto submissionWait(const Semaphore &semaphore, vk::PipelineStageFlags2 stage_mask,
-                                  std::uint64_t value = 0) noexcept -> SubmissionSemaphore;
+                                  std::uint64_t value) noexcept -> SubmissionSemaphore;
 [[nodiscard]] auto submissionSignal(const Semaphore &semaphore, vk::PipelineStageFlags2 stage_mask,
-                                    std::uint64_t value = 0) noexcept -> SubmissionSemaphore;
+                                    std::uint64_t value) noexcept -> SubmissionSemaphore;
 
 } // namespace terreate::graphics
 
