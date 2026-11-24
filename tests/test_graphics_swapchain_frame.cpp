@@ -14,6 +14,7 @@
 #include <terreate/graphics/surface.hpp>
 #include <terreate/graphics/swapchain.hpp>
 #include <terreate/graphics/swapchain_frame.hpp>
+#include <terreate/graphics/synchronization.hpp>
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -157,27 +159,27 @@ int skip(const char *reason) {
   return EXIT_SUCCESS;
 }
 
-// The application's own native objects for the loop (the library takes borrowed
-// handles; it creates no semaphores or fences).
+// The application's objects for the loop. Semaphores and fences are Terreate's
+// Fence and Semaphore owners; the command pool stays native (no Terreate
+// command-pool use is needed for this test's one raw barrier).
 struct FrameObjects {
   VkDevice device = VK_NULL_HANDLE;
   VkCommandPool pool = VK_NULL_HANDLE;
   VkCommandBuffer commands = VK_NULL_HANDLE;
-  VkSemaphore acquire = VK_NULL_HANDLE;
-  VkFence fence = VK_NULL_HANDLE;
-  VkFence acquire_fence = VK_NULL_HANDLE;
-  std::vector<VkSemaphore> render_done{};
+  std::optional<Semaphore> acquire{};
+  std::optional<Fence> fence{};
+  std::optional<Fence> acquire_fence{};
+  std::vector<Semaphore> render_done{};
 
   // Destroy the objects while the Device is still alive; the destructor is a
   // safety net only.
   void release() {
+    render_done.clear();
+    fence.reset();
+    acquire_fence.reset();
+    acquire.reset();
     if (device == VK_NULL_HANDLE)
       return;
-    for (const auto semaphore : render_done)
-      vkDestroySemaphore(device, semaphore, nullptr);
-    vkDestroyFence(device, fence, nullptr);
-    vkDestroyFence(device, acquire_fence, nullptr);
-    vkDestroySemaphore(device, acquire, nullptr);
     vkDestroyCommandPool(device, pool, nullptr);
     device = VK_NULL_HANDLE;
   }
@@ -188,14 +190,13 @@ struct FrameObjects {
 };
 
 struct FrameSetup {
-  VkDevice device = VK_NULL_HANDLE;
+  const Device *device = nullptr;
   std::uint32_t queue_family = 0;
   std::size_t image_count = 0;
 };
 
 bool makeObjects(FrameObjects &objects, const FrameSetup &setup) {
-  const VkDevice device = setup.device;
-  const std::size_t image_count = setup.image_count;
+  const auto device = static_cast<VkDevice>(setup.device->nativeHandle());
   objects.device = device;
   VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool_info.queueFamilyIndex = setup.queue_family;
@@ -207,19 +208,19 @@ bool makeObjects(FrameObjects &objects, const FrameSetup &setup) {
   alloc.commandBufferCount = 1;
   if (vkAllocateCommandBuffers(device, &alloc, &objects.commands) != VK_SUCCESS)
     return false;
-  const VkSemaphoreCreateInfo semaphore_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-  if (vkCreateSemaphore(device, &semaphore_info, nullptr, &objects.acquire) != VK_SUCCESS)
+  auto acquire = createSemaphore(*setup.device, {});
+  auto fence = createFence(*setup.device, {});
+  auto acquire_fence = createFence(*setup.device, {});
+  if (!acquire || !fence || !acquire_fence)
     return false;
-  const VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-  if (vkCreateFence(device, &fence_info, nullptr, &objects.fence) != VK_SUCCESS)
-    return false;
-  if (vkCreateFence(device, &fence_info, nullptr, &objects.acquire_fence) != VK_SUCCESS)
-    return false;
-  for (std::size_t i = 0; i < image_count; ++i) {
-    VkSemaphore semaphore = VK_NULL_HANDLE;
-    if (vkCreateSemaphore(device, &semaphore_info, nullptr, &semaphore) != VK_SUCCESS)
+  objects.acquire.emplace(std::move(*acquire));
+  objects.fence.emplace(std::move(*fence));
+  objects.acquire_fence.emplace(std::move(*acquire_fence));
+  for (std::size_t i = 0; i < setup.image_count; ++i) {
+    auto semaphore = createSemaphore(*setup.device, {});
+    if (!semaphore)
       return false;
-    objects.render_done.push_back(semaphore);
+    objects.render_done.push_back(std::move(*semaphore));
   }
   return true;
 }
@@ -318,10 +319,10 @@ int gpuTest() {
 
   FrameObjects objects;
   const auto native_device = static_cast<VkDevice>(device->nativeHandle());
-  if (!check(makeObjects(objects,
-                         FrameSetup{native_device, static_cast<std::uint32_t>(queue.familyIndex()),
-                                    first->images().size()}),
-             "native frame objects"))
+  if (!check(
+          makeObjects(objects, FrameSetup{&*device, static_cast<std::uint32_t>(queue.familyIndex()),
+                                          first->images().size()}),
+          "native frame objects"))
     return EXIT_FAILURE;
 
   // Description errors come before any native call.
@@ -342,8 +343,8 @@ int gpuTest() {
                             std::set<std::uint32_t> *seen_indices) -> bool {
     AcquireDescription acquire;
     acquire.timeout_ns = UINT64_MAX;
-    acquire.semaphore = vk::Semaphore{objects.acquire};
-    acquire.fence = vk::Fence{objects.acquire_fence};
+    acquire.semaphore = objects.acquire->nativeHandle();
+    acquire.fence = objects.acquire_fence->nativeHandle();
     const auto acquired = acquireNextImage(*device, chain, acquire);
     if (!acquired.has_value() || !acquired->image.has_value()) {
       check(false, "acquire returns a usable image");
@@ -351,10 +352,10 @@ int gpuTest() {
     }
     const SwapchainImage image = *acquired->image;
     // The acquire fence is signaled once the image is ready; reset it for reuse.
-    check(vkWaitForFences(native_device, 1, &objects.acquire_fence, VK_TRUE, UINT64_MAX) ==
-              VK_SUCCESS,
+    check(objects.acquire_fence->wait(UINT64_MAX).value_or(WaitStatus::timeout) ==
+              WaitStatus::satisfied,
           "the acquire fence is signaled");
-    vkResetFences(native_device, 1, &objects.acquire_fence);
+    check(objects.acquire_fence->reset().has_value(), "reset the acquire fence");
     if (probe_null_wait) {
       const std::array<vk::Semaphore, 1> null_wait{vk::Semaphore{}};
       check(hasError(presentImage(*device, queue, chain, PresentDescription{image, null_wait}),
@@ -372,22 +373,25 @@ int gpuTest() {
     if (!check(recordToPresent(objects.commands, static_cast<VkImage>(image.nativeImage())),
                "record the frame commands"))
       return false;
-    const VkSemaphore render_done = objects.render_done[image.index() % objects.render_done.size()];
+    const Semaphore &render_done_semaphore =
+        objects.render_done[image.index() % objects.render_done.size()];
+    const auto render_done = static_cast<VkSemaphore>(render_done_semaphore.nativeHandle());
+    const auto acquire_native = static_cast<VkSemaphore>(objects.acquire->nativeHandle());
     const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.waitSemaphoreCount = 1;
-    submit.pWaitSemaphores = &objects.acquire;
+    submit.pWaitSemaphores = &acquire_native;
     submit.pWaitDstStageMask = &wait_stage;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &objects.commands;
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &render_done;
     if (!check(vkQueueSubmit(static_cast<VkQueue>(queue.nativeHandle()), 1, &submit,
-                             objects.fence) == VK_SUCCESS,
+                             static_cast<VkFence>(objects.fence->nativeHandle())) == VK_SUCCESS,
                "native submit"))
       return false;
 
-    const std::array<vk::Semaphore, 1> waits{vk::Semaphore{render_done}};
+    const std::array<vk::Semaphore, 1> waits{render_done_semaphore.nativeHandle()};
     const auto result = presentImage(*device, queue, chain, PresentDescription{image, waits});
     if (!result.has_value()) {
       check(false, "present succeeds");
@@ -398,9 +402,9 @@ int gpuTest() {
           "present reports presented or suboptimal");
     // The acquire semaphore is reused by the next acquire only after the
     // submission that waited on it has completed.
-    check(vkWaitForFences(native_device, 1, &objects.fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS,
+    check(objects.fence->wait(UINT64_MAX).value_or(WaitStatus::timeout) == WaitStatus::satisfied,
           "the submission completes");
-    vkResetFences(native_device, 1, &objects.fence);
+    check(objects.fence->reset().has_value(), "reset the submission fence");
     return true;
   };
 
@@ -425,7 +429,8 @@ int gpuTest() {
     auto second = createSwapchain(*instance, *device, *surface, next_description);
     if (check(second.has_value(), "recreate with an old Swapchain")) {
       AcquireDescription acquire;
-      acquire.semaphore = vk::Semaphore{objects.acquire};
+      acquire.semaphore =
+          objects.acquire.has_value() ? objects.acquire->nativeHandle() : vk::Semaphore{};
       check(hasError(acquireNextImage(*device, *first, acquire), Error::swapchain_retired),
             "acquiring from a retired Swapchain is swapchain_retired");
       const std::array<vk::Semaphore, 0> no_waits{};
