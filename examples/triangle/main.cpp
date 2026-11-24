@@ -1,0 +1,678 @@
+// A windowed triangle written with Terreate's API only.
+//
+// Read it top to bottom: it opens a window, creates the Vulkan objects through
+// Terreate, and runs an application-owned frame loop (one frame in flight): poll
+// events, acquire, record, submit, present, and recreate the Swapchain when the
+// window asks for it. Terreate owns no loop, schedules nothing and waits for
+// nothing; every wait below is a call this file makes.
+//
+// Native calls this file still makes, because Terreate leaves them to the
+// application: glfwSetWindowSize (scripted resize only) and vkQueueWaitIdle (the
+// conservative way to drop an old Swapchain when present fences are unavailable).
+//
+// Modes: no arguments runs until the window is closed. For tests:
+//   --frames N          present N frames, then exit
+//   --resize-at K       ask the window system to resize the window at frame K
+//   --require-validation  fail unless the validation layer is present and silent
+#include <terreate/graphics/command_buffer.hpp>
+#include <terreate/graphics/command_pool.hpp>
+#include <terreate/graphics/completion.hpp>
+#include <terreate/graphics/descriptor_set_layout.hpp>
+#include <terreate/graphics/device.hpp>
+#include <terreate/graphics/graphics_pipeline.hpp>
+#include <terreate/graphics/instance.hpp>
+#include <terreate/graphics/physical_device.hpp>
+#include <terreate/graphics/pipeline_commands.hpp>
+#include <terreate/graphics/pipeline_layout.hpp>
+#include <terreate/graphics/presentation.hpp>
+#include <terreate/graphics/rendering_commands.hpp>
+#include <terreate/graphics/shader_module.hpp>
+#include <terreate/graphics/spirv_binary.hpp>
+#include <terreate/graphics/submission.hpp>
+#include <terreate/graphics/surface.hpp>
+#include <terreate/graphics/swapchain.hpp>
+#include <terreate/graphics/swapchain_frame.hpp>
+#include <terreate/graphics/swapchain_retirement.hpp>
+#include <terreate/graphics/synchronization.hpp>
+#include <terreate/graphics/transfer_commands.hpp>
+#include <terreate/integration/platform_graphics/surface.hpp>
+#include <terreate/platform/events.hpp>
+#include <terreate/platform/runtime.hpp>
+#include <terreate/platform/window.hpp>
+
+#include "triangle_spirv.hpp"
+
+#include <GLFW/glfw3.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace {
+namespace graphics = terreate::graphics;
+namespace platform = terreate::platform;
+namespace integration = terreate::integration::platform_graphics;
+
+struct Options {
+  bool require_validation = false;
+  std::optional<std::size_t> frames{};
+  std::optional<std::size_t> resize_at{};
+};
+
+int fail(const char *what) {
+  std::fprintf(stderr, "example.triangle: error: %s\n", what);
+  return EXIT_FAILURE;
+}
+
+template <typename T> int fail(const char *what, const terreate::Result<T> &result) {
+  std::fprintf(stderr, "example.triangle: error: %s: %s\n", what,
+               result.error().code().message().c_str());
+  return EXIT_FAILURE;
+}
+
+bool hasName(const std::vector<std::string> &names, std::string_view wanted) {
+  return std::ranges::any_of(names, [&](const auto &name) { return name == wanted; });
+}
+
+// Counts validation warnings and errors and prints them.
+struct ValidationSink {
+  std::atomic<std::size_t> messages{0};
+  void operator()(const terreate::DiagnosticEvent &event) noexcept {
+    if (event.severity != terreate::DiagnosticSeverity::warning &&
+        event.severity != terreate::DiagnosticSeverity::error)
+      return;
+    for (const auto &category : event.categories) {
+      if (category == "VALIDATION") {
+        std::fprintf(stderr, "example.triangle: validation: %s\n", event.message.c_str());
+        messages.fetch_add(1, std::memory_order_relaxed);
+        break;
+      }
+    }
+  }
+};
+
+// Everything that belongs to one Swapchain generation. It is dropped (or handed
+// to the retirement queue) as a whole when the Swapchain is recreated.
+struct Generation {
+  graphics::Swapchain swapchain;
+  /// One present semaphore per image index: reused only when that index is
+  /// acquired again from this same Swapchain.
+  std::vector<graphics::Semaphore> render_done{};
+  /// One present fence per image index (VK_KHR_swapchain_maintenance1 only).
+  std::vector<graphics::Fence> present_fences{};
+  /// Which present fences were handed to a present that succeeded.
+  std::vector<bool> armed{};
+  /// A present returned an error or out_of_date: its fence may never signal, so
+  /// this generation is dropped behind a queue idle instead.
+  bool tainted = false;
+};
+
+// What stays alive behind a Swapchain that went to the retirement queue.
+struct Retired {
+  std::vector<graphics::Semaphore> render_done{};
+  std::vector<graphics::Fence> present_fences{};
+};
+
+VkImageMemoryBarrier2 imageBarrier(const graphics::SwapchainImage &image) {
+  VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.image = static_cast<VkImage>(image.nativeImage());
+  barrier.subresourceRange = VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  return barrier;
+}
+
+bool parseOptions(int argc, char **argv, Options &options) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view argument{argv[i]};
+    const auto number = [&](std::optional<std::size_t> &out) {
+      if (i + 1 >= argc)
+        return false;
+      char *end = nullptr;
+      const unsigned long long value = std::strtoull(argv[++i], &end, 10);
+      if (end == argv[i] || *end != '\0')
+        return false;
+      out = static_cast<std::size_t>(value);
+      return true;
+    };
+    if (argument == "--frames") {
+      if (!number(options.frames))
+        return false;
+    } else if (argument == "--resize-at") {
+      if (!number(options.resize_at))
+        return false;
+    } else if (argument == "--require-validation") {
+      options.require_validation = true;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+int run(const Options &options) {
+  // ---- Platform: a Runtime and a Window ----
+  auto runtime = platform::createRuntime();
+  if (!runtime)
+    return fail("create the Platform Runtime (is a window system available?)", runtime);
+  auto window =
+      platform::createWindow(*runtime, {.width = 640, .height = 480, .title = "terreate"});
+  if (!window)
+    return fail("create the Window", window);
+  const auto surface_extensions = runtime->requiredInstanceExtensions();
+  if (!surface_extensions)
+    return fail("ask GLFW for its Vulkan Instance extensions", surface_extensions);
+
+  // ---- Instance, Surface ----
+  const auto loader = graphics::queryInstanceCapabilities();
+  if (!loader)
+    return fail("query the Vulkan loader", loader);
+  const bool has_validation =
+      hasName(loader->available_layers, "VK_LAYER_KHRONOS_validation") &&
+      hasName(loader->available_extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+  if (options.require_validation && !has_validation)
+    return fail("--require-validation: the validation layer or VK_EXT_debug_utils is missing");
+  // Present fences (VK_KHR_swapchain_maintenance1) are used when the loader has
+  // the Instance extensions they depend on; otherwise the example falls back.
+  const bool loader_has_maintenance =
+      hasName(loader->available_extensions, VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME) &&
+      hasName(loader->available_extensions, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+  graphics::InstanceDescription instance_description;
+  instance_description.api_version = VK_API_VERSION_1_3;
+  instance_description.application_name = "terreate-triangle";
+  instance_description.required_extensions = *surface_extensions;
+  if (loader_has_maintenance)
+    instance_description.optional_extensions = {VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME,
+                                                VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME};
+  if (has_validation) {
+    instance_description.required_layers = {"VK_LAYER_KHRONOS_validation"};
+    instance_description.debug_utils = graphics::DebugUtilsMode::required;
+  }
+  const auto instance_plan = graphics::resolveInstance(instance_description, *loader);
+  if (!instance_plan)
+    return fail("resolve the Instance", instance_plan);
+  ValidationSink validation;
+  auto instance =
+      graphics::createInstance(*instance_plan, terreate::DiagnosticSinkView::bind(validation));
+  if (!instance)
+    return fail("create the Instance", instance);
+  auto surface = integration::createWindowSurface(*instance, *runtime, *window);
+  if (!surface)
+    return fail("create the Surface from the Window", surface);
+
+  // ---- Physical device and Device ----
+  // The application's own policy: the first device that can present to this
+  // Surface and satisfies the Device request below, preferring a discrete GPU.
+  auto inventory = graphics::queryPhysicalDevices(*instance);
+  if (!inventory)
+    return fail("enumerate physical devices", inventory);
+  graphics::PhysicalDeviceRequirements requirements;
+  graphics::requirePresentationDevice(requirements);
+  const auto evaluations = graphics::evaluateSurfaceCandidates(
+      *instance, inventory->candidates(), *surface, requirements, graphics::PresentationRequest{});
+  if (!evaluations)
+    return fail("evaluate the devices for the Surface", evaluations);
+
+  const graphics::PhysicalDeviceCandidate *chosen = nullptr;
+  const graphics::SurfaceCandidateEvaluation *chosen_evaluation = nullptr;
+  std::optional<graphics::DevicePlan> device_plan;
+  bool use_present_fences = false;
+  for (const bool want_fences : {true, false}) {
+    for (const bool discrete_only : {true, false}) {
+      for (const auto &evaluation : *evaluations) {
+        if (!evaluation.selectable() || chosen != nullptr)
+          continue;
+        const graphics::PhysicalDeviceCandidate *candidate = nullptr;
+        for (const auto &entry : *inventory)
+          if (entry.enumerationIndex() == evaluation.enumeration_index)
+            candidate = &entry;
+        if (candidate == nullptr)
+          continue;
+        if (discrete_only &&
+            candidate->capabilities().properties.deviceType != vk::PhysicalDeviceType::eDiscreteGpu)
+          continue;
+        const auto &caps = candidate->capabilities();
+        if (want_fences && !(caps.swapchain_maintenance1_available &&
+                             caps.swapchain_maintenance1.swapchainMaintenance1 == VK_TRUE))
+          continue;
+        graphics::DeviceDescription description;
+        description.required_features_13.dynamicRendering = VK_TRUE;
+        description.required_features_13.synchronization2 = VK_TRUE;
+        if (want_fences) {
+          description.required_extensions = {VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME};
+          description.required_swapchain_maintenance1.swapchainMaintenance1 = VK_TRUE;
+        }
+        if (!evaluation.resolution ||
+            !graphics::applyPresentation(description, *evaluation.resolution))
+          continue;
+        auto resolved = graphics::resolveDevice(*candidate, description);
+        if (!resolved)
+          continue;
+        chosen = candidate;
+        chosen_evaluation = &evaluation;
+        device_plan = std::move(*resolved);
+        use_present_fences = want_fences;
+      }
+    }
+  }
+  if (chosen == nullptr || !device_plan || chosen_evaluation == nullptr)
+    return fail("no device can present to the window with dynamic rendering and synchronization2");
+  auto device = graphics::createDevice(*instance, *device_plan);
+  if (!device)
+    return fail("create the Device", device);
+  const graphics::Queue queue = device->queue("present");
+  if (!queue.valid())
+    return fail("the present Queue is missing");
+  const auto native_queue = static_cast<VkQueue>(queue.nativeHandle());
+  std::printf("example.triangle: device=%s present-fences=%s\n",
+              chosen->capabilities().properties.deviceName.data(),
+              use_present_fences ? "yes" : "no (queue idle)");
+
+  // ---- The pipeline for the Swapchain's format ----
+  if (!chosen_evaluation->resolution)
+    return fail("the chosen device has no presentation resolution");
+  const graphics::PresentationResolution &presentation = *chosen_evaluation->resolution;
+  const auto vertex_binary = graphics::SpirvBinary::fromWords(triangle_spirv::vertex_words);
+  const auto fragment_binary = graphics::SpirvBinary::fromWords(triangle_spirv::fragment_words);
+  if (!vertex_binary || !fragment_binary)
+    return fail("the embedded SPIR-V is invalid");
+  auto vertex_module = graphics::createShaderModule(*device, *vertex_binary);
+  auto fragment_module = graphics::createShaderModule(*device, *fragment_binary);
+  if (!vertex_module || !fragment_module)
+    return fail("create the shader modules");
+  auto pipeline_layout = graphics::createPipelineLayout(
+      *device, std::span<const graphics::DescriptorSetLayout *const>{}, {});
+  if (!pipeline_layout)
+    return fail("create the pipeline layout", pipeline_layout);
+  std::optional<graphics::GraphicsPipeline> pipeline;
+  vk::Format pipeline_format = vk::Format::eUndefined;
+  const auto build_pipeline = [&](vk::Format format) {
+    graphics::GraphicsPipelineDescription description;
+    description.vertex_entry_point = "main";
+    description.fragment_entry_point = "main";
+    description.color_attachment_formats = {format};
+    vk::PipelineColorBlendAttachmentState blend{};
+    blend.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                           vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+    description.color_blend_attachments = {blend};
+    auto created = graphics::createGraphicsPipeline(*device, *pipeline_layout, *vertex_module,
+                                                    *fragment_module, description);
+    if (!created)
+      return false;
+    pipeline.reset();
+    pipeline.emplace(std::move(*created));
+    pipeline_format = format;
+    return true;
+  };
+
+  // ---- Swapchain generations ----
+  const auto make_generation = [&](graphics::Swapchain swapchain) -> std::optional<Generation> {
+    Generation generation{std::move(swapchain)};
+    const std::size_t images = generation.swapchain.images().size();
+    generation.render_done.reserve(images);
+    generation.present_fences.reserve(images);
+    for (std::size_t i = 0; i < images; ++i) {
+      auto semaphore = graphics::createSemaphore(*device, {});
+      if (!semaphore)
+        return std::nullopt;
+      generation.render_done.push_back(std::move(*semaphore));
+      if (use_present_fences) {
+        auto fence = graphics::createFence(*device, {});
+        if (!fence)
+          return std::nullopt;
+        generation.present_fences.push_back(std::move(*fence));
+      }
+    }
+    generation.armed.assign(images, false);
+    return std::optional<Generation>{std::move(generation)};
+  };
+
+  const auto framebuffer = window->framebufferSize();
+  if (!framebuffer || framebuffer->width == 0 || framebuffer->height == 0)
+    return fail("the window has no framebuffer extent to start with");
+  graphics::SwapchainRequest first_request;
+  first_request.extent = vk::Extent2D{framebuffer->width, framebuffer->height};
+  const auto swapchain_description =
+      graphics::resolveSwapchain(chosen_evaluation->support, presentation, first_request);
+  if (!swapchain_description)
+    return fail("resolve the Swapchain", swapchain_description);
+  auto first_swapchain =
+      graphics::createSwapchain(*instance, *device, *surface, *swapchain_description);
+  if (!first_swapchain)
+    return fail("create the Swapchain", first_swapchain);
+  if (!build_pipeline(first_swapchain->configuration()->format))
+    return fail("create the graphics pipeline");
+  std::optional<Generation> current = make_generation(std::move(*first_swapchain));
+  if (!current)
+    return fail("create the per-image synchronization objects");
+
+  std::vector<Retired> retired;
+  graphics::SwapchainRetirementQueue retirement;
+
+  // ---- Frame objects: one frame in flight ----
+  graphics::CommandPoolDescription pool_description;
+  pool_description.queue_family_index = static_cast<std::uint32_t>(queue.familyIndex());
+  pool_description.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+  auto command_pool = graphics::createCommandPool(*device, pool_description);
+  if (!command_pool)
+    return fail("create the command pool", command_pool);
+  auto command = command_pool->allocatePrimary();
+  if (!command)
+    return fail("allocate the command buffer", command);
+  auto acquire_semaphore = graphics::createSemaphore(*device, {});
+  auto frame_fence = graphics::createFence(*device, {.signaled = true});
+  if (!acquire_semaphore || !frame_fence)
+    return fail("create the frame synchronization objects");
+
+  // Retire the current generation: behind the retirement queue when its present
+  // fences prove the presents are done, else behind a queue idle (one native call).
+  const auto drop_current = [&]() -> bool {
+    if (!current)
+      return true;
+    if (use_present_fences && !current->tainted) {
+      std::vector<vk::Fence> fences;
+      for (std::size_t i = 0; i < current->present_fences.size(); ++i)
+        if (current->armed[i])
+          fences.push_back(current->present_fences[i].nativeHandle());
+      graphics::SwapchainRetirementUses uses;
+      uses.present_fences = fences;
+      uses.no_pending_present = fences.empty();
+      if (retirement.retire(*device, current->swapchain, uses)) {
+        retired.push_back(
+            Retired{std::move(current->render_done), std::move(current->present_fences)});
+        current.reset();
+        return true;
+      }
+    }
+    vkQueueWaitIdle(native_queue);
+    current.reset();
+    return true;
+  };
+
+  // Recreate the Swapchain for the window's current framebuffer. Returns false
+  // when the window has no extent now (the caller waits for events and retries).
+  const auto recreate = [&]() -> int {
+    const auto size = window->framebufferSize();
+    if (!size)
+      return -1;
+    graphics::SwapchainRequest request;
+    request.extent = vk::Extent2D{size->width, size->height};
+    auto result =
+        graphics::recreateSwapchain(*instance, *device, *chosen, *surface, current->swapchain,
+                                    graphics::PresentationRequest{}, request);
+    if (!result.has_value()) {
+      std::fprintf(stderr, "example.triangle: error: recreate the Swapchain: %s\n",
+                   result.error().code().message().c_str());
+      return -1;
+    }
+    if (result->status == graphics::RecreationStatus::deferred_zero_extent)
+      return 0;
+    // The format may have changed: a pipeline is built for one format.
+    const vk::Format format = result->swapchain->configuration()->format;
+    if (format != pipeline_format) {
+      vkQueueWaitIdle(native_queue);
+      if (!build_pipeline(format))
+        return -1;
+    }
+    // The old generation goes away; the new one is ready to render.
+    auto next = make_generation(std::move(*result->swapchain));
+    if (!next)
+      return -1;
+    if (!drop_current())
+      return -1;
+    current = std::move(next);
+    return 1;
+  };
+
+  // ---- The frame loop ----
+  std::size_t presented = 0;
+  std::size_t recreations = 0;
+  std::size_t frame_serial = 0;
+  int identity_domain = 0;
+  bool resize_requested = false;
+  vk::Extent2D size_at_resize_request{};
+  bool close_requested = false;
+  bool needs_recreation = false;
+
+  while (!close_requested) {
+    // 1. Events: the application decides when and how to wait for them.
+    const auto batch = runtime->pollEvents();
+    if (!batch)
+      return fail("poll events", batch);
+    for (const auto &event : batch->events) {
+      if (std::holds_alternative<platform::CloseRequested>(event.data))
+        close_requested = true;
+      else if (std::holds_alternative<platform::FramebufferResized>(event.data))
+        needs_recreation = true;
+    }
+    if (close_requested || window->shouldClose().value_or(false))
+      break;
+    if (options.frames && presented >= *options.frames)
+      break;
+
+    // Scripted resize: ask the window system once, at the requested frame.
+    if (options.resize_at && !resize_requested && presented >= *options.resize_at) {
+      resize_requested = true;
+      const auto before = window->framebufferSize();
+      size_at_resize_request =
+          vk::Extent2D{before ? before->width : 0, before ? before->height : 0};
+      glfwSetWindowSize(window->nativeHandle(), 400, 300);
+    }
+
+    // Free what the retirement queue has let go of.
+    if (retirement.pendingCount() > 0 || !retired.empty()) {
+      const auto collected = retirement.collect(*device);
+      if (!collected)
+        return fail("collect the retired Swapchains", collected);
+      if (retirement.pendingCount() == 0)
+        retired.clear();
+    }
+
+    // 2. A window with no extent (minimized): do not render, wait for events.
+    const auto size = window->framebufferSize();
+    if (!size)
+      return fail("framebuffer size", size);
+    if (size->width == 0 || size->height == 0) {
+      if (!runtime->waitEvents(std::chrono::milliseconds(100)))
+        return fail("wait for events");
+      continue;
+    }
+    if (needs_recreation) {
+      const int done = recreate();
+      if (done < 0)
+        return fail("recreate the Swapchain");
+      if (done == 0) {
+        if (!runtime->waitEvents(std::chrono::milliseconds(100)))
+          return fail("wait for events");
+        continue;
+      }
+      needs_recreation = false;
+      ++recreations;
+    }
+
+    // 3. The previous frame must be done before its objects are reused.
+    if (!frame_fence->wait(UINT64_MAX))
+      return fail("wait for the frame fence");
+
+    // 4. Acquire. out_of_date acquired nothing: recreate and try again.
+    graphics::AcquireDescription acquire;
+    acquire.timeout_ns = UINT64_MAX;
+    acquire.semaphore = acquire_semaphore->nativeHandle();
+    const auto acquired = graphics::acquireNextImage(*device, current->swapchain, acquire);
+    if (!acquired)
+      return fail("acquire an image", acquired);
+    if (!acquired->image) {
+      needs_recreation = true;
+      continue;
+    }
+    if (acquired->recreationNeeded())
+      needs_recreation = true;
+    const graphics::SwapchainImage image = *acquired->image;
+    const std::size_t index = image.index();
+
+    // 5. Record: barrier, rendering into the Swapchain image, draw, barrier.
+    if (!command->reset() || !command->begin())
+      return fail("begin the command buffer");
+    auto to_attachment = imageBarrier(image);
+    to_attachment.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    to_attachment.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    to_attachment.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    to_attachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_attachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    if (!graphics::recordBarriers(*device, *command, {.images = std::span{&to_attachment, 1}}))
+      return fail("record the barrier to the attachment layout");
+
+    graphics::RenderingDescription rendering;
+    rendering.render_area = vk::Rect2D{{0, 0}, image.extent()};
+    graphics::RenderingAttachmentDescription attachment;
+    attachment.layout = vk::ImageLayout::eColorAttachmentOptimal;
+    attachment.load_op = vk::AttachmentLoadOp::eClear;
+    attachment.store_op = vk::AttachmentStoreOp::eStore;
+    attachment.clear_value =
+        vk::ClearValue{vk::ClearColorValue{std::array<float, 4>{0.05F, 0.05F, 0.08F, 1.0F}}};
+    attachment.swapchain = &current->swapchain;
+    attachment.swapchain_image = &image;
+    rendering.color_attachments = {attachment};
+    auto scope = graphics::recordBeginRendering(*device, *command, rendering);
+    if (!scope)
+      return fail("begin rendering into the Swapchain image", scope);
+    const vk::Rect2D area{{0, 0}, image.extent()};
+    if (!graphics::recordSetViewport(*device, *command,
+                                     vk::Viewport{0.0F, 0.0F, float(area.extent.width),
+                                                  float(area.extent.height), 0.0F, 1.0F}) ||
+        !graphics::recordSetScissor(*device, *command, area) ||
+        !graphics::recordBindPipeline(*device, *command, *pipeline) ||
+        !graphics::recordDraw(*device, *command, *scope, 3, 1, 0, 0) ||
+        !graphics::recordEndRendering(*device, *command, std::move(*scope)))
+      return fail("record the draw");
+
+    auto to_present = imageBarrier(image);
+    to_present.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    to_present.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    to_present.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    if (!graphics::recordBarriers(*device, *command, {.images = std::span{&to_present, 1}}) ||
+        !command->end())
+      return fail("record the barrier to the present layout");
+
+    // 6. Submit: wait for the acquire semaphore, signal this image's semaphore.
+    if (!frame_fence->reset())
+      return fail("reset the frame fence");
+    ++frame_serial;
+    const std::array<const graphics::CommandBuffer *, 1> buffers{&*command};
+    const std::array<graphics::SubmissionSemaphore, 1> waits{graphics::submissionWait(
+        *acquire_semaphore, vk::PipelineStageFlagBits2::eColorAttachmentOutput, 0)};
+    const std::array<graphics::SubmissionSemaphore, 1> signals{graphics::submissionSignal(
+        current->render_done[index], vk::PipelineStageFlagBits2::eAllCommands, 0)};
+    graphics::SubmissionDescription submission;
+    submission.command_buffers = buffers;
+    submission.waits = waits;
+    submission.signals = signals;
+    submission.fence = frame_fence->nativeHandle();
+    submission.completion.device = &*device;
+    submission.completion.queue = queue;
+    submission.completion.requested = {&identity_domain, frame_serial};
+    submission.completion.effective = {&identity_domain, frame_serial};
+    submission.completion.condition =
+        graphics::FenceCompletionCondition{frame_fence->nativeHandle()};
+    if (const auto receipt = graphics::submit(*device, queue, submission); !receipt)
+      return fail("submit the frame", receipt);
+
+    // 7. Present. A present fence is reused for the same image index only after
+    // that index was acquired again, which proves the earlier present finished.
+    graphics::PresentDescription present;
+    present.image = image;
+    const std::array<vk::Semaphore, 1> present_waits{current->render_done[index].nativeHandle()};
+    present.wait_semaphores = present_waits;
+    if (use_present_fences) {
+      if (current->armed[index]) {
+        if (!current->present_fences[index].wait(UINT64_MAX) ||
+            !current->present_fences[index].reset())
+          return fail("reuse the present fence");
+        current->armed[index] = false;
+      }
+      present.fence = current->present_fences[index].nativeHandle();
+    }
+    const auto result = graphics::presentImage(*device, queue, current->swapchain, present);
+    if (!result)
+      return fail("present", result);
+    if (result->status == graphics::PresentStatus::out_of_date)
+      current->tainted = true;
+    else if (use_present_fences)
+      current->armed[index] = true;
+    if (result->recreationNeeded())
+      needs_recreation = true;
+    ++presented;
+  }
+
+  // ---- Shutdown: nothing may use the objects any more ----
+  vkQueueWaitIdle(native_queue);
+  while (retirement.pendingCount() > 0) {
+    const auto collected = retirement.collect(*device);
+    if (!collected)
+      return fail("collect the retired Swapchains at shutdown", collected);
+  }
+  retired.clear();
+  current.reset();
+
+  int status = EXIT_SUCCESS;
+  if (options.require_validation && validation.messages.load() != 0) {
+    std::fprintf(stderr, "example.triangle: error: the validation layer reported messages\n");
+    status = EXIT_FAILURE;
+  }
+  if (options.frames && presented < *options.frames) {
+    std::fprintf(stderr, "example.triangle: error: presented %zu of %zu frames\n", presented,
+                 *options.frames);
+    status = EXIT_FAILURE;
+  }
+  if (options.resize_at && resize_requested) {
+    const auto after = window->framebufferSize();
+    const bool changed = after && (after->width != size_at_resize_request.width ||
+                                   after->height != size_at_resize_request.height);
+    if (changed && recreations == 0) {
+      std::fprintf(stderr,
+                   "example.triangle: error: the window was resized but the Swapchain was not "
+                   "recreated\n");
+      status = EXIT_FAILURE;
+    }
+    std::printf("example.triangle: resize=%s recreations=%zu\n",
+                changed ? "observed" : "refused-by-the-window-system", recreations);
+  }
+  if (status == EXIT_SUCCESS)
+    std::printf("example.triangle: frames=PASS presented=%zu\n", presented);
+  return status;
+}
+} // namespace
+
+int main(int argc, char **argv) {
+  Options options;
+  if (!parseOptions(argc, argv, options)) {
+    std::fprintf(stderr, "usage: terreate_example_triangle [--frames N] [--resize-at K] "
+                         "[--require-validation]\n");
+    return EXIT_FAILURE;
+  }
+  // A scripted run without a window system is reported as SKIP, never PASS.
+#if !defined(_WIN32) && !defined(__APPLE__)
+  const char *display = std::getenv("DISPLAY");
+  const char *wayland = std::getenv("WAYLAND_DISPLAY");
+  if (options.frames &&
+      !((display != nullptr && *display != '\0') || (wayland != nullptr && *wayland != '\0'))) {
+    std::puts("example.triangle: frames=SKIP reason=no DISPLAY or WAYLAND_DISPLAY");
+    return EXIT_SUCCESS;
+  }
+#endif
+  return run(options);
+}

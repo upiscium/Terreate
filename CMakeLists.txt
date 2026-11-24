@@ -35,6 +35,13 @@ endif()
 option(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS
   "Build the optional Terreate Platform-Graphics Integration component"
   ${_terreate_integration_platform_graphics_default})
+# The examples use the Integration and follow its actual setting by default (so
+# the gate compiles them, and turning the Integration off turns them off); they
+# are not installed. Asking for them without the
+# Integration is a configure error below.
+option(TERREATE_BUILD_EXAMPLES
+  "Build the Terreate examples (needs the Platform-Graphics Integration)"
+  ${TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS})
 
 set(TERREATE_MINIMUM_VULKAN_API_VERSION "1.3")
 
@@ -358,6 +365,13 @@ if((TERREATE_BUILD_PLATFORM OR TERREATE_BUILD_GRAPHICS) AND
   message(FATAL_ERROR
     "Terreate Platform and Graphics require Terreate Core; "
     "set TERREATE_BUILD_CORE=ON instead of enabling Core implicitly")
+endif()
+
+if(TERREATE_BUILD_EXAMPLES AND NOT TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS)
+  message(FATAL_ERROR
+    "TERREATE_BUILD_EXAMPLES=ON requires "
+    "TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=ON; Terreate does not enable a "
+    "component implicitly. Enable it, or set TERREATE_BUILD_EXAMPLES=OFF")
 endif()
 
 if(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS)
@@ -990,6 +1004,12 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "integration\\.two_window_swapchain: two-window=PASS"
       SKIP_REGULAR_EXPRESSION "integration\\.two_window_swapchain: two-window=SKIP"
       FAIL_REGULAR_EXPRESSION "integration\\.two_window_swapchain.*: (assertion=FAIL|.*BLOCKED)")
+
+    # The windowed triangle example (and its scripted CTest) is built with the
+    # Integration.
+    if(TERREATE_BUILD_EXAMPLES)
+      add_subdirectory(examples/triangle)
+    endif()
   endif()
 
   add_test(
