@@ -65,7 +65,8 @@ To run the window class locally on a machine without a display: start an X serve
 These are stated so a green gate is not read as more than it is:
 
 - The window class does not exercise minimize or zero-size recovery, a guaranteed `out_of_date`, or a window-manager close request (see `example.triangle`).
-- `example.triangle` does not require the resize to happen, and does not report which old-generation retirement path ran.
+- `example.triangle` requires the resize to happen (`--require-resize`) and reports per-path counts, but it cannot force the window system to answer: where the resize is refused it reports SKIP. It does not require `out_of_date` or zero-size paths, and shutdown always idles the Queue, so it never tests the retirement queue on its own.
+- Retirement through the queue is exercised only on a device with present fences; without them every recreation reports `retired_via_queue_idle`.
 - The CI/hosted-runner question is open: no hosted CI exists yet, so the matrix above is what a developer runs, not what is enforced on every push.
 
 ## Graphics foundation graduation
