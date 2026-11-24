@@ -446,6 +446,18 @@ int gpuTest() {
   check(collected && retirement.pendingCount() == 0 && retirement.requireEmpty().has_value(),
         "the old Swapchain is destroyed once its present fences are signaled, with no wait-idle");
 
+  // The documented rule: once the old generation has been collected, its present
+  // semaphores (and the acquire objects used with them) are free to reuse. Reuse
+  // them now for the new Swapchain, with no wait-idle in between; the validation
+  // layer reports a violation if the rule were wrong.
+  if (collected) {
+    bool reuse_ok = true;
+    for (std::size_t frame = 0; frame < next.images().size() * 2 && reuse_ok; ++frame)
+      reuse_ok = runFrame(next, objects);
+    check(reuse_ok,
+          "the old generation's semaphores are reused for the new Swapchain once it was collected");
+  }
+
   // The queue with application-made fences: an unsignaled fence keeps its
   // Swapchain, a signaled one releases it, and only the ready entry goes.
   {
