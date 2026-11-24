@@ -268,6 +268,18 @@ int nativeTest() {
   auto window = createWindow(*runtime, {.width = 320, .height = 240, .title = "terreate"});
   if (!window)
     return blocked("native Window");
+#if defined(GLFW_PLATFORM_WAYLAND)
+  // Wayland maps a window only after a buffer is attached, and this test never
+  // draws, so the compositor never maps it and sends it no resize. That is not a
+  // defect of the event path: the two-window integration test, which presents,
+  // sees real resizes on Wayland. Report SKIP, never PASS, for what cannot be
+  // checked here.
+  if (glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
+    std::puts("platform.native_events: native-events=SKIP "
+              "reason=Wayland maps a window only after a buffer is attached");
+    return EXIT_SUCCESS;
+  }
+#endif
   // A real window system reports the resize asynchronously; wait for it.
   glfwSetWindowSize(window->nativeHandle(), 400, 300);
   bool resized = false;
