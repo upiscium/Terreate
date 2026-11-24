@@ -967,6 +967,20 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
         "integration\\.native_platform_graphics: native-integration=SKIP"
       FAIL_REGULAR_EXPRESSION
         "integration\\.native_platform_graphics: (assertion=FAIL|.*BLOCKED)")
+
+    # #351: two real windows with independent Surfaces and Swapchains on one shared
+    # Device. Needs a window system and reports SKIP without one.
+    add_executable(terreate_integration_two_window_swapchain_tests
+      tests/test_integration_two_window_swapchain.cpp)
+    target_link_libraries(terreate_integration_two_window_swapchain_tests PRIVATE
+      Terreate::IntegrationPlatformGraphics)
+    terreate_configure_target(terreate_integration_two_window_swapchain_tests)
+    add_test(NAME integration.two_window_swapchain
+      COMMAND terreate_integration_two_window_swapchain_tests native)
+    set_tests_properties(integration.two_window_swapchain PROPERTIES
+      PASS_REGULAR_EXPRESSION "integration\\.two_window_swapchain: two-window=PASS"
+      SKIP_REGULAR_EXPRESSION "integration\\.two_window_swapchain: two-window=SKIP"
+      FAIL_REGULAR_EXPRESSION "integration\\.two_window_swapchain.*: (assertion=FAIL|.*BLOCKED)")
   endif()
 
   add_test(
