@@ -1,4 +1,5 @@
-// A windowed triangle written with Terreate's API only.
+// A windowed triangle: the Vulkan objects, recording, submission and presentation
+// go through Terreate's API.
 //
 // Read it top to bottom: it opens a window, creates the Vulkan objects through
 // Terreate, and runs an application-owned frame loop (one frame in flight): poll
@@ -7,8 +8,13 @@
 // nothing; every wait below is a call this file makes.
 //
 // Native calls this file still makes, because Terreate leaves them to the
-// application: glfwSetWindowSize (scripted resize only) and vkQueueWaitIdle (the
-// conservative way to drop an old Swapchain when present fences are unavailable).
+// application or has no wrapper for them:
+//   - vkQueueWaitIdle: dropping a generation whose present fences cannot prove
+//     the presents are done, a pipeline rebuild after a format change, and
+//     shutdown;
+//   - raw VkImageMemoryBarrier2 structs (recordBarriers takes them) built from
+//     SwapchainImage::nativeImage, and Queue::nativeHandle for the idle call;
+//   - glfwSetWindowSize on Window::nativeHandle (scripted resize only).
 //
 // Modes: no arguments runs until the window is closed. For tests:
 //   --frames N          present N frames, then exit
@@ -42,6 +48,7 @@
 
 #include "triangle_spirv.hpp"
 
+#define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
@@ -53,6 +60,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -107,7 +115,6 @@ struct ValidationSink {
 // Everything that belongs to one Swapchain generation. It is dropped (or handed
 // to the retirement queue) as a whole when the Swapchain is recreated.
 struct Generation {
-  graphics::Swapchain swapchain;
   /// One present semaphore per image index: reused only when that index is
   /// acquired again from this same Swapchain.
   std::vector<graphics::Semaphore> render_done{};
@@ -118,6 +125,9 @@ struct Generation {
   /// A present returned an error or out_of_date: its fence may never signal, so
   /// this generation is dropped behind a queue idle instead.
   bool tainted = false;
+  /// Declared last, so it is destroyed first: before the semaphores and fences
+  /// of its images.
+  graphics::Swapchain swapchain;
 };
 
 // What stays alive behind a Swapchain that went to the retirement queue.
@@ -160,10 +170,13 @@ bool parseOptions(int argc, char **argv, Options &options) {
       return false;
     }
   }
+  // A resize that is asked for after the last frame would never happen.
+  if (options.frames && options.resize_at && *options.resize_at >= *options.frames)
+    return false;
   return true;
 }
 
-int run(const Options &options) {
+int runApplication(const Options &options, ValidationSink &validation, std::size_t &presented_out) {
   // ---- Platform: a Runtime and a Window ----
   auto runtime = platform::createRuntime();
   if (!runtime)
@@ -204,7 +217,6 @@ int run(const Options &options) {
   const auto instance_plan = graphics::resolveInstance(instance_description, *loader);
   if (!instance_plan)
     return fail("resolve the Instance", instance_plan);
-  ValidationSink validation;
   auto instance =
       graphics::createInstance(*instance_plan, terreate::DiagnosticSinkView::bind(validation));
   if (!instance)
@@ -320,7 +332,7 @@ int run(const Options &options) {
 
   // ---- Swapchain generations ----
   const auto make_generation = [&](graphics::Swapchain swapchain) -> std::optional<Generation> {
-    Generation generation{std::move(swapchain)};
+    Generation generation{.swapchain = std::move(swapchain)};
     const std::size_t images = generation.swapchain.images().size();
     generation.render_done.reserve(images);
     generation.present_fences.reserve(images);
@@ -377,11 +389,34 @@ int run(const Options &options) {
   if (!acquire_semaphore || !frame_fence)
     return fail("create the frame synchronization objects");
 
+  // Whatever happens next, including an early return on an error, this runs
+  // before anything it covers is destroyed (it is declared after them): no GPU
+  // work may still use the objects, and the retirement queue must be empty
+  // (destroying a non-empty queue is a contract violation).
+  struct ScopeExit {
+    std::function<void()> fn;
+    ScopeExit() = default;
+    ScopeExit(const ScopeExit &) = delete;
+    ScopeExit &operator=(const ScopeExit &) = delete;
+    ~ScopeExit() {
+      if (fn)
+        fn();
+    }
+  } finish;
+  finish.fn = [&] {
+    vkQueueWaitIdle(native_queue);
+    // After the idle every present fence is signaled, so one collect drains the
+    // queue; a lost device is the only reason it may not.
+    if (const auto collected = retirement.collect(*device); !collected) [[maybe_unused]]
+      const auto reclaimed = retirement.reclaimAfterDeviceLoss(*device);
+    retired.clear();
+  };
+
   // Retire the current generation: behind the retirement queue when its present
   // fences prove the presents are done, else behind a queue idle (one native call).
-  const auto drop_current = [&]() -> bool {
+  const auto drop_current = [&]() {
     if (!current)
-      return true;
+      return;
     if (use_present_fences && !current->tainted) {
       std::vector<vk::Fence> fences;
       for (std::size_t i = 0; i < current->present_fences.size(); ++i)
@@ -394,20 +429,20 @@ int run(const Options &options) {
         retired.push_back(
             Retired{std::move(current->render_done), std::move(current->present_fences)});
         current.reset();
-        return true;
+        return;
       }
     }
     vkQueueWaitIdle(native_queue);
     current.reset();
-    return true;
   };
 
-  // Recreate the Swapchain for the window's current framebuffer. Returns false
-  // when the window has no extent now (the caller waits for events and retries).
-  const auto recreate = [&]() -> int {
+  enum class Recreated : std::uint8_t { failed, deferred, done };
+  // Recreate the Swapchain for the window's current framebuffer. `deferred`:
+  // the window has no extent now (the caller waits for events and retries).
+  const auto recreate = [&]() -> Recreated {
     const auto size = window->framebufferSize();
     if (!size)
-      return -1;
+      return Recreated::failed;
     graphics::SwapchainRequest request;
     request.extent = vk::Extent2D{size->width, size->height};
     auto result =
@@ -416,25 +451,24 @@ int run(const Options &options) {
     if (!result.has_value()) {
       std::fprintf(stderr, "example.triangle: error: recreate the Swapchain: %s\n",
                    result.error().code().message().c_str());
-      return -1;
+      return Recreated::failed;
     }
     if (result->status == graphics::RecreationStatus::deferred_zero_extent)
-      return 0;
+      return Recreated::deferred;
     // The format may have changed: a pipeline is built for one format.
     const vk::Format format = result->swapchain->configuration()->format;
     if (format != pipeline_format) {
       vkQueueWaitIdle(native_queue);
       if (!build_pipeline(format))
-        return -1;
+        return Recreated::failed;
     }
     // The old generation goes away; the new one is ready to render.
     auto next = make_generation(std::move(*result->swapchain));
     if (!next)
-      return -1;
-    if (!drop_current())
-      return -1;
+      return Recreated::failed;
+    drop_current();
     current = std::move(next);
-    return 1;
+    return Recreated::done;
   };
 
   // ---- The frame loop ----
@@ -443,34 +477,57 @@ int run(const Options &options) {
   std::size_t frame_serial = 0;
   int identity_domain = 0;
   bool resize_requested = false;
+  std::size_t frames_since_resize_request = 0;
+  std::size_t recreations_at_resize_request = 0;
   vk::Extent2D size_at_resize_request{};
   bool close_requested = false;
   bool needs_recreation = false;
+
+  // Events, from poll or wait alike: nothing the window reports is dropped.
+  const auto handle_events = [&](const platform::EventBatch &batch) {
+    for (const auto &event : batch.events) {
+      if (std::holds_alternative<platform::CloseRequested>(event.data))
+        close_requested = true;
+      else if (std::holds_alternative<platform::FramebufferResized>(event.data))
+        needs_recreation = true;
+    }
+  };
+  // A suboptimal status only asks for a recreation when the Swapchain really has
+  // another extent than the window (some systems report it permanently).
+  const auto extent_differs = [&]() {
+    const auto size = window->framebufferSize();
+    const auto extent = current->swapchain.configuration()->extent;
+    return size && (size->width != extent.width || size->height != extent.height);
+  };
+  // The scripted resize is over once it was seen (a recreation followed) or the
+  // window system had enough frames to answer.
+  const auto resize_pending = [&]() {
+    return resize_requested && recreations == recreations_at_resize_request &&
+           frames_since_resize_request < 60;
+  };
 
   while (!close_requested) {
     // 1. Events: the application decides when and how to wait for them.
     const auto batch = runtime->pollEvents();
     if (!batch)
       return fail("poll events", batch);
-    for (const auto &event : batch->events) {
-      if (std::holds_alternative<platform::CloseRequested>(event.data))
-        close_requested = true;
-      else if (std::holds_alternative<platform::FramebufferResized>(event.data))
-        needs_recreation = true;
-    }
+    handle_events(*batch);
     if (close_requested || window->shouldClose().value_or(false))
       break;
-    if (options.frames && presented >= *options.frames)
+    if (options.frames && presented >= *options.frames && !resize_pending())
       break;
 
     // Scripted resize: ask the window system once, at the requested frame.
     if (options.resize_at && !resize_requested && presented >= *options.resize_at) {
       resize_requested = true;
+      recreations_at_resize_request = recreations;
       const auto before = window->framebufferSize();
       size_at_resize_request =
           vk::Extent2D{before ? before->width : 0, before ? before->height : 0};
       glfwSetWindowSize(window->nativeHandle(), 400, 300);
     }
+    if (resize_requested)
+      ++frames_since_resize_request;
 
     // Free what the retirement queue has let go of.
     if (retirement.pendingCount() > 0 || !retired.empty()) {
@@ -486,17 +543,22 @@ int run(const Options &options) {
     if (!size)
       return fail("framebuffer size", size);
     if (size->width == 0 || size->height == 0) {
-      if (!runtime->waitEvents(std::chrono::milliseconds(100)))
-        return fail("wait for events");
+      needs_recreation = true; // the size will differ when the window comes back
+      const auto waited = runtime->waitEvents(std::chrono::milliseconds(100));
+      if (!waited)
+        return fail("wait for events", waited);
+      handle_events(*waited);
       continue;
     }
     if (needs_recreation) {
-      const int done = recreate();
-      if (done < 0)
+      const Recreated done = recreate();
+      if (done == Recreated::failed)
         return fail("recreate the Swapchain");
-      if (done == 0) {
-        if (!runtime->waitEvents(std::chrono::milliseconds(100)))
-          return fail("wait for events");
+      if (done == Recreated::deferred) {
+        const auto waited = runtime->waitEvents(std::chrono::milliseconds(100));
+        if (!waited)
+          return fail("wait for events", waited);
+        handle_events(*waited);
         continue;
       }
       needs_recreation = false;
@@ -507,18 +569,21 @@ int run(const Options &options) {
     if (!frame_fence->wait(UINT64_MAX))
       return fail("wait for the frame fence");
 
-    // 4. Acquire. out_of_date acquired nothing: recreate and try again.
+    // 4. Acquire. out_of_date acquired nothing: recreate and try again. The
+    // timeout is explicit: a compositor that stops presenting must not hang the
+    // example for ever, so the wait is bounded and a timeout is just a retry.
     graphics::AcquireDescription acquire;
-    acquire.timeout_ns = UINT64_MAX;
+    acquire.timeout_ns = 1'000'000'000;
     acquire.semaphore = acquire_semaphore->nativeHandle();
     const auto acquired = graphics::acquireNextImage(*device, current->swapchain, acquire);
     if (!acquired)
       return fail("acquire an image", acquired);
     if (!acquired->image) {
-      needs_recreation = true;
-      continue;
+      if (acquired->status == graphics::AcquireStatus::out_of_date)
+        needs_recreation = true;
+      continue; // out_of_date, timeout or not_ready: nothing was acquired
     }
-    if (acquired->recreationNeeded())
+    if (acquired->status == graphics::AcquireStatus::acquired_suboptimal && extent_differs())
       needs_recreation = true;
     const graphics::SwapchainImage image = *acquired->image;
     const std::size_t index = image.index();
@@ -609,30 +674,27 @@ int run(const Options &options) {
     const auto result = graphics::presentImage(*device, queue, current->swapchain, present);
     if (!result)
       return fail("present", result);
-    if (result->status == graphics::PresentStatus::out_of_date)
+    if (result->status == graphics::PresentStatus::out_of_date) {
       current->tainted = true;
-    else if (use_present_fences)
-      current->armed[index] = true;
-    if (result->recreationNeeded())
       needs_recreation = true;
+    } else {
+      if (use_present_fences)
+        current->armed[index] = true;
+      if (result->recreationNeeded() && extent_differs())
+        needs_recreation = true;
+    }
     ++presented;
   }
 
-  // ---- Shutdown: nothing may use the objects any more ----
-  vkQueueWaitIdle(native_queue);
-  while (retirement.pendingCount() > 0) {
-    const auto collected = retirement.collect(*device);
-    if (!collected)
-      return fail("collect the retired Swapchains at shutdown", collected);
-  }
-  retired.clear();
-  current.reset();
+  // ---- Shutdown: the armed present fences first (the evidence the retirement
+  // path relies on), then the scope guard idles the Queue and drains the queue.
+  if (current && use_present_fences)
+    for (std::size_t i = 0; i < current->present_fences.size(); ++i)
+      if (current->armed[i] && !current->present_fences[i].wait(UINT64_MAX))
+        return fail("wait for a present fence at shutdown");
 
+  presented_out = presented;
   int status = EXIT_SUCCESS;
-  if (options.require_validation && validation.messages.load() != 0) {
-    std::fprintf(stderr, "example.triangle: error: the validation layer reported messages\n");
-    status = EXIT_FAILURE;
-  }
   if (options.frames && presented < *options.frames) {
     std::fprintf(stderr, "example.triangle: error: presented %zu of %zu frames\n", presented,
                  *options.frames);
@@ -642,14 +704,29 @@ int run(const Options &options) {
     const auto after = window->framebufferSize();
     const bool changed = after && (after->width != size_at_resize_request.width ||
                                    after->height != size_at_resize_request.height);
-    if (changed && recreations == 0) {
+    const std::size_t recreated = recreations - recreations_at_resize_request;
+    if (changed && recreated == 0) {
       std::fprintf(stderr,
                    "example.triangle: error: the window was resized but the Swapchain was not "
                    "recreated\n");
       status = EXIT_FAILURE;
     }
-    std::printf("example.triangle: resize=%s recreations=%zu\n",
-                changed ? "observed" : "refused-by-the-window-system", recreations);
+    std::printf("example.triangle: resize=%s recreations-since-request=%zu\n",
+                changed ? "observed" : "refused-by-the-window-system", recreated);
+  }
+  return status;
+}
+
+// Runs the application, lets every Terreate object go, and only then judges the
+// validation messages, so those of the destruction count too (the sink is
+// declared before anything that reports to it).
+int run(const Options &options) {
+  ValidationSink validation;
+  std::size_t presented = 0;
+  int status = runApplication(options, validation, presented);
+  if (options.require_validation && validation.messages.load() != 0) {
+    std::fprintf(stderr, "example.triangle: error: the validation layer reported messages\n");
+    status = EXIT_FAILURE;
   }
   if (status == EXIT_SUCCESS)
     std::printf("example.triangle: frames=PASS presented=%zu\n", presented);
@@ -661,10 +738,12 @@ int main(int argc, char **argv) {
   Options options;
   if (!parseOptions(argc, argv, options)) {
     std::fprintf(stderr, "usage: terreate_example_triangle [--frames N] [--resize-at K] "
-                         "[--require-validation]\n");
+                         "[--require-validation]   (K must be smaller than N)\n");
     return EXIT_FAILURE;
   }
   // A scripted run without a window system is reported as SKIP, never PASS.
+  // (With a display configured, a failure to use it is a real failure, as in the
+  // native tests.)
 #if !defined(_WIN32) && !defined(__APPLE__)
   const char *display = std::getenv("DISPLAY");
   const char *wayland = std::getenv("WAYLAND_DISPLAY");
