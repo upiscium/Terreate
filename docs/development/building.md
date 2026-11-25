@@ -23,5 +23,9 @@ Write prose with Markdown links, not the `{ref}` or `{cpp:...}` roles: the warni
 those roles are not checked (see `docs/conf.py`), because the API pages are rendered from
 Doxygen XML, which `docs.doxygen` already checks.
 
+`just project::lint` runs one clang-tidy per core, at most 8 by default (each process needs about a
+gigabyte on the Vulkan headers); `LINT_JOBS=<n>` overrides the number. A file's output is shown only
+when it fails, and the first failure fails the recipe.
+
 The test classes, outcome words and run environments are in the
 [test matrix](graphics-test-matrix.md).
