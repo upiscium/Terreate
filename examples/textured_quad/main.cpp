@@ -46,6 +46,7 @@
 #include <terreate/graphics/pipeline_layout.hpp>
 #include <terreate/graphics/presentation.hpp>
 #include <terreate/graphics/rendering_commands.hpp>
+#include <terreate/graphics/retirement.hpp>
 #include <terreate/graphics/sampler.hpp>
 #include <terreate/graphics/shader_module.hpp>
 #include <terreate/graphics/spirv_binary.hpp>
@@ -548,6 +549,9 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
 
   std::vector<Retired> retired;
   graphics::SwapchainRetirementQueue retirement;
+  // The upload's staging memory is retired here with the receipt of the upload submission,
+  // declared before `finish` so that `finish` drains it before it is destroyed.
+  graphics::RetirementQueue upload_retirement;
 
   // ---- Frame objects: one frame in flight ----
   graphics::CommandPoolDescription pool_description;
@@ -586,6 +590,8 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
     vkQueueWaitIdle(native_queue);
     // After the idle every present fence is signaled, so one collect drains the
     // queue; a lost device is the only reason it may not.
+    if (const auto uploads = upload_retirement.collect(); !uploads) [[maybe_unused]]
+      const auto reclaimed_uploads = upload_retirement.reclaimAfterDeviceLoss(*device);
     const bool collected = retirement.collect(*device).has_value();
     if (!collected) [[maybe_unused]]
       const auto reclaimed = retirement.reclaimAfterDeviceLoss(*device);
@@ -650,19 +656,19 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
       return fail("reset the frame fence");
     ++frame_serial;
     const std::array<const graphics::CommandBuffer *, 1> upload_buffers{&*command};
-    graphics::SubmissionDescription submission;
-    submission.command_buffers = upload_buffers;
-    submission.fence = frame_fence->nativeHandle();
-    submission.completion.device = &*device;
-    submission.completion.queue = queue;
-    submission.completion.requested = {&identity_domain, frame_serial};
-    submission.completion.effective = {&identity_domain, frame_serial};
-    submission.completion.condition =
-        graphics::FenceCompletionCondition{frame_fence->nativeHandle()};
-    if (const auto receipt = graphics::submit(*device, queue, submission); !receipt)
-      return fail("submit the upload", receipt);
-    if (!frame_fence->wait(UINT64_MAX))
-      return fail("wait for the upload");
+    const auto upload_receipt =
+        graphics::submitFenced(*device, queue, *frame_fence, {&identity_domain, frame_serial},
+                               {.command_buffers = upload_buffers});
+    if (!upload_receipt)
+      return fail("submit the upload", upload_receipt);
+    // The staging memory must outlive the GPU's use of it: hand it to the queue with the
+    // receipt instead of waiting here. The frame loop waits on this same fence before it reuses
+    // the command buffer, and the scope guard drains the queue on every exit.
+    const std::array<graphics::SubmissionReceipt, 1> upload_uses{*upload_receipt};
+    if (!upload_retirement.retire(*upload, upload_uses)) {
+      vkQueueWaitIdle(native_queue); // the owner stays here: the GPU must be done before it dies
+      return fail("retire the upload staging memory");
+    }
   }
 
   // Retire the current generation: behind the retirement queue when its present
@@ -794,6 +800,11 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
     if (resize_requested)
       ++frames_since_resize_request;
 
+    if (upload_retirement.pendingCount() > 0) {
+      const auto collected_uploads = upload_retirement.collect();
+      if (!collected_uploads)
+        return fail("collect the retired upload staging memory", collected_uploads);
+    }
     // Free what the retirement queue has let go of.
     if (retirement.pendingCount() > 0 || !retired.empty()) {
       const auto collected = retirement.collect(*device);
@@ -955,18 +966,10 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
         *acquire_semaphore, vk::PipelineStageFlagBits2::eColorAttachmentOutput, 0)};
     const std::array<graphics::SubmissionSemaphore, 1> signals{graphics::submissionSignal(
         current->render_done[index], vk::PipelineStageFlagBits2::eAllCommands, 0)};
-    graphics::SubmissionDescription submission;
-    submission.command_buffers = buffers;
-    submission.waits = waits;
-    submission.signals = signals;
-    submission.fence = frame_fence->nativeHandle();
-    submission.completion.device = &*device;
-    submission.completion.queue = queue;
-    submission.completion.requested = {&identity_domain, frame_serial};
-    submission.completion.effective = {&identity_domain, frame_serial};
-    submission.completion.condition =
-        graphics::FenceCompletionCondition{frame_fence->nativeHandle()};
-    if (const auto receipt = graphics::submit(*device, queue, submission); !receipt)
+    if (const auto receipt = graphics::submitFenced(
+            *device, queue, *frame_fence, {&identity_domain, frame_serial},
+            {.command_buffers = buffers, .waits = waits, .signals = signals});
+        !receipt)
       return fail("submit the frame", receipt);
 
     // 7. Present. A present fence is reused for the same image index only after

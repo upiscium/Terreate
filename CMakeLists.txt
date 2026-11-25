@@ -890,6 +890,16 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.barriers: barriers=PASS validation-layer=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.barriers.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
 
+    # #441: fenced submission helpers (headless).
+    add_executable(terreate_graphics_submit_fenced_tests tests/test_graphics_submit_fenced.cpp)
+    target_link_libraries(terreate_graphics_submit_fenced_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_submit_fenced_tests)
+    add_test(NAME graphics.submit_fenced COMMAND terreate_graphics_submit_fenced_tests)
+    set_tests_properties(graphics.submit_fenced PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.submit_fenced: submit_fenced=PASS validation-layer=PASS"
+      SKIP_REGULAR_EXPRESSION "graphics\\.submit_fenced: submit_fenced=SKIP"
+      FAIL_REGULAR_EXPRESSION "graphics\\.submit_fenced.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+
     # #230: Fence and Semaphore objects, headless.
     add_executable(terreate_graphics_synchronization_tests tests/test_graphics_synchronization.cpp)
     target_link_libraries(terreate_graphics_synchronization_tests PRIVATE Terreate::Graphics)

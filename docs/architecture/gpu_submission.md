@@ -81,3 +81,42 @@ The registered source tests intercept native calls for exact argument/result
 checks and exercise real headless fence completion. The separate timeline test
 requires genuinely enabled timeline support; capability-unavailable is SKIP,
 never PASS. Project verification and package smoke are host-owned.
+
+## Fenced submission helpers (#441)
+
+`<terreate/graphics/synchronization.hpp>` shortens the common case of a submission that signals
+one `Fence` without adding any behaviour:
+
+- `fenceCompletion(device, queue, fence, identity)` and `timelineCompletion(device, queue,
+  timeline, signal_value, identity)` only build a `CompletionDescription`. `requested` and
+  `effective` are the same identity (the common case); fill the struct yourself to say anything
+  else. A moved-from `Fence` gives a null native fence, which `submit` refuses.
+- `submitFenced(device, queue, fence, identity, {command_buffers, waits, signals})` makes exactly
+  one `submit()` with the fence as the native fence and as the completion condition. It never
+  waits, returns `submit()`'s errors unchanged and hands back the same `SubmissionReceipt`. The
+  fence must be unsignaled and not used by another submission, as with `submit`.
+- The identity's domain and a nonzero serial are still the caller's: the library does not number
+  submissions.
+
+What the tests show: the builders put every argument in the right member, `submitFenced` returns
+a receipt whose condition is the given fence, a moved-from fence is refused, and a resource
+retired with the receipt is collected once the fence is signaled. That `submitFenced` makes one
+native submission holds by construction (it calls `submit` once); no test counts native calls.
+
+## The one-shot upload pattern
+
+Record the upload, call `submitFenced`, then hand the `PreparedUploadBatch` to a
+`RetirementQueue` with the receipt instead of waiting for the fence on the spot:
+
+```cpp
+const auto receipt = graphics::submitFenced(device, queue, fence, identity, {.command_buffers = buffers});
+const std::array<graphics::SubmissionReceipt, 1> uses{*receipt};
+upload_retirement.retire(*upload, uses);   // the staging memory dies only after the fence signals
+```
+
+The queue lives longer than anything it covers, is polled with `collect()` (a non-blocking
+observation per receipt), and is drained when the application shuts down. Because the staging
+memory is owned by the queue from the moment of submission, no early return can destroy memory
+the GPU still reads; if `retire` itself fails the owner is still the caller's, so the caller must
+wait for the GPU (one `vkQueueWaitIdle`) before it lets go. `examples/textured_quad` uses this
+pattern.
