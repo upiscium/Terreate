@@ -39,8 +39,16 @@ lint:
     case "$jobs" in
       ""|*[!0-9]*|0) printf '%s\n' "LINT_JOBS must be a positive integer, got: $jobs" >&2; exit 1 ;;
     esac
-    git ls-files --cached --others --exclude-standard -z -- \
-      '*.cc' '*.cpp' '*.cxx' |
+    # The files: every tracked or untracked C++ source, or the newline-separated paths in the
+    # file LINT_LIST names (used by `fast::lint` to lint a subset with exactly these rules).
+    list_files() {
+      if [ -n "${LINT_LIST:-}" ]; then
+        tr '\n' '\0' < "$LINT_LIST"
+      else
+        git ls-files --cached --others --exclude-standard -z -- '*.cc' '*.cpp' '*.cxx'
+      fi
+    }
+    list_files |
       xargs -r -0 -n 1 -P "$jobs" sh -c '
         file="$0"
         [ -f "$file" ] || exit 0
