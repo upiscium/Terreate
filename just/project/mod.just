@@ -43,3 +43,14 @@ check:
       exit 1
     fi
     exec nix develop --command just project::check-in-dev-shell
+
+# Build the API reference (Doxygen HTML under .build/default/docs/doxygen/html).
+[working-directory: root]
+docs: configure
+    #!/usr/bin/env sh
+    set -eu
+    if [ -f CMakePresets.json ]; then
+      cmake --build --preset "${CMAKE_PRESET:-default}" --target terreate_docs
+    else
+      cmake --build "${CMAKE_BUILD_DIR:-.build/default}" --target terreate_docs
+    fi

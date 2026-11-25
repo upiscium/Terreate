@@ -37,6 +37,10 @@
             gdb
             gnused
 
+            # API reference generation (TERREATE_BUILD_DOCS); a shell tool only,
+            # never a dependency of the CMake package.
+            doxygen
+
             # Vulkan headers, loader, validation, tools, and a software ICD
             # make the API/runtime surface observable in a clean shell.
             vulkanHeaders
