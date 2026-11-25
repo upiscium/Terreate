@@ -157,7 +157,8 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
         "the receipt retires the resource");
 
   // The fence is the one wait: signaled, then the resource is collected.
-  const auto waited = fence->wait(UINT64_MAX);
+  // A finite wait, so a wrong helper fails the test instead of hanging it.
+  const auto waited = fence->wait(10'000'000'000);
   check(waited && *waited == WaitStatus::satisfied, "the fence is signaled");
   const auto collected = retirement.collect();
   check(collected && collected->collected == 1 && collected->pending == 0 &&
@@ -169,8 +170,10 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   if (!spare)
     return blocked("second Fence");
   Fence taken = std::move(*spare);
-  check(!submitFenced(device, queue, *spare, {&domain, 8}, {.command_buffers = buffers}),
-        "a moved-from Fence is refused");
+  const auto refused =
+      submitFenced(device, queue, *spare, {&domain, 8}, {.command_buffers = buffers});
+  check(!refused && refused.error().code() == make_error_code(SubmissionError::invalid_completion),
+        "a moved-from Fence is refused as an invalid completion");
   check(taken.valid(), "the Fence it was moved to is intact");
 
   check(recorder.warnings_or_errors.load() == 0, "the validation layer reports nothing");

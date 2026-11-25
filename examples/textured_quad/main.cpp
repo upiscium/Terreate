@@ -563,6 +563,14 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
   auto command = command_pool->allocatePrimary();
   if (!command)
     return fail("allocate the command buffer", command);
+  // The upload has its own command buffer and fence: the frame loop resets and reuses its own,
+  // and a fence that is reset cannot serve as the completion evidence of retired staging memory.
+  auto upload_command = command_pool->allocatePrimary();
+  auto upload_fence = graphics::createFence(*device, {});
+  if (!upload_command)
+    return fail("allocate the upload command buffer", upload_command);
+  if (!upload_fence)
+    return fail("create the upload fence", upload_fence);
   auto acquire_semaphore = graphics::createSemaphore(*device, {});
   auto frame_fence = graphics::createFence(*device, {.signaled = true});
   if (!acquire_semaphore || !frame_fence)
@@ -643,27 +651,27 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
         VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT;
     buffers_ready.dstAccessMask =
         VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT;
-    if (!command->reset() || !command->begin() ||
-        !graphics::recordBarriers(*device, *command, {.images = std::span{&to_transfer, 1}}) ||
-        !graphics::recordUploadBatch(*device, *command, *upload) ||
+    if (!upload_command->begin() ||
+        !graphics::recordBarriers(*device, *upload_command,
+                                  {.images = std::span{&to_transfer, 1}}) ||
+        !graphics::recordUploadBatch(*device, *upload_command, *upload) ||
         !graphics::recordBarriers(
-            *device, *command,
+            *device, *upload_command,
             {.memory = std::span{&buffers_ready, 1}, .images = std::span{&to_sampled, 1}}) ||
-        !command->end())
+        !upload_command->end())
       return fail("record the upload");
 
-    if (!frame_fence->reset())
-      return fail("reset the frame fence");
     ++frame_serial;
-    const std::array<const graphics::CommandBuffer *, 1> upload_buffers{&*command};
+    const std::array<const graphics::CommandBuffer *, 1> upload_buffers{&*upload_command};
     const auto upload_receipt =
-        graphics::submitFenced(*device, queue, *frame_fence, {&identity_domain, frame_serial},
+        graphics::submitFenced(*device, queue, *upload_fence, {&identity_domain, frame_serial},
                                {.command_buffers = upload_buffers});
     if (!upload_receipt)
       return fail("submit the upload", upload_receipt);
     // The staging memory must outlive the GPU's use of it: hand it to the queue with the
-    // receipt instead of waiting here. The frame loop waits on this same fence before it reuses
-    // the command buffer, and the scope guard drains the queue on every exit.
+    // receipt instead of waiting here. The upload fence is never reset or reused, the queue is
+    // polled in the frame loop, and the scope guard idles the Queue and drains the queue on
+    // every exit. The upload ordering for the frames is the Queue's: same Queue, later submission.
     const std::array<graphics::SubmissionReceipt, 1> upload_uses{*upload_receipt};
     if (!upload_retirement.retire(*upload, upload_uses)) {
       vkQueueWaitIdle(native_queue); // the owner stays here: the GPU must be done before it dies

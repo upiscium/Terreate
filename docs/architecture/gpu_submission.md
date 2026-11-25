@@ -117,6 +117,8 @@ upload_retirement.retire(*upload, uses);   // the staging memory dies only after
 The queue lives longer than anything it covers, is polled with `collect()` (a non-blocking
 observation per receipt), and is drained when the application shuts down. Because the staging
 memory is owned by the queue from the moment of submission, no early return can destroy memory
-the GPU still reads; if `retire` itself fails the owner is still the caller's, so the caller must
+the GPU still reads, provided the fence that proves completion is the upload's own: a fence
+that the application later resets (the frame loop's) cannot serve as the evidence, and
+neither can a command buffer it reuses; if `retire` itself fails the owner is still the caller's, so the caller must
 wait for the GPU (one `vkQueueWaitIdle`) before it lets go. `examples/textured_quad` uses this
 pattern.
