@@ -1017,6 +1017,7 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
     if(TERREATE_BUILD_EXAMPLES)
       add_subdirectory(examples/getting_started)
       add_subdirectory(examples/triangle)
+      add_subdirectory(examples/textured_quad)
     endif()
   endif()
 
