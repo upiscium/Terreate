@@ -40,6 +40,10 @@
             # Documentation generation (TERREATE_BUILD_DOCS): Doxygen for the API
             # reference, Sphinx (MyST, breathe) for the pages; shell tools only,
             # never a dependency of the CMake package.
+            # Compiler cache: the CMake-driven tests compile the same sources several
+            # times, so a cache makes the gate and ordinary rebuilds much faster.
+            ccache
+
             doxygen
             (python3.withPackages (ps: [ ps.sphinx ps.myst-parser ps.breathe ]))
 
@@ -89,6 +93,16 @@
             export TERREATE_VULKAN_VALIDATION_LAYERS="${vulkanValidationLayers}"
             export TERREATE_VULKAN_TOOLS="${vulkanTools}"
             export TERREATE_VULKAN_RUNTIME="${vulkanRuntime}"
+
+            # CMake reads CMAKE_CXX_COMPILER_LAUNCHER from the environment, so the
+            # preset and every configure started by a test use the cache. The
+            # invoking environment may override each value, and an empty
+            # CMAKE_CXX_COMPILER_LAUNCHER turns the cache off.
+            export CMAKE_CXX_COMPILER_LAUNCHER="''${CMAKE_CXX_COMPILER_LAUNCHER-ccache}"
+            export CCACHE_MAXSIZE="''${CCACHE_MAXSIZE-5G}"
+            # Hash the compiler wrapper by content, not by size and time (every file in the
+            # Nix store has the same time), so a new compiler never reuses old objects.
+            export CCACHE_COMPILERCHECK="''${CCACHE_COMPILERCHECK-content}"
           '';
         };
       });
