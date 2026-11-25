@@ -439,3 +439,50 @@ editing leaves formatting/build/CTest/package verification to the supervisor.
 
 - **#265:** bind/draw/dispatch, dynamic bind-time offsets and bounds, scheduling
   and GPU completion remain separate. B1-A does not close overall #266 or #243.
+
+## Readable descriptor descriptions (#440)
+
+The descriptions stay plain values; two small additions remove the boilerplate without inferring
+anything.
+
+**Layout bindings and pool sizes** are named aggregates, so C++20 designated initializers read well
+and need no API:
+
+```cpp
+set_description.bindings = {
+    {.binding = 0, .descriptor_type = vk::DescriptorType::eUniformBuffer,
+     .descriptor_count = 1, .stage_flags = vk::ShaderStageFlagBits::eFragment},
+    {.binding = 1, .descriptor_type = vk::DescriptorType::eCombinedImageSampler,
+     .descriptor_count = 1, .stage_flags = vk::ShaderStageFlagBits::eFragment}};
+```
+
+**Write builders** (`<terreate/graphics/descriptor_write.hpp>`) build the common one-element
+`DescriptorWriteDescription` (`first_array_element` 0), named for the descriptor type they write:
+`uniformBufferWrite`, `storageBufferWrite` (`binding, buffer, offset = 0, range = whole buffer`),
+`combinedImageSamplerWrite(binding, image, view, sampler, layout)`, `sampledImageWrite`,
+`storageImageWrite` (the General layout), `samplerWrite`, and the general
+`bufferWrite(binding, type, buffer, offset, range)` for the dynamic buffer types. The type is stated
+by the name and **never inferred from the layout**: `updateDescriptorSet` still checks it against the
+layout (`descriptor_type_mismatch`). The builders only build a value (a `std::bad_alloc` from the
+payload vector is the only failure); the resources are borrowed as in the struct and must outlive
+`updateDescriptorSet`. Arrays of descriptors and a nonzero first array element are written with the
+struct.
+
+```cpp
+const std::array writes{graphics::uniformBufferWrite(0, uniform_buffer),
+                        graphics::combinedImageSamplerWrite(1, texture, view, sampler,
+                                                            vk::ImageLayout::eShaderReadOnlyOptimal)};
+```
+
+**Pool sizing** (`<terreate/graphics/descriptor_pool.hpp>`): `descriptorPoolDescriptionFor(layouts,
+sets_per_layout = 1, flags = {})` sums the descriptor counts of the layouts' effective bindings per
+type, times the sets, with `max_sets` = layouts times sets, into a plain `DescriptorPoolDescription`
+the application can inspect and edit before `createDescriptorPool`; adding a binding to a layout
+therefore cannot leave the pool too small. Errors: a moved-from layout is `invalid_layout`; zero
+sets, no layouts, or a count that overflows 32 bits is `invalid_count`.
+
+What the test shows: `graphics.descriptor_builders` checks each builder's members, that a set written
+with builders passes `updateDescriptorSet` with the validation layer silent, that a wrong type name is
+refused, that the pool description sums correctly and the pool allocates exactly the sets it was sized
+for (and refuses one more), and the named errors. Descriptor arrays, update-after-bind and dynamic
+buffer offsets at draw time are not covered by it.

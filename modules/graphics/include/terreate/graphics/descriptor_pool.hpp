@@ -104,6 +104,17 @@ private:
       -> terreate::Result<DescriptorPool>;
 };
 
+/// The pool description the application's own layouts need: the descriptor counts of every layout's
+/// effective bindings, per type, times `sets_per_layout`, and `max_sets` = layouts times
+/// `sets_per_layout`. A plain value to inspect and edit before `createDescriptorPool`; nothing is
+/// created. A moved-from layout is `invalid_layout`; a count or a set number that overflows 32
+/// bits, or `sets_per_layout` 0, is `invalid_count`. Sizes appear in the order their types first
+/// occur.
+[[nodiscard]] auto descriptorPoolDescriptionFor(std::span<const DescriptorSetLayout *const> layouts,
+                                                std::uint32_t sets_per_layout = 1,
+                                                vk::DescriptorPoolCreateFlags flags = {})
+    -> terreate::Result<DescriptorPoolDescription>;
+
 [[nodiscard]] auto createDescriptorPool(const Device &device,
                                         const DescriptorPoolDescription &description)
     -> terreate::Result<DescriptorPool>;
