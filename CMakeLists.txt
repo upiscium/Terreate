@@ -43,6 +43,12 @@ option(TERREATE_BUILD_EXAMPLES
   "Build the Terreate examples (needs the Platform-Graphics Integration)"
   ${TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS})
 
+# API reference generation (#360): documentation tooling only, never installed or
+# exported, so no package consumer receives a docs dependency. Off by default; the
+# development preset turns it on. Asking for it without doxygen is a configure error.
+option(TERREATE_BUILD_DOCS
+  "Build the Terreate API reference with Doxygen (development only)" OFF)
+
 set(TERREATE_MINIMUM_VULKAN_API_VERSION "1.3")
 
 # Keep the explicit Hpp root available when Terreate is added as a source
@@ -1041,6 +1047,11 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
   set_tests_properties(cmake.package_smoke PROPERTIES
     PASS_REGULAR_EXPRESSION
       "package\\.external_consumer: disabled-diagnostic=PASS source-independence=PASS no-glfw=PASS")
+endif()
+
+if(TERREATE_BUILD_DOCS AND PROJECT_IS_TOP_LEVEL)
+  enable_testing()
+  add_subdirectory(docs)
 endif()
 
 # Each component registers its own install target in the shared export set.

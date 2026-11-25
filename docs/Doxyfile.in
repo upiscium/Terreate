@@ -1,0 +1,40 @@
+# Generated from docs/Doxyfile.in by CMake; do not edit the generated copy.
+PROJECT_NAME           = "Terreate"
+PROJECT_NUMBER         = @PROJECT_VERSION@
+PROJECT_BRIEF          = "A code-first C++23/Vulkan library; the application owns its loop."
+OUTPUT_DIRECTORY       = @TERREATE_DOXYGEN_OUTPUT@
+
+# Only the public include trees are inputs (never src/). Symbols are excluded by name,
+# not by path pattern: a path pattern is matched against the absolute path, so a checkout
+# below a directory named src or detail would silently exclude everything.
+INPUT                  = @TERREATE_DOXYGEN_INPUT@ "@CMAKE_CURRENT_SOURCE_DIR@/mainpage.md"
+USE_MDFILE_AS_MAINPAGE = "@CMAKE_CURRENT_SOURCE_DIR@/mainpage.md"
+FILE_PATTERNS          = *.hpp *.md
+RECURSIVE              = YES
+EXCLUDE_SYMBOLS        = *::detail *::detail::* *::internal *::internal::* *::Impl
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = NO
+HIDE_UNDOC_MEMBERS     = NO
+CASE_SENSE_NAMES       = YES
+
+# HTML for people, XML for the Sphinx integration (#361).
+GENERATE_HTML          = YES
+GENERATE_XML           = YES
+GENERATE_LATEX         = NO
+HAVE_DOT               = NO
+FULL_PATH_NAMES        = YES
+STRIP_FROM_PATH        = @TERREATE_DOXYGEN_STRIP@
+STRIP_FROM_INC_PATH    = @TERREATE_DOXYGEN_STRIP@
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+QUIET                  = YES
+
+# Warning policy: broken references, malformed commands and wrong @param names fail
+# the build. Undocumented members are counted separately and do not fail (#360).
+WARN_IF_DOC_ERROR      = YES
+WARN_IF_INCOMPLETE_DOC = YES
+WARN_NO_PARAMDOC       = NO
+WARN_IF_UNDOCUMENTED   = @TERREATE_DOXYGEN_WARN_UNDOCUMENTED@
+WARN_AS_ERROR          = @TERREATE_DOXYGEN_WARN_AS_ERROR@
+WARN_LOGFILE           = @TERREATE_DOXYGEN_WARN_LOG@
