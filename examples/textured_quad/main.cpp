@@ -37,6 +37,7 @@
 #include <terreate/graphics/descriptor_set_layout.hpp>
 #include <terreate/graphics/descriptor_write.hpp>
 #include <terreate/graphics/device.hpp>
+#include <terreate/graphics/format_properties.hpp>
 #include <terreate/graphics/graphics_pipeline.hpp>
 #include <terreate/graphics/image.hpp>
 #include <terreate/graphics/image_view.hpp>
@@ -347,7 +348,21 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
               chosen->capabilities().properties.deviceName.data(),
               use_present_fences ? "yes" : "no (queue idle)");
 
-  constexpr vk::Format depth_format = vk::Format::eD32Sfloat;
+  // The depth format is the application's policy, asked of the device: the first of this list
+  // that supports the depth-stencil attachment in optimal tiling. Depth-only formats only, so the
+  // barriers and the view below can name the depth aspect alone. Vulkan guarantees D16_UNORM, and
+  // one of X8_D24_UNORM and D32_SFLOAT.
+  constexpr std::array<vk::Format, 3> depth_preferences{
+      vk::Format::eD32Sfloat, vk::Format::eX8D24UnormPack32, vk::Format::eD16Unorm};
+  const auto depth_choice = graphics::firstSupportedFormat(
+      *instance, *chosen, vk::ImageTiling::eOptimal,
+      vk::FormatFeatureFlagBits2::eDepthStencilAttachment, depth_preferences);
+  if (!depth_choice)
+    return fail("ask the device for a depth format", depth_choice);
+  if (!*depth_choice)
+    return fail("the device supports none of the depth formats in the list");
+  const vk::Format depth_format = **depth_choice;
+  std::printf("example.textured_quad: depth-format=%s\n", vk::to_string(depth_format).c_str());
 
   // ---- Allocator and the resources the quads need ----
   // The Allocator is declared first, so everything created from it is destroyed before it.

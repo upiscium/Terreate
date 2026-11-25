@@ -90,3 +90,37 @@ This boundary intentionally does not restore or introduce:
 Selection validates the borrowed view and evaluates the candidate's value-owned
 snapshot, but it does not claim to make a non-conforming link or hostile
 linker safe.
+
+## Format properties (#438)
+
+`<terreate/graphics/format_properties.hpp>` answers "what does this device support for this format?"
+without creating anything, so an application chooses a format by its own policy instead of by
+trying `createImage` and failing.
+
+- `queryFormatProperties(instance, candidate, format)` makes one native query and returns a
+  `FormatProperties` value: the format and its linear-tiling, optimal-tiling and buffer features as
+  64-bit `vk::FormatFeatureFlags2`. With Vulkan 1.3 on both the Instance and the device the
+  `VkFormatProperties3` flags are used; otherwise the 32-bit flags are widened (their bits keep their
+  values), so the same code runs. The 64-bit flags contain every 32-bit bit of the native query and
+  may report more. A format the device does not support, `vk::Format::eUndefined` and a value no table
+  knows give **empty flags, not an error**.
+- `FormatProperties::supports(tiling, required)` and `supportsBuffer(required)` are true when every
+  required bit is present (an empty requirement is always satisfied; a tiling other than linear and
+  optimal has no features).
+- `firstSupportedFormat(instance, candidate, tiling, required, preferences)` tries the application's
+  own list in order and returns the first format that supports `required`, or nothing. The library
+  chooses no format: the list and the features are the caller's. It makes one query per tried format
+  and returns the query's error unchanged.
+- The query is per call, not a snapshot on the candidate: the set of formats is open-ended.
+- Errors (`FormatPropertiesError`): `invalid_instance`, `device_mismatch` (the candidate is of another
+  Instance), `function_unavailable`.
+
+Not covered: image-format limits (maximum extent, mip levels, sample counts: `createImage` still
+checks them and reports `unsupported_configuration`), sparse and external-memory properties.
+
+```cpp
+constexpr std::array depth_preferences{vk::Format::eD32Sfloat, vk::Format::eX8D24UnormPack32, vk::Format::eD16Unorm};
+const auto depth = graphics::firstSupportedFormat(instance, candidate, vk::ImageTiling::eOptimal,
+                                                  vk::FormatFeatureFlagBits2::eDepthStencilAttachment,
+                                                  depth_preferences);
+```
