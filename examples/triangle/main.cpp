@@ -695,18 +695,10 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
         *acquire_semaphore, vk::PipelineStageFlagBits2::eColorAttachmentOutput, 0)};
     const std::array<graphics::SubmissionSemaphore, 1> signals{graphics::submissionSignal(
         current->render_done[index], vk::PipelineStageFlagBits2::eAllCommands, 0)};
-    graphics::SubmissionDescription submission;
-    submission.command_buffers = buffers;
-    submission.waits = waits;
-    submission.signals = signals;
-    submission.fence = frame_fence->nativeHandle();
-    submission.completion.device = &*device;
-    submission.completion.queue = queue;
-    submission.completion.requested = {&identity_domain, frame_serial};
-    submission.completion.effective = {&identity_domain, frame_serial};
-    submission.completion.condition =
-        graphics::FenceCompletionCondition{frame_fence->nativeHandle()};
-    if (const auto receipt = graphics::submit(*device, queue, submission); !receipt)
+    if (const auto receipt = graphics::submitFenced(
+            *device, queue, *frame_fence, {&identity_domain, frame_serial},
+            {.command_buffers = buffers, .waits = waits, .signals = signals});
+        !receipt)
       return fail("submit the frame", receipt);
 
     // 7. Present. A present fence is reused for the same image index only after

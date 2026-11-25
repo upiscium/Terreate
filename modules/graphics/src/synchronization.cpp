@@ -307,4 +307,39 @@ auto submissionSignal(const Semaphore &semaphore, vk::PipelineStageFlags2 stage_
   return submissionWait(semaphore, stage_mask, value);
 }
 
+auto fenceCompletion(const Device &device, Queue queue, const Fence &fence,
+                     CompletionIdentity identity) noexcept -> CompletionDescription {
+  CompletionDescription description;
+  description.requested = identity;
+  description.effective = identity;
+  description.device = &device;
+  description.queue = queue;
+  description.condition = FenceCompletionCondition{fence.nativeHandle()};
+  return description;
+}
+
+auto timelineCompletion(const Device &device, Queue queue, const Semaphore &timeline,
+                        std::uint64_t signal_value, CompletionIdentity identity) noexcept
+    -> CompletionDescription {
+  CompletionDescription description;
+  description.requested = identity;
+  description.effective = identity;
+  description.device = &device;
+  description.queue = queue;
+  description.condition = TimelineCompletionCondition{timeline.nativeHandle(), signal_value};
+  return description;
+}
+
+auto submitFenced(const Device &device, Queue queue, const Fence &fence,
+                  CompletionIdentity identity, const FencedSubmission &submission)
+    -> terreate::Result<SubmissionReceipt> {
+  SubmissionDescription description;
+  description.command_buffers = submission.command_buffers;
+  description.waits = submission.waits;
+  description.signals = submission.signals;
+  description.fence = fence.nativeHandle();
+  description.completion = fenceCompletion(device, queue, fence, identity);
+  return submit(device, queue, description);
+}
+
 } // namespace terreate::graphics

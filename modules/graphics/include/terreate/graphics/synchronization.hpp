@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <system_error>
 
 #include <terreate/core/result.hpp>
@@ -156,6 +157,36 @@ private:
                                   std::uint64_t value) noexcept -> SubmissionSemaphore;
 [[nodiscard]] auto submissionSignal(const Semaphore &semaphore, vk::PipelineStageFlags2 stage_mask,
                                     std::uint64_t value) noexcept -> SubmissionSemaphore;
+
+/// Build the completion description of a submission that signals `fence`: the Device, the
+/// Queue, the identity (requested and effective are the same identity, the common case: write
+/// the struct yourself to say anything else) and the Fence as the condition. Only builds a
+/// value; nothing is called. A moved-from Fence gives a null native fence, which `submit`
+/// refuses.
+[[nodiscard]] auto fenceCompletion(const Device &device, Queue queue, const Fence &fence,
+                                   CompletionIdentity identity) noexcept -> CompletionDescription;
+/// The same for a submission that signals the timeline `semaphore` to `signal_value`. The
+/// caller declares the Semaphore is a timeline one (as `TimelineCompletionCondition` says).
+[[nodiscard]] auto timelineCompletion(const Device &device, Queue queue, const Semaphore &timeline,
+                                      std::uint64_t signal_value,
+                                      CompletionIdentity identity) noexcept
+    -> CompletionDescription;
+
+/// The command buffers and semaphores of a fenced submission. Like `SubmissionDescription`, the
+/// arrays only need to outlive the call.
+struct FencedSubmission {
+  std::span<const CommandBuffer *const> command_buffers{};
+  std::span<const SubmissionSemaphore> waits{};
+  std::span<const SubmissionSemaphore> signals{};
+};
+
+/// Exactly one `submit()`, with `fence` as the native fence and as the completion condition.
+/// It never waits and returns `submit()`'s errors unchanged. The Fence must be unsignaled and
+/// must not be in use by another submission (as with `submit`). The receipt is what
+/// `RetirementQueue::retire` takes: hand the resources this submission uses to a queue with it.
+[[nodiscard]] auto submitFenced(const Device &device, Queue queue, const Fence &fence,
+                                CompletionIdentity identity, const FencedSubmission &submission)
+    -> terreate::Result<SubmissionReceipt>;
 
 } // namespace terreate::graphics
 
