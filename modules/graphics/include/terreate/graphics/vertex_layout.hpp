@@ -149,20 +149,18 @@ private:
 /// before anything else: at least one attribute, every format single-plane and uncompressed with
 /// a block size equal to its member's size, no overlapping attributes, no duplicate location.
 template <class Vertex, class... Attributes>
-[[nodiscard]] auto vertexLayout(VertexBindingSpec binding, VertexAttribute<Vertex> first,
-                                Attributes... rest) -> terreate::Result<VertexLayout>
   requires(std::is_same_v<Attributes, VertexAttribute<Vertex>> && ...)
-{
+[[nodiscard]] auto vertexLayout(VertexBindingSpec binding, VertexAttribute<Vertex> first,
+                                Attributes... rest) -> terreate::Result<VertexLayout> {
   const std::array<VertexAttributeData, 1 + sizeof...(Attributes)> data{first.data, rest.data...};
   return makeVertexLayout(sizeof(Vertex), binding, data);
 }
 
 /// Binding 0, per-vertex rate.
 template <class Vertex, class... Attributes>
-[[nodiscard]] auto vertexLayout(VertexAttribute<Vertex> first, Attributes... rest)
-    -> terreate::Result<VertexLayout>
   requires(std::is_same_v<Attributes, VertexAttribute<Vertex>> && ...)
-{
+[[nodiscard]] auto vertexLayout(VertexAttribute<Vertex> first, Attributes... rest)
+    -> terreate::Result<VertexLayout> {
   return vertexLayout(VertexBindingSpec{}, first, rest...);
 }
 
