@@ -138,3 +138,34 @@ mapping, broader allocation/usage flags, defragmentation, or custom pools explic
 none is silently added. Build/source registration, tests and installed-consumer
 verification are host-owned and outside these three product files. Their absence
 from this leaf's edits is not a claim of linkability or passing validation.
+
+## Memory intents (#439)
+
+`bufferAllocationFor(BufferMemoryIntent)` (`<terreate/graphics/buffer.hpp>`) turns what the application
+means to do with a buffer's memory into an ordinary `BufferAllocationDescription`, so the caller does not
+have to know the VMA flags that say it:
+
+| Intent | Meaning | Fields |
+| --- | --- | --- |
+| `device_local` | The GPU reads and writes it; the host does not map it (vertex, index and storage buffers, filled by an upload batch or the GPU) | `VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE`, no host access flag |
+| `host_sequential_write` | The host writes it in order and the GPU reads it (a staging buffer, a per-frame uniform) | `AUTO`, `HOST_ACCESS_SEQUENTIAL_WRITE_BIT`, required `HostVisible` |
+| `host_random_access` | The host reads it back, or writes it at random (a readback buffer) | `AUTO`, `HOST_ACCESS_RANDOM_BIT`, required `HostVisible` |
+
+```cpp
+graphics::BufferDescription uniform;
+uniform.size = 16;
+uniform.usage = vk::BufferUsageFlagBits::eUniformBuffer;
+uniform.allocation = graphics::bufferAllocationFor(graphics::BufferMemoryIntent::host_sequential_write);
+```
+
+- The result is a plain value: every raw VMA field stays available, so take the preset and edit it when more
+  is needed (a dedicated allocation, a preferred property, a memory type mask).
+- An intent is a request, not a promise. The effective memory is observable through
+  `Buffer::allocationInfo()`, and a device without a suitable memory type refuses the creation as before.
+  `device_local` does not promise that the host cannot see the memory: an integrated GPU may make it host
+  visible. `map()` still requires a host-visible allocation and a host-access flag with `AUTO` usages.
+- `defaultUploadStagingAllocation()` and `defaultReadbackStagingAllocation()` are defined through it
+  (`host_sequential_write` and `host_random_access`); their values are unchanged.
+
+Not covered: memory pools, host-visible device-local memory (resizable BAR) as an intent, image
+allocations, and any change to what `map()` accepts.
