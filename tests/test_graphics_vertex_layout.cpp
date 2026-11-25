@@ -66,8 +66,24 @@ struct Colored {
   std::uint32_t id;
 };
 
+// A raw array member and a nested struct member.
+struct Inner {
+  float x;
+  float y;
+};
+struct Nested {
+  float raw[3];
+  Inner inner;
+};
+
 struct PerInstance {
   std::array<float, 2> offset;
+};
+
+// Whether `uploadItem` accepts a range of this type (inside a template, so a refusal is a value).
+template <class Range>
+concept Uploadable = requires(const Buffer &buffer, Range &&range) {
+  uploadItem(buffer, std::forward<Range>(range));
 };
 
 constexpr auto vec3 = vk::Format::eR32G32B32Sfloat;
@@ -133,6 +149,40 @@ int cpuTest() {
                  VertexLayoutError::attributes_overlap),
         "two attributes on the same bytes are refused");
 
+  // An array member, a nested struct member, and the binding of every attribute.
+  const auto nested = vertexLayout(vertexAttribute<&Nested::raw>(0, vec3),
+                                   vertexAttribute<&Nested::inner>(1, vec2));
+  check(nested && nested->attributes()[0].offset == offsetof(Nested, raw) &&
+            nested->attributes()[1].offset == offsetof(Nested, inner) &&
+            nested->attributes()[1].binding == 0 && nested->bindings()[0].stride == sizeof(Nested),
+        "array and nested struct members: offsets, bindings and stride");
+  check(hasError(vertexLayout(vertexAttribute<&Vertex::position>(0, vec3),
+                              vertexAttribute<&Vertex::position>(1, vk::Format::eR32G32Sfloat)),
+                 VertexLayoutError::format_size_mismatch),
+        "a format smaller than its member is refused (a prefix is not read silently)");
+  check(hasError(vertexLayout(vertexAttribute<&Vertex::uv>(0, vk::Format::eG8B8R83Plane420Unorm)),
+                 VertexLayoutError::unsupported_format),
+        "a multi-plane format is refused");
+  check(hasError(vertexLayout(vertexAttribute<&Vertex::uv>(0, static_cast<vk::Format>(2000999999))),
+                 VertexLayoutError::unsupported_format),
+        "a format value unknown to the format table is refused, not asserted");
+
+  // Partial overlap: the second attribute starts inside the first.
+  const std::array<VertexAttributeData, 2> partial{VertexAttributeData{0, vec2, 0, 8},
+                                                   VertexAttributeData{1, vec2, 4, 8}};
+  check(hasError(makeVertexLayout(16, {}, partial), VertexLayoutError::attributes_overlap),
+        "a partial overlap is refused");
+  // Adjacent attributes are fine; the stride bounds are checked on the core function.
+  const std::array<VertexAttributeData, 2> adjacent{VertexAttributeData{0, vec2, 0, 8},
+                                                    VertexAttributeData{1, vec2, 8, 8}};
+  check(bool(makeVertexLayout(16, {}, adjacent)), "adjacent attributes are accepted");
+  check(hasError(makeVertexLayout(12, {}, adjacent), VertexLayoutError::attribute_outside_stride),
+        "an attribute ending beyond the stride is refused");
+  check(hasError(makeVertexLayout(0, {}, adjacent), VertexLayoutError::invalid_stride) &&
+            hasError(makeVertexLayout(std::size_t{1} << 40, {}, adjacent),
+                     VertexLayoutError::invalid_stride),
+        "a zero or oversized stride is refused");
+
   // combine: a second binding joins; a repeated binding or location is refused.
   if (layout && instance) {
     const auto both = combine(*layout, *instance);
@@ -163,9 +213,16 @@ int cpuTest() {
           "applyTo replaces the bindings and attributes with the layout's");
   }
 
+  // A temporary container is refused (the item would dangle); a living range or a span is fine.
+  static_assert(!Uploadable<std::vector<Vertex>>);
+  static_assert(Uploadable<std::vector<Vertex> &>);
+  static_assert(Uploadable<const std::array<Vertex, 4> &>);
+  static_assert(Uploadable<std::span<const Vertex>>);
+
   // The data and the layout come from one type: the typed span's size is what the layout strides.
   constexpr std::array<Vertex, 4> vertices{};
-  check(layout && std::as_bytes(std::span{vertices}).size() == 4 * layout->bindings()[0].stride,
+  check(layout && std::as_bytes(std::span{vertices}).size() ==
+                      std::size_t{4} * layout->bindings()[0].stride,
         "typed vertex data and the layout's stride agree");
 
   if (failures == 0)

@@ -248,3 +248,25 @@ const auto item = graphics::uploadItem(vertex_buffer, vertices);   // the typed 
   and use each with the pipeline that reads it; or keep the attributes in separate buffers with one
   `vertexLayout` call per binding and `combine` them. Which is better is the application's choice
   (the library does not impose interleaved or separate storage).
+
+Limits and rules of the vertex layout, stated so that a green test is not read as more:
+
+- The members must be members of the vertex type itself, not of a base class (a base class member
+  gives the base class's layout and stride).
+- A format must be known, single-plane and uncompressed, and its block size must **equal** the
+  member's size. Reading only the first bytes of a larger member is legal Vulkan but refused, so
+  that a layout and its struct cannot drift apart: declare a smaller member to read part of the
+  data. Overlapping attributes are refused too, although Vulkan would allow reading the same bytes
+  twice. `makeVertexLayout` also refuses a zero or oversized stride and an attribute that ends
+  beyond the stride (named errors `invalid_stride`, `attribute_outside_stride`).
+- Nothing here is checked against the device: `maxVertexInputBindingStride`,
+  `maxVertexInputAttributeOffset`, the counts of bindings and attributes and the vertex-buffer
+  support of a format are checked when the pipeline is created. A 64-bit format with three or four
+  components uses two consecutive shader locations: keep the next location free.
+- `uploadItem` refuses a temporary container (the item would point into it after the statement);
+  pass the container itself, or a `std::span` of it.
+- What the tests show: `graphics.vertex_layout.cpu` checks strides, offsets with padding, array and
+  nested members, the stated formats, every named error, `combine` and `applyTo`;
+  `graphics.vertex_layout` checks only the fields of `uploadItem` on a real `Buffer`. That a layout
+  makes a valid pipeline and passes the draw checks of `GraphicsBindingState` with the validation
+  layer silent is exercised by `example.textured_quad` in the gate, not by a unit test here.

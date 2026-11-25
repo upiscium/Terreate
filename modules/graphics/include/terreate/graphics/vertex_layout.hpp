@@ -2,8 +2,10 @@
 #define TERREATE_GRAPHICS_VERTEX_LAYOUT_HPP
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <system_error>
 #include <type_traits>
@@ -28,6 +30,10 @@ enum class VertexLayoutError : std::uint8_t {
   duplicate_location,
   /// Two layouts combined use the same binding number.
   duplicate_binding,
+  /// The stride is zero or does not fit the 32-bit stride of a vertex binding.
+  invalid_stride,
+  /// An attribute ends beyond the stride (reachable only through `makeVertexLayout`).
+  attribute_outside_stride,
 };
 
 [[nodiscard]] const std::error_category &vertex_layout_error_category() noexcept;
@@ -57,6 +63,8 @@ template <class Class, class Type> struct MemberPointerTraits<Type Class::*> {
 };
 } // namespace detail
 
+/// The member must be a member of the vertex type itself, not of a base class: for a member of a
+/// base class the layout would be the base class's (its `sizeof` is the stride).
 /// Declare that the member `Member` of the application's vertex type (for example
 /// `vertexAttribute<&Vertex::position>(0, vk::Format::eR32G32B32Sfloat)`) is read at shader
 /// location `location` as `format`. The format is always stated: it is never deduced from the
@@ -73,13 +81,14 @@ template <auto Member>
                     std::is_default_constructible_v<Vertex>,
                 "a vertex type must be standard layout, trivially copyable and default "
                 "constructible");
-  static_assert(!std::is_member_function_pointer_v<decltype(Member)>,
-                "a vertex attribute is a data member");
+  static_assert(std::is_member_object_pointer_v<decltype(Member)>,
+                "a vertex attribute is a (non-static, non-bit-field) data member");
   const Vertex probe{};
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-  const auto *base = reinterpret_cast<const std::byte *>(&probe);
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-  const auto *member = reinterpret_cast<const std::byte *>(&(probe.*Member));
+  // The offset is the difference of the two addresses taken as integers (a difference of
+  // pointers to different objects would not be defined).
+  const auto base = std::bit_cast<std::uintptr_t>(static_cast<const void *>(std::addressof(probe)));
+  const auto member =
+      std::bit_cast<std::uintptr_t>(static_cast<const void *>(std::addressof(probe.*Member)));
   return {{location, format, static_cast<std::uint32_t>(member - base),
            static_cast<std::uint32_t>(sizeof(typename Traits::MemberType))}};
 }
@@ -102,6 +111,11 @@ public:
   [[nodiscard]] std::span<const vk::VertexInputAttributeDescription> attributes() const noexcept {
     return attributes_;
   }
+  /// CPU-only: nothing here checks the device limits (`maxVertexInputBindingStride`,
+  /// `maxVertexInputAttributeOffset`, the counts of bindings and attributes) or that the device
+  /// supports the formats for vertex buffers: that is checked when the pipeline is created. A
+  /// 64-bit format with three or four components uses two consecutive shader locations; keep the
+  /// next location free.
   /// Replace `vertex_bindings` and `vertex_attributes` of `description` with this layout.
   void applyTo(GraphicsPipelineDescription &description) const {
     description.vertex_bindings = bindings_;
@@ -109,6 +123,7 @@ public:
   }
 
 private:
+  VertexLayout() = default;
   friend auto makeVertexLayout(std::size_t stride, VertexBindingSpec binding,
                                std::span<const VertexAttributeData> attributes)
       -> terreate::Result<VertexLayout>;
@@ -118,8 +133,13 @@ private:
   std::vector<vk::VertexInputAttributeDescription> attributes_{};
 };
 
-/// The non-template core of `vertexLayout`: validates `attributes` against `stride` and builds
-/// the layout. Prefer `vertexLayout`, which supplies the stride and the offsets from the type.
+/// The non-template core of `vertexLayout`: validates `attributes` against `stride` (non-zero, fits
+/// 32 bits, every attribute inside it) and builds the layout. A format must be single-plane,
+/// uncompressed and known, with a block size EQUAL to the member's size: reading only the first
+/// bytes of a larger member is legal Vulkan but refused here, so that a layout and its struct
+/// cannot drift apart (declare a smaller member to read part of the data). Overlapping attributes
+/// are refused too, although Vulkan would allow reading the same bytes twice. Prefer
+/// `vertexLayout`, which supplies the stride and the offsets from the type.
 [[nodiscard]] auto makeVertexLayout(std::size_t stride, VertexBindingSpec binding,
                                     std::span<const VertexAttributeData> attributes)
     -> terreate::Result<VertexLayout>;

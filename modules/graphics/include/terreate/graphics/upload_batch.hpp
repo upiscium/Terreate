@@ -56,10 +56,13 @@ struct BufferUploadItem {
 /// A `BufferUploadItem` for the bytes of a typed contiguous range (the application's vertex or
 /// index data: a `std::array`, a `std::vector` or a `std::span`), written at `destination_offset`
 /// of `destination`. The bytes are copied during `prepareUploadBatch`, so `data` only has to live
-/// until then. The element type must be trivially copyable.
+/// until then (a temporary container is refused: the item would point into it after the
+/// statement; a `std::span` of a living container is allowed). The element type must be trivially
+/// copyable.
 template <std::ranges::contiguous_range Range>
-  requires std::ranges::sized_range<Range>
-[[nodiscard]] BufferUploadItem uploadItem(const Buffer &destination, const Range &data,
+  requires std::ranges::sized_range<Range> &&
+           (std::is_lvalue_reference_v<Range> || std::ranges::borrowed_range<Range>)
+[[nodiscard]] BufferUploadItem uploadItem(const Buffer &destination, Range &&data,
                                           vk::DeviceSize destination_offset = 0) noexcept {
   using Element = std::ranges::range_value_t<Range>;
   static_assert(std::is_trivially_copyable_v<Element>, "uploaded data must be trivially copyable");

@@ -3,6 +3,7 @@
 #include <vulkan/vulkan_format_traits.hpp>
 
 #include <algorithm>
+#include <limits>
 #include <new>
 #include <string>
 
@@ -28,6 +29,10 @@ public:
       return "two vertex attributes use the same shader location";
     case VertexLayoutError::duplicate_binding:
       return "two combined vertex layouts use the same binding";
+    case VertexLayoutError::invalid_stride:
+      return "the vertex stride is zero or does not fit 32 bits";
+    case VertexLayoutError::attribute_outside_stride:
+      return "a vertex attribute ends beyond the stride";
     }
     return "unknown vertex layout error";
   }
@@ -43,8 +48,13 @@ auto fail(VertexLayoutError error, const char *operation, const char *detail) ->
 
 // A vertex attribute is one uncompressed, single-plane texel: its size is the format's block
 // size. Undefined, compressed and multi-plane formats have no such size.
-bool usableFormat(vk::Format format) noexcept {
+bool usableFormat(vk::Format format) {
   if (format == vk::Format::eUndefined)
+    return false;
+  // Vulkan-Hpp's traits assert on a value that is not in their table (an extension format it
+  // does not know), so only a known format is asked.
+  const auto &known = vk::getAllFormats();
+  if (std::find(known.begin(), known.end(), format) == known.end())
     return false;
   if (vk::planeCount(format) != 1)
     return false;
@@ -69,6 +79,9 @@ auto makeVertexLayout(std::size_t stride, VertexBindingSpec binding,
   if (attributes.empty())
     return std::unexpected(
         fail(VertexLayoutError::no_attributes, "vertexLayout", "declare at least one attribute"));
+  if (stride == 0 || stride > std::numeric_limits<std::uint32_t>::max())
+    return std::unexpected(fail(VertexLayoutError::invalid_stride, "vertexLayout",
+                                "the stride is zero or does not fit 32 bits"));
   for (const auto &attribute : attributes) {
     if (!usableFormat(attribute.format))
       return std::unexpected(fail(VertexLayoutError::unsupported_format, "vertexLayout",
@@ -76,6 +89,9 @@ auto makeVertexLayout(std::size_t stride, VertexBindingSpec binding,
     if (vk::blockSize(attribute.format) != attribute.member_size)
       return std::unexpected(fail(VertexLayoutError::format_size_mismatch, "vertexLayout",
                                   "the format's block size differs from the member's size"));
+    if (std::uint64_t{attribute.offset} + attribute.member_size > stride)
+      return std::unexpected(fail(VertexLayoutError::attribute_outside_stride, "vertexLayout",
+                                  "an attribute ends beyond the stride"));
   }
   for (std::size_t i = 0; i < attributes.size(); ++i) {
     for (std::size_t j = i + 1; j < attributes.size(); ++j) {
