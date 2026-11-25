@@ -5,70 +5,55 @@ root := justfile_directory()
 # origin/main): the committed changes since the merge base, the uncommitted changes and
 # the untracked files.
 
-# Print the changed paths, one per line; "ALL" when the base ref does not exist (then every
-# check runs in full).
+# Print the changed paths, one per line, deleted and renamed ones included (a deleted public
+# header or CMake file changes the package surface). Prints "ALL" when the changes cannot be
+# determined (no base ref, no merge base): then every check runs in full.
 [working-directory: root]
 changed:
     #!/usr/bin/env sh
     set -eu
     base="${FAST_BASE:-origin/main}"
-    if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+    git="git -c core.quotePath=false"
+    if ! $git rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
+       ! $git merge-base "$base" HEAD >/dev/null 2>&1; then
       echo ALL
       exit 0
     fi
-    {
-      git diff --name-only --diff-filter=ACMR "$base"...HEAD
-      git diff --name-only --diff-filter=ACMR HEAD
-      git ls-files --others --exclude-standard
-    } | sort -u
+    # Each command is checked: a failure must not leave a shorter list that skips checks.
+    committed="$($git diff --name-only --no-renames "$base"...HEAD)" || { echo ALL; exit 0; }
+    working="$($git diff --name-only --no-renames HEAD)" || { echo ALL; exit 0; }
+    untracked="$($git ls-files --others --exclude-standard)" || { echo ALL; exit 0; }
+    printf '%s\n%s\n%s\n' "$committed" "$working" "$untracked" | grep -v '^$' | sort -u || true
 
-# clang-tidy on the changed .cpp files only, in parallel, like `quality::lint`.
+# clang-tidy on the changed .cpp files only, with the rules of `quality::lint` (it does the
+# work, given the list). A header change does not lint its includers: only the gate does.
 [working-directory: root]
 lint:
     #!/usr/bin/env sh
     set -eu
-    canonical_database=".build/default/compile_commands.json"
-    if [ -e compile_commands.json ] || [ -L compile_commands.json ]; then
-      if [ ! -L compile_commands.json ] || [ "$(readlink compile_commands.json)" != "$canonical_database" ]; then
-        printf '%s\n' "compile_commands.json must be the canonical symlink to $canonical_database" >&2
-        exit 1
-      fi
-      compile_database=.
-    else
-      compile_database="${CMAKE_BUILD_DIR:-.build/default}"
-    fi
-    export compile_database
     changed="$(just project::fast::changed)"
     if [ "$changed" = ALL ]; then
-      printf '%s\n' "check-fast: no base ref, linting every file" >&2
+      printf '%s\n' "check-fast: the changes cannot be determined, linting every file" >&2
       exec just project::quality::lint
     fi
     files="$(printf '%s\n' "$changed" | grep -E '\.(cc|cpp|cxx)$' || true)"
+    if printf '%s\n' "$changed" | grep -Eq '\.(h|hh|hpp|hxx)$'; then
+      printf '%s\n' "check-fast: a header changed: the .cpp files that include it are not linted here; only the gate lints them" >&2
+    fi
     if [ -z "$files" ]; then
       echo "check-fast: no changed .cpp files to lint"
       exit 0
     fi
-    echo "check-fast: linting $(printf '%s\n' "$files" | wc -l | tr -d ' ') changed .cpp file(s); headers are not linted on their own"
-    # The same job count rules as `quality::lint` (at most 8 by default, LINT_JOBS overrides).
-    cores="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
-    jobs="${LINT_JOBS:-$((cores > 8 ? 8 : cores))}"
-    case "$jobs" in
-      ""|*[!0-9]*|0) printf '%s\n' "LINT_JOBS must be a positive integer, got: $jobs" >&2; exit 1 ;;
-    esac
-    printf '%s\n' "$files" | tr '\n' '\0' |
-      xargs -r -0 -n 1 -P "$jobs" sh -c '
-        file="$0"
-        [ -f "$file" ] || exit 0
-        if ! output=$(clang-tidy -p "$compile_database" "./$file" 2>&1); then
-          printf "%s\n" "$output" >&2
-          printf "lint: clang-tidy failed on %s\n" "$file" >&2
-          exit 255
-        fi
-      '
+    echo "check-fast: linting $(printf '%s\n' "$files" | wc -l | tr -d ' ') changed .cpp file(s)"
+    list="$(mktemp)"
+    trap 'rm -f "$list"' EXIT
+    printf '%s\n' "$files" > "$list"
+    LINT_LIST="$list" just project::quality::lint
 
 # The tests without the `heavy` label (cmake.component_matrix, cmake.package_smoke); the
 # heavy ones run too when the change touches the build or the package surface (a CMake
-# file, a public header, the flake).
+# file or the package template, a public header, the flake). What only they would catch
+# in other changes is found by the gate.
 [working-directory: root]
 tests:
     #!/usr/bin/env sh
@@ -79,7 +64,7 @@ tests:
     if [ "$changed" = ALL ]; then
       run_heavy=yes
     elif printf '%s\n' "$changed" |
-         grep -Eq '(^|/)CMakeLists\.txt$|\.cmake$|^CMakePresets\.json$|^flake\.(nix|lock)$|^tests/cmake/|/include/'; then
+         grep -Eq '(^|/)CMakeLists\.txt$|\.cmake$|\.cmake\.in$|^cmake/|^CMakePresets\.json$|^flake\.(nix|lock)$|^tests/cmake/|(^|/)include/'; then
       run_heavy=yes
     fi
     if [ "$run_heavy" = yes ]; then

@@ -46,7 +46,7 @@ check:
     exec nix develop --command just project::check-in-dev-shell
 
 [private]
-check-fast-in-dev-shell: doctor format-check fast::lint build fast::tests
+check-fast-in-dev-shell: doctor format-check configure fast::lint build fast::tests
     @echo "C++/CMake Project Adapter check-fast: PARTIAL, not the gate (run just project::check before a merge)"
 
 # The development loop: format, changed-file lint, build, and the tests without the heavy
