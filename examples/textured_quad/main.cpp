@@ -58,6 +58,7 @@
 #include <terreate/graphics/synchronization.hpp>
 #include <terreate/graphics/transfer_commands.hpp>
 #include <terreate/graphics/upload_batch.hpp>
+#include <terreate/graphics/vertex_layout.hpp>
 #include <terreate/integration/platform_graphics/surface.hpp>
 #include <terreate/platform/events.hpp>
 #include <terreate/platform/runtime.hpp>
@@ -91,6 +92,13 @@ namespace {
 namespace graphics = terreate::graphics;
 namespace platform = terreate::platform;
 namespace integration = terreate::integration::platform_graphics;
+
+// The application's own vertex type: the data, the stride, the offsets and (with the formats
+// stated below) the pipeline's vertex input all come from this one definition.
+struct Vertex {
+  std::array<float, 3> position;
+  std::array<float, 2> uv;
+};
 
 struct Options {
   bool require_validation = false;
@@ -347,15 +355,24 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
   if (!allocator)
     return fail("create the Allocator", allocator);
 
-  // Two quads at different depths: five floats per vertex (x, y, z, u, v). The nearer quad
-  // is drawn first and the farther one second, so the depth test is what hides the part of
-  // the far quad that lies behind it.
-  constexpr std::array<float, 40> vertices{
-      -0.8F, -0.6F, 0.2F, 0.0F, 1.0F, 0.2F,  -0.6F, 0.2F, 1.0F, 1.0F,
-      0.2F,  0.6F,  0.2F, 1.0F, 0.0F, -0.8F, 0.6F,  0.2F, 0.0F, 0.0F, // near quad
-      -0.2F, -0.4F, 0.6F, 0.0F, 1.0F, 0.8F,  -0.4F, 0.6F, 1.0F, 1.0F,
-      0.8F,  0.8F,  0.6F, 1.0F, 0.0F, -0.2F, 0.8F,  0.6F, 0.0F, 0.0F, // far quad
-  };
+  // Two quads at different depths. The nearer quad is drawn first and the farther one second,
+  // so the depth test is what hides the part of the far quad that lies behind it.
+  constexpr std::array<Vertex, 8> vertices{{
+      {{-0.8F, -0.6F, 0.2F}, {0.0F, 1.0F}},
+      {{0.2F, -0.6F, 0.2F}, {1.0F, 1.0F}},
+      {{0.2F, 0.6F, 0.2F}, {1.0F, 0.0F}},
+      {{-0.8F, 0.6F, 0.2F}, {0.0F, 0.0F}}, // near quad
+      {{-0.2F, -0.4F, 0.6F}, {0.0F, 1.0F}},
+      {{0.8F, -0.4F, 0.6F}, {1.0F, 1.0F}},
+      {{0.8F, 0.8F, 0.6F}, {1.0F, 0.0F}},
+      {{-0.2F, 0.8F, 0.6F}, {0.0F, 0.0F}}, // far quad
+  }};
+  // The vertex input of the pipeline, from the struct: the formats are stated, never deduced.
+  const auto vertex_input = graphics::vertexLayout(
+      graphics::vertexAttribute<&Vertex::position>(0, vk::Format::eR32G32B32Sfloat),
+      graphics::vertexAttribute<&Vertex::uv>(1, vk::Format::eR32G32Sfloat));
+  if (!vertex_input)
+    return fail("describe the vertex layout", vertex_input);
   constexpr std::array<std::uint16_t, 12> indices{0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4};
   graphics::BufferDescription vertex_description;
   vertex_description.size = sizeof(vertices);
@@ -465,11 +482,7 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
     graphics::GraphicsPipelineDescription description;
     description.vertex_entry_point = "main";
     description.fragment_entry_point = "main";
-    description.vertex_bindings = {
-        vk::VertexInputBindingDescription{0, 5 * sizeof(float), vk::VertexInputRate::eVertex}};
-    description.vertex_attributes = {
-        vk::VertexInputAttributeDescription{0, 0, vk::Format::eR32G32B32Sfloat, 0},
-        vk::VertexInputAttributeDescription{1, 0, vk::Format::eR32G32Sfloat, 3 * sizeof(float)}};
+    vertex_input->applyTo(description);
     description.depth_test_enable = true;
     description.depth_write_enable = true;
     description.depth_compare_op = vk::CompareOp::eLess;
@@ -612,9 +625,9 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
   // The staging memory belongs to `upload` and must live until the GPU is done with it, so
   // the block waits on the fence (an explicit wait of this file) before it ends.
   {
-    graphics::BufferUploadItem vertex_item{&*vertex_buffer, 0, std::as_bytes(std::span{vertices})};
-    graphics::BufferUploadItem index_item{&*index_buffer, 0, std::as_bytes(std::span{indices})};
-    const std::array<graphics::BufferUploadItem, 2> buffer_items{vertex_item, index_item};
+    const std::array<graphics::BufferUploadItem, 2> buffer_items{
+        graphics::uploadItem(*vertex_buffer, vertices),
+        graphics::uploadItem(*index_buffer, indices)};
     graphics::ImageUploadItem texture_item;
     texture_item.destination = &*texture;
     texture_item.copy_layout = vk::ImageLayout::eTransferDstOptimal;

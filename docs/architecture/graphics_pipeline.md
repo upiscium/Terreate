@@ -212,3 +212,39 @@ caches were added in #399 D1. Other shader stages and other dynamic states remai
 (#262), compiler integration (#261), RenderPass/RenderGraph abstractions, shared
 ownership and waits are outside this API. Existing layout and compute contracts
 remain documented in [pipeline.md](pipeline.md).
+
+## Vertex layout from the application's struct (#448)
+
+`<terreate/graphics/vertex_layout.hpp>` describes how the vertex buffers feed the pipeline from the
+application's own struct, so the data, the stride, the offsets and the formats come from one
+definition. **The application defines the struct; the library fixes no vertex type.** A mesh with
+a normal is a different struct (or several bindings) with its own layout and its own pipeline;
+nothing in the library assumes position and uv.
+
+```cpp
+struct Vertex { std::array<float, 3> position; std::array<float, 2> uv; };
+
+const auto layout = graphics::vertexLayout(
+    graphics::vertexAttribute<&Vertex::position>(0, vk::Format::eR32G32B32Sfloat),
+    graphics::vertexAttribute<&Vertex::uv>(1, vk::Format::eR32G32Sfloat));
+layout->applyTo(pipeline_description);                      // vertex_bindings, vertex_attributes
+const auto item = graphics::uploadItem(vertex_buffer, vertices);   // the typed data's bytes
+```
+
+- The stride is `sizeof(Vertex)`. Each offset is measured from the member of a default-constructed
+  object of the type (no macro, no `offsetof`), so the type must be standard layout, trivially
+  copyable and default constructible (static assertions).
+- The **format is always stated**: it is never deduced from the member type, because the same
+  four bytes can be unorm, snorm, uint or sint. The shader location is the caller's number
+  (Terreate does not reflect SPIR-V).
+- `vertexLayout` validates before any native call and returns a named `VertexLayoutError`: no
+  attributes, an undefined or compressed or multi-plane format, a format whose block size differs
+  from the member's size, overlapping attributes, a duplicate location. `combine` joins layouts
+  of different bindings (for example per-instance data) and refuses a repeated binding or location.
+- `applyTo` produces exactly the native structures `GraphicsPipelineDescription` already takes, so
+  `GraphicsBindingState` and the draw checks work unchanged. The layout holds no Device or Vulkan
+  object and calls no Vulkan function.
+- A `Vertex` with and without a normal: write two structs (`VertexPU`, `VertexPUN`), build two layouts
+  and use each with the pipeline that reads it; or keep the attributes in separate buffers with one
+  `vertexLayout` call per binding and `combine` them. Which is better is the application's choice
+  (the library does not impose interleaved or separate storage).
