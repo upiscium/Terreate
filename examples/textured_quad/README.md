@@ -24,12 +24,12 @@ pointer with one explicit flush.
 
 ## Gap report
 
-Native calls the example makes (the raw barrier structs, `vkQueueWaitIdle`, and `glfwSetWindowSize` on `Window::nativeHandle` for the scripted resize), and API friction found while writing it:
+Native calls the example makes (`vkQueueWaitIdle`, the raw `VkMemoryBarrier2` for the vertex and index data, and `glfwSetWindowSize` on `Window::nativeHandle` for the scripted resize), and API friction found while writing it. The image barriers used to be raw structs too; G1 and G2 record how #437 changed that:
 
 | # | Finding | Kind |
 | --- | --- | --- |
-| G1 | Every image layout transition (two for the Swapchain image, one for the depth image, two for the texture) is a hand-built `VkImageMemoryBarrier2` of eight to twelve lines with raw stage and access constants, plus one `VkMemoryBarrier2` for the vertex and index data; `recordBarriers` takes only the raw structs. | native call |
-| G2 | `Image::nativeImage()` returns `VkImage` (while `Image::nativeHandle()` returns `vk::Image`), `SwapchainImage::nativeImage()` returns `vk::Image`: filling one barrier struct needs a cast for the second. | inconsistency |
+| G1 | Every image layout transition used to be a hand-built `VkImageMemoryBarrier2` (eight to twelve lines, raw stage and access constants). **Addressed by #437**: `imageBarrier` and `recordImageBarrier` (`<terreate/graphics/barriers.hpp>`) build or record one explicit transition, and this example uses them. Still raw: the `VkMemoryBarrier2` for the vertex and index data, and the buffer barrier case (no builder yet). | native call, partly addressed |
+| G2 | `Image::nativeImage()` returns `VkImage` (while `Image::nativeHandle()` returns `vk::Image`), `SwapchainImage::nativeImage()` returns `vk::Image`. **Addressed by #437**: the barrier builders take either image type, and `SwapchainImage::nativeHandle()` now exists beside `nativeImage()`. | inconsistency, addressed |
 | G3 | The depth format (`D32_SFLOAT`) is chosen blind: no Terreate query for the format features a device supports; only `createImage` failing tells. Vulkan guarantees `D16_UNORM`, and at least one of `X8_D24_UNORM` and `D32_SFLOAT`, so a careful application must ask. The native `vkGetPhysicalDeviceFormatProperties` is what a careful application would call. | missing API |
 | G4 | A host-visible uniform Buffer is requested with the VMA flag `VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT`; VMA enums are part of `BufferAllocationDescription`, and there is no Terreate-level way to say "written by the host every frame". | ergonomics |
 | G5 | Descriptor bindings and writes are positional aggregates (`{0, 0, type, std::vector<...>{{...}}}`): easy to misorder and hard to read. | ergonomics |
@@ -37,7 +37,7 @@ Native calls the example makes (the raw barrier structs, `vkQueueWaitIdle`, and 
 | G7 | `vkQueueWaitIdle` is called wherever no present fence proves the presents are done: a generation dropped behind an `out_of_date` present or on a device without present fences, a pipeline rebuild after a format change, and shutdown (carried over from the triangle; see its README). | native call |
 | G8 | A one-shot upload is submitted with a fence and waited on inside a block so the staging memory outlives the GPU use. `upload_batch.hpp` recommends handing the staging owner to a `RetirementQueue`; there is no helper for the simple "submit and wait" case, and if the wait fails the example returns while the GPU may still read the staging memory. | ergonomics, error path |
 
-These are findings, not changes: this example adds no library API.
+These findings were gathered without adding library API; G1 and G2 were then addressed separately by #437, which also moved this example to the new builders.
 
 ## Regenerating the shaders
 

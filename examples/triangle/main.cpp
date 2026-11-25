@@ -12,8 +12,8 @@
 //   - vkQueueWaitIdle: dropping a generation whose present fences cannot prove
 //     the presents are done, a pipeline rebuild after a format change, and
 //     shutdown;
-//   - raw VkImageMemoryBarrier2 structs (recordBarriers takes them) built from
-//     SwapchainImage::nativeImage, and Queue::nativeHandle for the idle call;
+//   - Queue::nativeHandle, for the idle call (the image layout transitions go through
+//     recordImageBarrier);
 //   - glfwSetWindowSize on Window::nativeHandle (scripted resize only).
 //
 // Modes: no arguments runs until the window is closed. For tests:
@@ -22,6 +22,7 @@
 //   --require-validation  fail unless the validation layer is present and silent
 //   --require-resize    needs --resize-at; reports SKIP, never PASS, when the window
 //                       system does not resize the window
+#include <terreate/graphics/barriers.hpp>
 #include <terreate/graphics/command_buffer.hpp>
 #include <terreate/graphics/command_pool.hpp>
 #include <terreate/graphics/completion.hpp>
@@ -160,14 +161,8 @@ struct Retired {
   std::vector<graphics::Fence> present_fences{};
 };
 
-VkImageMemoryBarrier2 imageBarrier(const graphics::SwapchainImage &image) {
-  VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  barrier.image = static_cast<VkImage>(image.nativeImage());
-  barrier.subresourceRange = VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  return barrier;
-}
+// The whole first mip level and array layer of a color image.
+const vk::ImageSubresourceRange color_range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 
 bool parseOptions(int argc, char **argv, Options &options) {
   for (int i = 1; i < argc; ++i) {
@@ -647,13 +642,14 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
     // 5. Record: barrier, rendering into the Swapchain image, draw, barrier.
     if (!command->reset() || !command->begin())
       return fail("begin the command buffer");
-    auto to_attachment = imageBarrier(image);
-    to_attachment.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    to_attachment.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    to_attachment.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    to_attachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    to_attachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    if (!graphics::recordBarriers(*device, *command, {.images = std::span{&to_attachment, 1}}))
+    if (!graphics::recordImageBarrier(
+            *device, *command, image,
+            {.src_stage = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+             .dst_stage = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+             .dst_access = vk::AccessFlagBits2::eColorAttachmentWrite,
+             .old_layout = vk::ImageLayout::eUndefined,
+             .new_layout = vk::ImageLayout::eColorAttachmentOptimal,
+             .subresource_range = color_range}))
       return fail("record the barrier to the attachment layout");
 
     graphics::RenderingDescription rendering;
@@ -680,12 +676,13 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
         !graphics::recordEndRendering(*device, *command, std::move(*scope)))
       return fail("record the draw");
 
-    auto to_present = imageBarrier(image);
-    to_present.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    to_present.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    to_present.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    if (!graphics::recordBarriers(*device, *command, {.images = std::span{&to_present, 1}}) ||
+    if (!graphics::recordImageBarrier(
+            *device, *command, image,
+            {.src_stage = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+             .src_access = vk::AccessFlagBits2::eColorAttachmentWrite,
+             .old_layout = vk::ImageLayout::eColorAttachmentOptimal,
+             .new_layout = vk::ImageLayout::ePresentSrcKHR,
+             .subresource_range = color_range}) ||
         !command->end())
       return fail("record the barrier to the present layout");
 

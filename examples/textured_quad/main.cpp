@@ -10,15 +10,14 @@
 // through the mapped uniform buffer.
 //
 // Native calls this file still makes (the gap report is in README.md, G1 to G8):
-//   - raw VkImageMemoryBarrier2 structs for every image layout transition (the
-//     Swapchain image, the depth image, the texture): recordBarriers takes them (G1);
 //   - vkQueueWaitIdle where no present fence proves the presents are done: a generation
 //     dropped behind an out_of_date present or on a device without present fences, a
 //     pipeline rebuild after a format change, and shutdown, plus the Queue::nativeHandle
 //     it needs (G7);
 //   - glfwSetWindowSize on Window::nativeHandle (scripted resize only).
-// Besides those it spells out raw stage and access constants and one VkMemoryBarrier2 (G1)
-// and passes a VMA flag for the host-visible uniform Buffer (G4). It calls no query for
+// Image layout transitions use imageBarrier and recordImageBarrier (#437). The one
+// VkMemoryBarrier2 for the vertex and index data is still a raw struct (G1), and the
+// example passes a VMA flag for the host-visible uniform Buffer (G4). It calls no query for
 // format features, which is why the depth format is chosen blind (G3).
 
 // Modes: no arguments runs until the window is closed. For tests:
@@ -28,6 +27,7 @@
 //   --require-resize    needs --resize-at; reports SKIP, never PASS, when the window
 //                       system does not resize the window
 #include <terreate/graphics/allocator.hpp>
+#include <terreate/graphics/barriers.hpp>
 #include <terreate/graphics/buffer.hpp>
 #include <terreate/graphics/command_buffer.hpp>
 #include <terreate/graphics/command_pool.hpp>
@@ -181,14 +181,9 @@ struct Retired {
   std::optional<graphics::ImageView> depth_view{};
 };
 
-VkImageMemoryBarrier2 imageBarrier(const graphics::SwapchainImage &image) {
-  VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  barrier.image = static_cast<VkImage>(image.nativeImage());
-  barrier.subresourceRange = VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-  return barrier;
-}
+// The whole first mip level and array layer of a color image and of a depth image.
+const vk::ImageSubresourceRange color_range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+const vk::ImageSubresourceRange depth_range{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
 
 bool parseOptions(int argc, char **argv, Options &options) {
   for (int i = 1; i < argc; ++i) {
@@ -621,23 +616,20 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
       return fail("prepare the upload", upload);
 
     // The recorder never transitions a layout: the barriers are this file's.
-    VkImageMemoryBarrier2 to_transfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_transfer.image = texture->nativeImage();
-    to_transfer.subresourceRange = VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    to_transfer.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    to_transfer.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    to_transfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    to_transfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    VkImageMemoryBarrier2 to_sampled = to_transfer;
-    to_sampled.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    to_sampled.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    to_sampled.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    to_sampled.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-    to_sampled.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    to_sampled.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    to_transfer.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+    const VkImageMemoryBarrier2 to_transfer =
+        graphics::imageBarrier(*texture, {.dst_stage = vk::PipelineStageFlagBits2::eTransfer,
+                                          .dst_access = vk::AccessFlagBits2::eTransferWrite,
+                                          .old_layout = vk::ImageLayout::eUndefined,
+                                          .new_layout = vk::ImageLayout::eTransferDstOptimal,
+                                          .subresource_range = color_range});
+    const VkImageMemoryBarrier2 to_sampled =
+        graphics::imageBarrier(*texture, {.src_stage = vk::PipelineStageFlagBits2::eTransfer,
+                                          .src_access = vk::AccessFlagBits2::eTransferWrite,
+                                          .dst_stage = vk::PipelineStageFlagBits2::eFragmentShader,
+                                          .dst_access = vk::AccessFlagBits2::eShaderSampledRead,
+                                          .old_layout = vk::ImageLayout::eTransferDstOptimal,
+                                          .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                                          .subresource_range = color_range});
     VkMemoryBarrier2 buffers_ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     buffers_ready.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
     buffers_ready.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -883,26 +875,24 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
     // indexed draw, barrier.
     if (!command->reset() || !command->begin())
       return fail("begin the command buffer");
-    auto to_attachment = imageBarrier(image);
-    to_attachment.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    to_attachment.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    to_attachment.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    to_attachment.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    to_attachment.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    VkImageMemoryBarrier2 to_depth{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    to_depth.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_depth.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    to_depth.image = current->depth_image->nativeImage();
-    to_depth.subresourceRange = VkImageSubresourceRange{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-    to_depth.srcStageMask =
-        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    to_depth.dstStageMask =
-        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-    to_depth.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                             VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    to_depth.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    to_depth.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    const std::array<VkImageMemoryBarrier2, 2> attachment_barriers{to_attachment, to_depth};
+    const std::array<VkImageMemoryBarrier2, 2> attachment_barriers{
+        graphics::imageBarrier(image,
+                               {.src_stage = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                .dst_stage = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                .dst_access = vk::AccessFlagBits2::eColorAttachmentWrite,
+                                .old_layout = vk::ImageLayout::eUndefined,
+                                .new_layout = vk::ImageLayout::eColorAttachmentOptimal,
+                                .subresource_range = color_range}),
+        graphics::imageBarrier(*current->depth_image,
+                               {.src_stage = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                             vk::PipelineStageFlagBits2::eLateFragmentTests,
+                                .dst_stage = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                             vk::PipelineStageFlagBits2::eLateFragmentTests,
+                                .dst_access = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+                                              vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+                                .old_layout = vk::ImageLayout::eUndefined,
+                                .new_layout = vk::ImageLayout::eDepthAttachmentOptimal,
+                                .subresource_range = depth_range})};
     if (!graphics::recordBarriers(*device, *command, {.images = attachment_barriers}))
       return fail("record the barriers to the attachment layouts");
 
@@ -946,12 +936,13 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
         !graphics::recordEndRendering(*device, *command, std::move(*scope)))
       return fail("record the draw");
 
-    auto to_present = imageBarrier(image);
-    to_present.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    to_present.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    to_present.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    if (!graphics::recordBarriers(*device, *command, {.images = std::span{&to_present, 1}}) ||
+    if (!graphics::recordImageBarrier(
+            *device, *command, image,
+            {.src_stage = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+             .src_access = vk::AccessFlagBits2::eColorAttachmentWrite,
+             .old_layout = vk::ImageLayout::eColorAttachmentOptimal,
+             .new_layout = vk::ImageLayout::ePresentSrcKHR,
+             .subresource_range = color_range}) ||
         !command->end())
       return fail("record the barrier to the present layout");
 

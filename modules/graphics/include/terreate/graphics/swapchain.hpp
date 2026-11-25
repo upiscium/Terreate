@@ -130,6 +130,8 @@ public:
 
   [[nodiscard]] bool valid() const noexcept { return image_ != VK_NULL_HANDLE; }
   [[nodiscard]] vk::Image nativeImage() const noexcept { return vk::Image{image_}; }
+  /// The same image as `nativeImage()`, under the name `Image::nativeHandle()` uses.
+  [[nodiscard]] vk::Image nativeHandle() const noexcept { return vk::Image{image_}; }
   [[nodiscard]] vk::ImageView nativeImageView() const noexcept { return vk::ImageView{view_}; }
   /// The index `vkAcquireNextImageKHR` reports for this image.
   [[nodiscard]] std::uint32_t index() const noexcept { return index_; }
