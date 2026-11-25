@@ -78,3 +78,24 @@ The test must report **BLOCKED** instead of pretending to PASS if the required
 Vulkan 1.3/format/memory conditions cannot be exercised. The build/package
 gate checks that the installed public API is linkable from an external consumer.
 This document is a design/test contract and is not itself proof of any run.
+
+## Image barrier builders (#437)
+
+`<terreate/graphics/barriers.hpp>` removes the boilerplate of the raw structs without
+changing the contract above: nothing is inferred, remembered or tracked.
+
+- `imageBarrier(image, description)` builds a `VkImageMemoryBarrier2` for an `Image` or
+  a `SwapchainImage`. `ImageBarrierDescription` holds exactly the stage and access masks,
+  both layouts, the subresource range and the two queue family indices; the defaults are
+  Vulkan's neutral values (empty masks, `eUndefined`, `VK_QUEUE_FAMILY_IGNORED`) and the
+  range has no default aspect. It only builds a value: nothing is recorded and no native
+  function is called. A moved-from `Image` or an empty `SwapchainImage` gives a barrier
+  with a null image, which `recordBarriers` refuses with `invalid_native_structure`.
+- `recordImageBarrier(device, command, image, description)` records exactly one image
+  barrier by calling `recordBarriers` with it: the same preconditions and refusals. To put
+  several transitions (or a memory or buffer barrier) into one call, build them with
+  `imageBarrier` and pass them to `recordBarriers`.
+- There are no presets for common transitions and no layout tracking: choosing the right
+  stages, accesses and layouts stays the application's job.
+- `SwapchainImage::nativeHandle()` returns the same `vk::Image` as `nativeImage()`, under
+  the name `Image::nativeHandle()` uses.

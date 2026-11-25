@@ -878,6 +878,18 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       SKIP_REGULAR_EXPRESSION "graphics\\.swapchain_retirement: retirement=SKIP"
       FAIL_REGULAR_EXPRESSION "graphics\\.swapchain_retirement.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
     # #230: Fence and Semaphore objects, headless.
+    add_executable(terreate_graphics_barriers_tests tests/test_graphics_barriers.cpp)
+    target_link_libraries(terreate_graphics_barriers_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_barriers_tests)
+    add_test(NAME graphics.barriers.cpu COMMAND terreate_graphics_barriers_tests cpu)
+    set_tests_properties(graphics.barriers.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.barriers\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.barriers.*: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.barriers COMMAND terreate_graphics_barriers_tests gpu)
+    set_tests_properties(graphics.barriers PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.barriers: barriers=PASS validation-layer=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.barriers.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+
     add_executable(terreate_graphics_synchronization_tests tests/test_graphics_synchronization.cpp)
     target_link_libraries(terreate_graphics_synchronization_tests PRIVATE Terreate::Graphics)
     terreate_configure_target(terreate_graphics_synchronization_tests)

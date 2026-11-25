@@ -29,8 +29,8 @@ Terreate leaves these to the application or has no wrapper for them:
 - `vkQueueWaitIdle`: dropping a generation whose present fences cannot prove the
   presents are done (no `VK_KHR_swapchain_maintenance1`, or a present that
   returned `out_of_date`), a pipeline rebuild after a format change, and shutdown.
-- Raw `VkImageMemoryBarrier2` structs (`recordBarriers` takes them) built from
-  `SwapchainImage::nativeImage`, and `Queue::nativeHandle` for the idle call.
+- `Queue::nativeHandle`, for the idle call (the image layout transitions go through
+  `recordImageBarrier`, #437).
 - `glfwSetWindowSize` on `Window::nativeHandle` (the scripted resize only).
 
 ## Regenerating the shaders
