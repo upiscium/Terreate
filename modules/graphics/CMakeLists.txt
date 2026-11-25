@@ -219,6 +219,8 @@ add_library(terreate_graphics STATIC
   include/terreate/graphics/barriers.hpp
   src/vertex_layout.cpp
   include/terreate/graphics/vertex_layout.hpp
+  src/format_properties.cpp
+  include/terreate/graphics/format_properties.hpp
   src/graphics.cpp
   src/graphics_diagnostics.cpp
   src/device.cpp
