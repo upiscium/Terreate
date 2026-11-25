@@ -1012,9 +1012,10 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       SKIP_REGULAR_EXPRESSION "integration\\.two_window_swapchain: two-window=SKIP"
       FAIL_REGULAR_EXPRESSION "integration\\.two_window_swapchain.*: (assertion=FAIL|.*BLOCKED)")
 
-    # The windowed triangle example (and its scripted CTest) is built with the
-    # Integration.
+    # The examples (and their CTests) are built with the Integration: the minimal
+    # getting-started program and the windowed triangle.
     if(TERREATE_BUILD_EXAMPLES)
+      add_subdirectory(examples/getting_started)
       add_subdirectory(examples/triangle)
     endif()
   endif()
