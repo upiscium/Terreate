@@ -97,13 +97,15 @@ linker safe.
 without creating anything, so an application chooses a format by its own policy instead of by
 trying `createImage` and failing.
 
-- `queryFormatProperties(instance, candidate, format)` makes one native query and returns a
+- `queryFormatProperties(instance, candidate, format)` makes one native query (the loader entry
+  point is looked up on each call) and returns a
   `FormatProperties` value: the format and its linear-tiling, optimal-tiling and buffer features as
   64-bit `vk::FormatFeatureFlags2`. With Vulkan 1.3 on both the Instance and the device the
   `VkFormatProperties3` flags are used; otherwise the 32-bit flags are widened (their bits keep their
   values), so the same code runs. The 64-bit flags contain every 32-bit bit of the native query and
-  may report more. A format the device does not support, `vk::Format::eUndefined` and a value no table
-  knows give **empty flags, not an error**.
+  may report more. A format the device does not support, `vk::Format::eUndefined` give **empty flags, not an
+  error** (the format must be a valid `vk::Format` enumerator: an arbitrary integer is invalid usage of
+  the native query).
 - `FormatProperties::supports(tiling, required)` and `supportsBuffer(required)` are true when every
   required bit is present (an empty requirement is always satisfied; a tiling other than linear and
   optimal has no features).

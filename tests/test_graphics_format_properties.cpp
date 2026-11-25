@@ -12,7 +12,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -153,14 +152,19 @@ int exercise(const Instance &instance, const Instance &other,
   check(sampled && sampled->supports(vk::ImageTiling::eOptimal, Feature::eSampledImage),
         "R8G8B8A8_UNORM supports sampling in optimal tiling");
 
-  // An undefined format and a value no table knows give empty flags, not an error.
+  // An undefined format gives empty flags, not an error.
   const auto undefined = queryFormatProperties(instance, candidate, vk::Format::eUndefined);
   check(undefined && !undefined->linear_tiling && !undefined->optimal_tiling && !undefined->buffer,
         "an undefined format has empty flags");
-  const auto unknown = queryFormatProperties(instance, candidate,
-                                             std::bit_cast<vk::Format>(std::int32_t{2000999999}));
-  check(unknown && !unknown->linear_tiling && !unknown->optimal_tiling && !unknown->buffer,
-        "a format value that no table knows has empty flags");
+  // A real format through the buffer features and through linear tiling.
+  const auto vertex = queryFormatProperties(instance, candidate, vk::Format::eR32G32B32A32Sfloat);
+  check(vertex && vertex->supportsBuffer(Feature::eVertexBuffer),
+        "R32G32B32A32_SFLOAT is a vertex buffer format (guaranteed by Vulkan)");
+  const std::array<vk::Format, 2> linear_list{vk::Format::eUndefined, vk::Format::eR8G8B8A8Unorm};
+  const auto linear =
+      firstSupportedFormat(instance, candidate, vk::ImageTiling::eLinear, {}, linear_list);
+  check(linear && linear->has_value() && **linear == vk::Format::eUndefined,
+        "with no required feature the first entry is returned (linear tiling)");
 
   // A candidate of another Instance is refused.
   check(hasError(queryFormatProperties(other, candidate, vk::Format::eD16Unorm),
@@ -210,18 +214,41 @@ int gpuTest() {
       return status;
   }
 
-  // The same questions through a Vulkan 1.1 Instance (the widened 32-bit path).
-  auto legacy = makeInstance(*capabilities, recorder, VK_API_VERSION_1_1);
-  if (legacy) {
+  // The widened 32-bit path: a Vulkan 1.1 Instance never chains VkFormatProperties3, so its answer
+  // is exactly the native 32-bit one (no bit above 31). It is required when the loader has
+  // Vulkan 1.1.
+  if (capabilities->loader_api_version >= VK_API_VERSION_1_1) {
+    auto legacy = makeInstance(*capabilities, recorder, VK_API_VERSION_1_1);
+    if (!legacy)
+      return blocked("a Vulkan 1.1 Instance (the loader supports Vulkan 1.1)");
     auto legacy_inventory = queryPhysicalDevices(*legacy);
-    if (legacy_inventory && !legacy_inventory->empty()) {
-      const auto &candidate = (*legacy_inventory)[0];
-      const auto depth = queryFormatProperties(*legacy, candidate, vk::Format::eD16Unorm);
-      check(depth && depth->supports(vk::ImageTiling::eOptimal,
-                                     vk::FormatFeatureFlagBits2::eDepthStencilAttachment),
-            "a Vulkan 1.1 Instance answers through the widened 32-bit flags");
+    if (!legacy_inventory || legacy_inventory->empty())
+      return blocked("physical devices of the Vulkan 1.1 Instance");
+    for (const auto &candidate : *legacy_inventory) {
+      for (const vk::Format format :
+           {vk::Format::eD16Unorm, vk::Format::eR8G8B8A8Unorm, vk::Format::eR32G32B32A32Sfloat}) {
+        const auto answer = queryFormatProperties(*legacy, candidate, format);
+        const VkFormatProperties native = nativeProperties(candidate, format);
+        check(answer &&
+                  static_cast<VkFormatFeatureFlags2>(answer->linear_tiling) ==
+                      native.linearTilingFeatures &&
+                  static_cast<VkFormatFeatureFlags2>(answer->optimal_tiling) ==
+                      native.optimalTilingFeatures &&
+                  static_cast<VkFormatFeatureFlags2>(answer->buffer) == native.bufferFeatures,
+              "a Vulkan 1.1 Instance answers with exactly the widened 32-bit native flags");
+      }
     }
   }
+
+  // A moved-from Instance is not live.
+  auto third = makeInstance(*capabilities, recorder, VK_API_VERSION_1_3);
+  if (!third)
+    return blocked("a third Instance");
+  const Instance taken = std::move(*third);
+  check(hasError(queryFormatProperties(*third, (*inventory)[0], vk::Format::eD16Unorm),
+                 FormatPropertiesError::invalid_instance),
+        "a moved-from Instance is refused");
+  check(taken.plan() != nullptr, "the Instance it was moved to is intact");
   check(recorder.warnings_or_errors.load() == 0, "the validation layer reports nothing");
   if (failures == 0)
     std::puts("graphics.format_properties: format_properties=PASS validation-layer=PASS");

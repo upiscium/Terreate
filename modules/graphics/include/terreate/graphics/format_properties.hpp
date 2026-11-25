@@ -27,15 +27,17 @@ enum class FormatPropertiesError : std::uint8_t {
 /// What a physical device supports for one format, copied when it was asked. The features are the
 /// 64-bit `vk::FormatFeatureFlags2`; where the Instance or the device is below Vulkan 1.3 the
 /// 32-bit flags are widened (their bits keep their values), so the same code runs. An unsupported
-/// format has empty flags: that is an answer, not an error.
+/// format has empty flags: that is an answer, not an error. The format must be a valid `vk::Format`
+/// enumerator (an arbitrary integer is invalid usage of the native query and is not supported).
 struct FormatProperties {
   vk::Format format = vk::Format::eUndefined;
   vk::FormatFeatureFlags2 linear_tiling{};
   vk::FormatFeatureFlags2 optimal_tiling{};
   vk::FormatFeatureFlags2 buffer{};
 
-  /// True when every bit of `required` is among the features for `tiling` (linear or optimal;
-  /// any other tiling has no features here). An empty `required` is always satisfied.
+  /// True when every bit of `required` is among the features for `tiling`. For linear and optimal
+  /// tiling an empty `required` is always satisfied; any other tiling has no features here and
+  /// gives false.
   [[nodiscard]] bool supports(vk::ImageTiling tiling,
                               vk::FormatFeatureFlags2 required) const noexcept {
     if (tiling == vk::ImageTiling::eLinear)
@@ -50,9 +52,9 @@ struct FormatProperties {
   }
 };
 
-/// One native query for `format` on `candidate`. The format may be any `vk::Format` value: one the
-/// device does not support, or no table knows, gives empty flags. The candidate must have been
-/// enumerated from `instance`.
+/// One native query for `format` on `candidate` (the loader entry point is looked up on each call).
+/// The format may be any `vk::Format` enumerator: one the device does not support gives empty
+/// flags. The candidate must have been enumerated from `instance`.
 [[nodiscard]] auto queryFormatProperties(const Instance &instance,
                                          const PhysicalDeviceCandidate &candidate,
                                          vk::Format format) -> terreate::Result<FormatProperties>;
