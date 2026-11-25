@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -163,7 +164,8 @@ int cpuTest() {
   check(hasError(vertexLayout(vertexAttribute<&Vertex::uv>(0, vk::Format::eG8B8R83Plane420Unorm)),
                  VertexLayoutError::unsupported_format),
         "a multi-plane format is refused");
-  check(hasError(vertexLayout(vertexAttribute<&Vertex::uv>(0, static_cast<vk::Format>(2000999999))),
+  check(hasError(vertexLayout(vertexAttribute<&Vertex::uv>(
+                     0, std::bit_cast<vk::Format>(std::int32_t{2000999999}))),
                  VertexLayoutError::unsupported_format),
         "a format value unknown to the format table is refused, not asserted");
 
