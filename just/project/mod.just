@@ -2,6 +2,7 @@ root := justfile_directory()
 
 mod cmake 'cmake.just'
 mod quality 'quality.just'
+mod fast 'fast.just'
 mod tests 'test.just'
 mod? repository 'repository.just'
 
@@ -43,6 +44,24 @@ check:
       exit 1
     fi
     exec nix develop --command just project::check-in-dev-shell
+
+[private]
+check-fast-in-dev-shell: doctor format-check fast::lint build fast::tests
+    @echo "C++/CMake Project Adapter check-fast: PARTIAL, not the gate (run just project::check before a merge)"
+
+# The development loop: format, changed-file lint, build, and the tests without the heavy
+# label (all of them when the change touches CMake, the flake or a public header). Partial
+# by design: `check` stays the gate a merge needs.
+[working-directory: root]
+check-fast:
+    #!/usr/bin/env sh
+    set -eu
+    if ! command -v nix >/dev/null 2>&1; then
+      printf '%s\n' \
+        "Terreate project::check-fast requires Nix to enter the pinned devShell." >&2
+      exit 1
+    fi
+    exec nix develop --command just project::check-fast-in-dev-shell
 
 # Build the API reference (Doxygen) and the documentation pages (Sphinx) under .build/default/docs/.
 [working-directory: root]

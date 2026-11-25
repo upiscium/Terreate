@@ -1046,7 +1046,11 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
   set_tests_properties(cmake.test_outcomes PROPERTIES
     PASS_REGULAR_EXPRESSION "cmake\\.test_outcomes: outcome-rule=PASS")
   # #285: the external-consumer checks print this marker as the script's last line.
+  # The two CMake-driven tests compile whole projects: `just project::check-fast` skips them
+  # unless the change touches the build or the package surface; `check` always runs them.
+  set_tests_properties(cmake.component_matrix PROPERTIES LABELS heavy)
   set_tests_properties(cmake.package_smoke PROPERTIES
+    LABELS heavy
     PASS_REGULAR_EXPRESSION
       "package\\.external_consumer: disabled-diagnostic=PASS source-independence=PASS no-glfw=PASS")
 endif()

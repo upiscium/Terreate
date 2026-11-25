@@ -12,6 +12,7 @@ from the developer's own toolchain.
 | `just project::test` | Run all CTests |
 | `just project::docs` | Build the API reference and these pages |
 | `just project::check` | The gate: format, lint, build, all tests (includes the documentation tests) |
+| `just project::check-fast` | The development loop, **partial by design and not the gate**: format, clang-tidy on the changed `.cpp` files only, build, and the tests without the `heavy` label (all tests when the change touches a CMake file, the flake or a public header). Compared against `FAST_BASE` (default `origin/main`) |
 
 ## Compiler cache
 
