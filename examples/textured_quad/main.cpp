@@ -448,30 +448,33 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
 
   // ---- One descriptor set: the tint (binding 0) and the texture (binding 1) ----
   graphics::DescriptorSetLayoutDescription set_description;
-  set_description.bindings = {
-      {0, vk::DescriptorType::eUniformBuffer, 1, vk::ShaderStageFlagBits::eFragment},
-      {1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment}};
+  set_description.bindings = {{.binding = 0,
+                               .descriptor_type = vk::DescriptorType::eUniformBuffer,
+                               .descriptor_count = 1,
+                               .stage_flags = vk::ShaderStageFlagBits::eFragment},
+                              {.binding = 1,
+                               .descriptor_type = vk::DescriptorType::eCombinedImageSampler,
+                               .descriptor_count = 1,
+                               .stage_flags = vk::ShaderStageFlagBits::eFragment}};
   auto set_layout = graphics::createDescriptorSetLayout(*device, set_description);
   if (!set_layout)
     return fail("create the DescriptorSetLayout", set_layout);
-  graphics::DescriptorPoolDescription pool_description_sets;
-  pool_description_sets.max_sets = 1;
-  pool_description_sets.sizes = {{vk::DescriptorType::eUniformBuffer, 1},
-                                 {vk::DescriptorType::eCombinedImageSampler, 1}};
-  auto descriptor_pool = graphics::createDescriptorPool(*device, pool_description_sets);
+  // The pool is sized from the layout it serves (one set), so adding a binding to the layout cannot
+  // leave the pool too small; the description is a plain value that could be edited first.
+  const std::array<const graphics::DescriptorSetLayout *, 1> pool_layouts{&*set_layout};
+  const auto descriptor_pool_description = graphics::descriptorPoolDescriptionFor(pool_layouts, 1);
+  if (!descriptor_pool_description)
+    return fail("describe the DescriptorPool", descriptor_pool_description);
+  auto descriptor_pool = graphics::createDescriptorPool(*device, *descriptor_pool_description);
   if (!descriptor_pool)
     return fail("create the DescriptorPool", descriptor_pool);
   auto descriptor_set = descriptor_pool->allocate(*set_layout);
   if (!descriptor_set)
     return fail("allocate the DescriptorSet", descriptor_set);
-  const std::array<graphics::DescriptorWriteDescription, 2> writes{{
-      {0, 0, vk::DescriptorType::eUniformBuffer,
-       std::vector<graphics::DescriptorBufferWriteElement>{
-           {&*uniform_buffer, 0, sizeof(float) * 4}}},
-      {1, 0, vk::DescriptorType::eCombinedImageSampler,
-       std::vector<graphics::DescriptorImageWriteElement>{
-           {&*texture, &*texture_view, &*sampler, vk::ImageLayout::eShaderReadOnlyOptimal}}},
-  }};
+  const std::array<graphics::DescriptorWriteDescription, 2> writes{
+      graphics::uniformBufferWrite(0, *uniform_buffer),
+      graphics::combinedImageSamplerWrite(1, *texture, *texture_view, *sampler,
+                                          vk::ImageLayout::eShaderReadOnlyOptimal)};
   if (!graphics::updateDescriptorSet(*device, *set_layout, *descriptor_set, writes))
     return fail("write the descriptor set");
 

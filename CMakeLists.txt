@@ -877,6 +877,15 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.swapchain_retirement: retirement=PASS"
       SKIP_REGULAR_EXPRESSION "graphics\\.swapchain_retirement: retirement=SKIP"
       FAIL_REGULAR_EXPRESSION "graphics\\.swapchain_retirement.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+    # #440: descriptor write builders and the pool description helper (headless).
+    add_executable(terreate_graphics_descriptor_builders_tests tests/test_graphics_descriptor_builders.cpp)
+    target_link_libraries(terreate_graphics_descriptor_builders_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_descriptor_builders_tests)
+    add_test(NAME graphics.descriptor_builders COMMAND terreate_graphics_descriptor_builders_tests)
+    set_tests_properties(graphics.descriptor_builders PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.descriptor_builders: descriptor_builders=PASS validation-layer=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.descriptor_builders.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+
     # #438: format properties (CPU and headless).
     add_executable(terreate_graphics_format_properties_tests tests/test_graphics_format_properties.cpp)
     target_link_libraries(terreate_graphics_format_properties_tests PRIVATE Terreate::Graphics)

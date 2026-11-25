@@ -1,5 +1,7 @@
 #include <terreate/graphics/descriptor_pool.hpp>
 
+#include <algorithm>
+
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -319,5 +321,45 @@ bool DescriptorSet::correlatedWith(const Device &device) const noexcept {
 bool DescriptorSet::correlatedWith(const DescriptorPool &pool) const noexcept {
   return valid() && pool.valid() && pool_ == pool.nativeDescriptorPool() &&
          device_ == pool.nativeVkDevice();
+}
+auto descriptorPoolDescriptionFor(std::span<const DescriptorSetLayout *const> layouts,
+                                  std::uint32_t sets_per_layout,
+                                  vk::DescriptorPoolCreateFlags flags)
+    -> terreate::Result<DescriptorPoolDescription> {
+  if (sets_per_layout == 0 || layouts.empty() ||
+      layouts.size() > std::numeric_limits<std::uint32_t>::max())
+    return fail(DescriptorPoolError::invalid_count);
+  const std::uint64_t max_sets = std::uint64_t{sets_per_layout} * layouts.size();
+  if (max_sets > std::numeric_limits<std::uint32_t>::max())
+    return fail(DescriptorPoolError::invalid_count);
+  DescriptorPoolDescription description;
+  description.max_sets = static_cast<std::uint32_t>(max_sets);
+  description.flags = flags;
+  try {
+    for (const DescriptorSetLayout *layout : layouts) {
+      if (layout == nullptr || !layout->valid() || layout->configuration() == nullptr)
+        return fail(DescriptorPoolError::invalid_layout);
+      for (const auto &binding : layout->configuration()->effective.bindings) {
+        const std::uint64_t count = std::uint64_t{binding.descriptor_count} * sets_per_layout;
+        auto found =
+            std::find_if(description.sizes.begin(), description.sizes.end(),
+                         [&](const auto &size) { return size.type == binding.descriptor_type; });
+        if (found == description.sizes.end()) {
+          if (count > std::numeric_limits<std::uint32_t>::max())
+            return fail(DescriptorPoolError::invalid_count);
+          description.sizes.push_back(DescriptorPoolSizeDescription{
+              binding.descriptor_type, static_cast<std::uint32_t>(count)});
+        } else {
+          const std::uint64_t total = std::uint64_t{found->descriptor_count} + count;
+          if (total > std::numeric_limits<std::uint32_t>::max())
+            return fail(DescriptorPoolError::invalid_count);
+          found->descriptor_count = static_cast<std::uint32_t>(total);
+        }
+      }
+    }
+  } catch (const std::bad_alloc &) {
+    return fail(DescriptorPoolError::allocation_failed);
+  }
+  return description;
 }
 } // namespace terreate::graphics

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <span>
 #include <system_error>
+#include <type_traits>
 #include <variant>
 #include <vector>
 
@@ -39,6 +40,103 @@ struct DescriptorWriteDescription {
   vk::DescriptorType descriptor_type = static_cast<vk::DescriptorType>(VK_DESCRIPTOR_TYPE_MAX_ENUM);
   DescriptorWritePayload elements{};
 };
+namespace detail {
+// True for a resource passed as a temporary: the builders store its address, which would dangle.
+template <class T>
+inline constexpr bool is_temporary_resource_v =
+    !std::is_lvalue_reference_v<T> && (std::is_same_v<std::remove_cvref_t<T>, Buffer> ||
+                                       std::is_same_v<std::remove_cvref_t<T>, Image> ||
+                                       std::is_same_v<std::remove_cvref_t<T>, ImageView> ||
+                                       std::is_same_v<std::remove_cvref_t<T>, Sampler>);
+} // namespace detail
+
+// ---- Builders for the common one-element write ----
+//
+// Each builds a `DescriptorWriteDescription` with `first_array_element` 0 and exactly one element,
+// for the descriptor type its name states (the type is never inferred from the layout:
+// `updateDescriptorSet` still checks it against the layout and reports `descriptor_type_mismatch`).
+// They only build a value: nothing is recorded or called; an allocation failure is a
+// `std::bad_alloc` thrown by the vector the payload holds. The resources are borrowed, as in the
+// struct, and must outlive `updateDescriptorSet`. Arrays of descriptors and a nonzero first array
+// element are written with the struct.
+
+/// A buffer write of any buffer descriptor type (the dynamic ones too). `range` defaults to the
+/// whole buffer from `offset` (VK_WHOLE_SIZE; a dynamic buffer needs a finite range).
+[[nodiscard]] inline DescriptorWriteDescription
+bufferWrite(std::uint32_t binding, vk::DescriptorType type, const Buffer &buffer,
+            vk::DeviceSize offset = 0, vk::DeviceSize range = vk::WholeSize) {
+  return {binding, 0, type,
+          std::vector<DescriptorBufferWriteElement>{
+              DescriptorBufferWriteElement{&buffer, offset, range}}};
+}
+[[nodiscard]] inline DescriptorWriteDescription
+uniformBufferWrite(std::uint32_t binding, const Buffer &buffer, vk::DeviceSize offset = 0,
+                   vk::DeviceSize range = vk::WholeSize) {
+  return bufferWrite(binding, vk::DescriptorType::eUniformBuffer, buffer, offset, range);
+}
+[[nodiscard]] inline DescriptorWriteDescription
+storageBufferWrite(std::uint32_t binding, const Buffer &buffer, vk::DeviceSize offset = 0,
+                   vk::DeviceSize range = vk::WholeSize) {
+  return bufferWrite(binding, vk::DescriptorType::eStorageBuffer, buffer, offset, range);
+}
+
+/// A combined image sampler: the image, its view, the sampler and the layout the image is in when
+/// the descriptor is accessed.
+[[nodiscard]] inline DescriptorWriteDescription
+combinedImageSamplerWrite(std::uint32_t binding, const Image &image, const ImageView &view,
+                          const Sampler &sampler, vk::ImageLayout image_layout) {
+  return {binding, 0, vk::DescriptorType::eCombinedImageSampler,
+          std::vector<DescriptorImageWriteElement>{
+              DescriptorImageWriteElement{&image, &view, &sampler, image_layout}}};
+}
+/// A sampled image (no sampler).
+[[nodiscard]] inline DescriptorWriteDescription sampledImageWrite(std::uint32_t binding,
+                                                                  const Image &image,
+                                                                  const ImageView &view,
+                                                                  vk::ImageLayout image_layout) {
+  return {binding, 0, vk::DescriptorType::eSampledImage,
+          std::vector<DescriptorImageWriteElement>{
+              DescriptorImageWriteElement{&image, &view, nullptr, image_layout}}};
+}
+/// A storage image, accessed in the General layout.
+[[nodiscard]] inline DescriptorWriteDescription
+storageImageWrite(std::uint32_t binding, const Image &image, const ImageView &view) {
+  return {binding, 0, vk::DescriptorType::eStorageImage,
+          std::vector<DescriptorImageWriteElement>{
+              DescriptorImageWriteElement{&image, &view, nullptr, vk::ImageLayout::eGeneral}}};
+}
+/// A standalone sampler.
+[[nodiscard]] inline DescriptorWriteDescription samplerWrite(std::uint32_t binding,
+                                                             const Sampler &sampler) {
+  return {binding, 0, vk::DescriptorType::eSampler,
+          std::vector<DescriptorSamplerWriteElement>{DescriptorSamplerWriteElement{&sampler}}};
+}
+
+// A temporary resource would leave a dangling pointer in the write (the builders store addresses):
+// these refuse it at compile time. A resource must be an lvalue that outlives
+// `updateDescriptorSet`.
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription bufferWrite(std::uint32_t, vk::DescriptorType, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription uniformBufferWrite(std::uint32_t, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription storageBufferWrite(std::uint32_t, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription combinedImageSamplerWrite(std::uint32_t, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription sampledImageWrite(std::uint32_t, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription storageImageWrite(std::uint32_t, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription samplerWrite(std::uint32_t, Args &&...) = delete;
+
 enum class DescriptorUpdateError : std::uint8_t {
   invalid_device = 1,
   invalid_set,
