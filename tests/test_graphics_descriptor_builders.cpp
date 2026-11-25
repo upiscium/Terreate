@@ -81,6 +81,20 @@ struct ValidationRecorder {
   }
 };
 
+// Whether a builder call compiles for these argument types (inside a template, so a refusal is a
+// value).
+template <class Resource>
+concept BuildsUniformWrite =
+    requires(Resource &&resource) { uniformBufferWrite(0, std::forward<Resource>(resource)); };
+template <class Resource>
+concept BuildsSamplerWrite =
+    requires(Resource &&resource) { samplerWrite(0, std::forward<Resource>(resource)); };
+static_assert(BuildsUniformWrite<const Buffer &>);
+static_assert(!BuildsUniformWrite<Buffer>);
+static_assert(!BuildsUniformWrite<Buffer &&>);
+static_assert(BuildsSamplerWrite<const Sampler &>);
+static_assert(!BuildsSamplerWrite<Sampler>);
+
 const DescriptorBufferWriteElement *bufferElement(const DescriptorWriteDescription &write) {
   const auto *elements = std::get_if<std::vector<DescriptorBufferWriteElement>>(&write.elements);
   return elements != nullptr && elements->size() == 1 ? &elements->front() : nullptr;
@@ -167,6 +181,11 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
             samplerElement(plain_sampler) != nullptr &&
             samplerElement(plain_sampler)->sampler == &*sampler,
         "samplerWrite maps the sampler");
+
+  check(whole.first_array_element == 0 && storage.first_array_element == 0 &&
+            dynamic.first_array_element == 0 && sampled.first_array_element == 0 &&
+            storage_image.first_array_element == 0 && plain_sampler.first_array_element == 0,
+        "every builder writes from array element 0");
 
   // Two layouts, written with designated initializers (no builder needed for those).
   DescriptorSetLayoutDescription first_description;

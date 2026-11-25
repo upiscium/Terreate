@@ -474,12 +474,18 @@ const std::array writes{graphics::uniformBufferWrite(0, uniform_buffer),
                                                             vk::ImageLayout::eShaderReadOnlyOptimal)};
 ```
 
+**Temporary resources are refused at compile time**: the builders store the address of the buffer, image,
+view or sampler they are given, so a temporary (`uniformBufferWrite(0, *createBuffer(...))`) would leave a
+dangling pointer; those overloads are deleted. Pass an lvalue that outlives `updateDescriptorSet`.
+
 **Pool sizing** (`<terreate/graphics/descriptor_pool.hpp>`): `descriptorPoolDescriptionFor(layouts,
 sets_per_layout = 1, flags = {})` sums the descriptor counts of the layouts' effective bindings per
 type, times the sets, with `max_sets` = layouts times sets, into a plain `DescriptorPoolDescription`
 the application can inspect and edit before `createDescriptorPool`; adding a binding to a layout
 therefore cannot leave the pool too small. Errors: a moved-from layout is `invalid_layout`; zero
-sets, no layouts, or a count that overflows 32 bits is `invalid_count`.
+sets, no layouts, or a count that overflows 32 bits is `invalid_count`. A layout passed twice counts twice (the helper counts layouts times sets). The flags are passed through
+unchecked: only `eFreeDescriptorSet` is supported by the pool, and `createDescriptorPool` is where another
+value is refused.
 
 What the test shows: `graphics.descriptor_builders` checks each builder's members, that a set written
 with builders passes `updateDescriptorSet` with the validation layer silent, that a wrong type name is

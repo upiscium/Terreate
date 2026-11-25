@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <span>
 #include <system_error>
+#include <type_traits>
 #include <variant>
 #include <vector>
 
@@ -39,6 +40,16 @@ struct DescriptorWriteDescription {
   vk::DescriptorType descriptor_type = static_cast<vk::DescriptorType>(VK_DESCRIPTOR_TYPE_MAX_ENUM);
   DescriptorWritePayload elements{};
 };
+namespace detail {
+// True for a resource passed as a temporary: the builders store its address, which would dangle.
+template <class T>
+inline constexpr bool is_temporary_resource_v =
+    !std::is_lvalue_reference_v<T> && (std::is_same_v<std::remove_cvref_t<T>, Buffer> ||
+                                       std::is_same_v<std::remove_cvref_t<T>, Image> ||
+                                       std::is_same_v<std::remove_cvref_t<T>, ImageView> ||
+                                       std::is_same_v<std::remove_cvref_t<T>, Sampler>);
+} // namespace detail
+
 // ---- Builders for the common one-element write ----
 //
 // Each builds a `DescriptorWriteDescription` with `first_array_element` 0 and exactly one element,
@@ -100,6 +111,31 @@ storageImageWrite(std::uint32_t binding, const Image &image, const ImageView &vi
   return {binding, 0, vk::DescriptorType::eSampler,
           std::vector<DescriptorSamplerWriteElement>{DescriptorSamplerWriteElement{&sampler}}};
 }
+
+// A temporary resource would leave a dangling pointer in the write (the builders store addresses):
+// these refuse it at compile time. A resource must be an lvalue that outlives
+// `updateDescriptorSet`.
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription bufferWrite(std::uint32_t, vk::DescriptorType, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription uniformBufferWrite(std::uint32_t, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription storageBufferWrite(std::uint32_t, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription combinedImageSamplerWrite(std::uint32_t, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription sampledImageWrite(std::uint32_t, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription storageImageWrite(std::uint32_t, Args &&...) = delete;
+template <class... Args>
+  requires(detail::is_temporary_resource_v<Args> || ...)
+DescriptorWriteDescription samplerWrite(std::uint32_t, Args &&...) = delete;
 
 enum class DescriptorUpdateError : std::uint8_t {
   invalid_device = 1,

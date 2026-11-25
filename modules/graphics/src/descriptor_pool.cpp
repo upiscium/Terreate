@@ -1,5 +1,6 @@
-#include <algorithm>
 #include <terreate/graphics/descriptor_pool.hpp>
+
+#include <algorithm>
 
 #include <limits>
 #include <new>

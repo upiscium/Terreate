@@ -462,10 +462,10 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
   // The pool is sized from the layout it serves (one set), so adding a binding to the layout cannot
   // leave the pool too small; the description is a plain value that could be edited first.
   const std::array<const graphics::DescriptorSetLayout *, 1> pool_layouts{&*set_layout};
-  const auto pool_description = graphics::descriptorPoolDescriptionFor(pool_layouts, 1);
-  if (!pool_description)
-    return fail("describe the DescriptorPool", pool_description);
-  auto descriptor_pool = graphics::createDescriptorPool(*device, *pool_description);
+  const auto descriptor_pool_description = graphics::descriptorPoolDescriptionFor(pool_layouts, 1);
+  if (!descriptor_pool_description)
+    return fail("describe the DescriptorPool", descriptor_pool_description);
+  auto descriptor_pool = graphics::createDescriptorPool(*device, *descriptor_pool_description);
   if (!descriptor_pool)
     return fail("create the DescriptorPool", descriptor_pool);
   auto descriptor_set = descriptor_pool->allocate(*set_layout);
