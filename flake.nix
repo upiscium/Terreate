@@ -37,9 +37,11 @@
             gdb
             gnused
 
-            # API reference generation (TERREATE_BUILD_DOCS); a shell tool only,
+            # Documentation generation (TERREATE_BUILD_DOCS): Doxygen for the API
+            # reference, Sphinx (MyST, breathe) for the pages; shell tools only,
             # never a dependency of the CMake package.
             doxygen
+            (python3.withPackages (ps: [ ps.sphinx ps.myst-parser ps.breathe ]))
 
             # Vulkan headers, loader, validation, tools, and a software ICD
             # make the API/runtime surface observable in a clean shell.

@@ -13,6 +13,9 @@ is an optional external, isolated Work Unit developer tool rather than a reposit
 - [Graphics allocator integration and ownership](docs/architecture/allocator.md)
 - [Graphics validation and integration test matrix](docs/development/graphics-test-matrix.md)
 
+The documentation (architecture, development guide, API reference) is built with
+`just project::docs`; its entry point is `docs/index.md`.
+
 ## Development shell
 
 Enter the pinned project environment before configuring:
