@@ -7,6 +7,12 @@ if(NOT TERREATE_DOXYGEN_EXECUTABLE)
     "TERREATE_BUILD_DOCS=ON requires doxygen, which was not found. Enter the "
     "Nix dev shell, install doxygen, or set TERREATE_BUILD_DOCS=OFF")
 endif()
+find_program(TERREATE_SPHINX_EXECUTABLE sphinx-build)
+if(NOT TERREATE_SPHINX_EXECUTABLE)
+  message(FATAL_ERROR
+    "TERREATE_BUILD_DOCS=ON requires sphinx-build (with myst-parser and breathe), which "
+    "was not found. Enter the Nix dev shell, install them, or set TERREATE_BUILD_DOCS=OFF")
+endif()
 
 # The public include trees that exist in this checkout; src/ is never an input.
 set(_terreate_doxygen_inputs "")
@@ -63,4 +69,24 @@ add_test(NAME docs.doxygen
     -P ${CMAKE_CURRENT_SOURCE_DIR}/check_doxygen.cmake)
 set_tests_properties(docs.doxygen PROPERTIES
   PASS_REGULAR_EXPRESSION "docs\\.doxygen: reference=PASS"
-  FAIL_REGULAR_EXPRESSION "docs\\.doxygen: error")
+  FAIL_REGULAR_EXPRESSION "docs\\.doxygen: error"
+  FIXTURES_SETUP terreate_doxygen_xml)
+
+# Prose pages (#361): Markdown through MyST; the API pages read the Doxygen XML.
+set(_sphinx_args
+  -DTERREATE_SPHINX_EXECUTABLE=${TERREATE_SPHINX_EXECUTABLE}
+  -DTERREATE_SPHINX_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}
+  -DTERREATE_SPHINX_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/sphinx
+  -DTERREATE_DOXYGEN_XML_DIR=${CMAKE_CURRENT_BINARY_DIR}/doxygen/xml
+  -DTERREATE_VERSION=${PROJECT_VERSION})
+add_custom_target(terreate_docs_sphinx
+  COMMAND "${CMAKE_COMMAND}" ${_sphinx_args} -P ${CMAKE_CURRENT_SOURCE_DIR}/check_sphinx.cmake
+  COMMENT "Building the documentation pages (HTML in ${CMAKE_CURRENT_BINARY_DIR}/sphinx/html)"
+  VERBATIM)
+add_dependencies(terreate_docs_sphinx terreate_docs)
+add_test(NAME docs.sphinx
+  COMMAND "${CMAKE_COMMAND}" ${_sphinx_args} -P ${CMAKE_CURRENT_SOURCE_DIR}/check_sphinx.cmake)
+set_tests_properties(docs.sphinx PROPERTIES
+  PASS_REGULAR_EXPRESSION "docs\\.sphinx: pages=PASS"
+  FAIL_REGULAR_EXPRESSION "docs\\.sphinx: error"
+  FIXTURES_REQUIRED terreate_doxygen_xml)
