@@ -877,6 +877,19 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.swapchain_retirement: retirement=PASS"
       SKIP_REGULAR_EXPRESSION "graphics\\.swapchain_retirement: retirement=SKIP"
       FAIL_REGULAR_EXPRESSION "graphics\\.swapchain_retirement.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+    # #448: vertex layouts built from a struct (CPU and headless).
+    add_executable(terreate_graphics_vertex_layout_tests tests/test_graphics_vertex_layout.cpp)
+    target_link_libraries(terreate_graphics_vertex_layout_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_vertex_layout_tests)
+    add_test(NAME graphics.vertex_layout.cpu COMMAND terreate_graphics_vertex_layout_tests cpu)
+    set_tests_properties(graphics.vertex_layout.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.vertex_layout\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.vertex_layout.*: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.vertex_layout COMMAND terreate_graphics_vertex_layout_tests gpu)
+    set_tests_properties(graphics.vertex_layout PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.vertex_layout: vertex_layout=PASS validation-layer=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.vertex_layout.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+
     # #437: image barrier builders (CPU and headless).
     add_executable(terreate_graphics_barriers_tests tests/test_graphics_barriers.cpp)
     target_link_libraries(terreate_graphics_barriers_tests PRIVATE Terreate::Graphics)

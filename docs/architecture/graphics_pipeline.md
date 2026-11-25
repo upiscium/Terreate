@@ -212,3 +212,61 @@ caches were added in #399 D1. Other shader stages and other dynamic states remai
 (#262), compiler integration (#261), RenderPass/RenderGraph abstractions, shared
 ownership and waits are outside this API. Existing layout and compute contracts
 remain documented in [pipeline.md](pipeline.md).
+
+## Vertex layout from the application's struct (#448)
+
+`<terreate/graphics/vertex_layout.hpp>` describes how the vertex buffers feed the pipeline from the
+application's own struct, so the data, the stride, the offsets and the formats come from one
+definition. **The application defines the struct; the library fixes no vertex type.** A mesh with
+a normal is a different struct (or several bindings) with its own layout and its own pipeline;
+nothing in the library assumes position and uv.
+
+```cpp
+struct Vertex { std::array<float, 3> position; std::array<float, 2> uv; };
+
+const auto layout = graphics::vertexLayout(
+    graphics::vertexAttribute<&Vertex::position>(0, vk::Format::eR32G32B32Sfloat),
+    graphics::vertexAttribute<&Vertex::uv>(1, vk::Format::eR32G32Sfloat));
+layout->applyTo(pipeline_description);                      // vertex_bindings, vertex_attributes
+const auto item = graphics::uploadItem(vertex_buffer, vertices);   // the typed data's bytes
+```
+
+- The stride is `sizeof(Vertex)`. Each offset is measured from the member of a default-constructed
+  object of the type (no macro, no `offsetof`), so the type must be standard layout, trivially
+  copyable and default constructible (static assertions).
+- The **format is always stated**: it is never deduced from the member type, because the same
+  four bytes can be unorm, snorm, uint or sint. The shader location is the caller's number
+  (Terreate does not reflect SPIR-V).
+- `vertexLayout` validates before any native call and returns a named `VertexLayoutError`: no
+  attributes, an undefined or compressed or multi-plane format, a format whose block size differs
+  from the member's size, overlapping attributes, a duplicate location. `combine` joins layouts
+  of different bindings (for example per-instance data) and refuses a repeated binding or location.
+- `applyTo` produces exactly the native structures `GraphicsPipelineDescription` already takes, so
+  `GraphicsBindingState` and the draw checks work unchanged. The layout holds no Device or Vulkan
+  object and calls no Vulkan function.
+- A `Vertex` with and without a normal: write two structs (`VertexPU`, `VertexPUN`), build two layouts
+  and use each with the pipeline that reads it; or keep the attributes in separate buffers with one
+  `vertexLayout` call per binding and `combine` them. Which is better is the application's choice
+  (the library does not impose interleaved or separate storage).
+
+Limits and rules of the vertex layout, stated so that a green test is not read as more:
+
+- The members must be members of the vertex type itself, not of a base class (a base class member
+  gives the base class's layout and stride).
+- A format must be known, single-plane and uncompressed, and its block size must **equal** the
+  member's size. Reading only the first bytes of a larger member is legal Vulkan but refused, so
+  that a layout and its struct cannot drift apart: declare a smaller member to read part of the
+  data. Overlapping attributes are refused too, although Vulkan would allow reading the same bytes
+  twice. `makeVertexLayout` also refuses a zero or oversized stride and an attribute that ends
+  beyond the stride (named errors `invalid_stride`, `attribute_outside_stride`).
+- Nothing here is checked against the device: `maxVertexInputBindingStride`,
+  `maxVertexInputAttributeOffset`, the counts of bindings and attributes and the vertex-buffer
+  support of a format are checked when the pipeline is created. A 64-bit format with three or four
+  components uses two consecutive shader locations: keep the next location free.
+- `uploadItem` refuses a temporary container (the item would point into it after the statement);
+  pass the container itself, or a `std::span` of it.
+- What the tests show: `graphics.vertex_layout.cpu` checks strides, offsets with padding, array and
+  nested members, the stated formats, every named error, `combine` and `applyTo`;
+  `graphics.vertex_layout` checks only the fields of `uploadItem` on a real `Buffer`. That a layout
+  makes a valid pipeline and passes the draw checks of `GraphicsBindingState` with the validation
+  layer silent is exercised by `example.textured_quad` in the gate, not by a unit test here.
