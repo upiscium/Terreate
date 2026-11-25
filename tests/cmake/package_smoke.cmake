@@ -218,6 +218,16 @@ set_target_properties(package_consumer PROPERTIES
       "${name} consumer failed at runtime\n"
       "${_run_output}\n${_run_error}")
   endif()
+  # An optional fifth argument names the one marker a consumer must print; the
+  # per-component checks below are for the large runtime fixtures.
+  if(NOT "${ARGV4}" STREQUAL "")
+    if(NOT "${_run_output}" MATCHES "${ARGV4}")
+      message(FATAL_ERROR
+        "${name} consumer did not print the expected marker ${ARGV4}\n"
+        "${_run_output}\n${_run_error}")
+    endif()
+    return()
+  endif()
   if("${component}" STREQUAL "Platform" AND
      NOT "${_run_output}" MATCHES "package\\.platform: runtime=PASS")
     message(FATAL_ERROR
@@ -1515,6 +1525,13 @@ terreate_build_consumer(integration_runtime "${all_components_PREFIX}"
 terreate_package_configure_and_install(graphics_only OFF ON)
 terreate_build_consumer(graphics_only_runtime "${graphics_only_PREFIX}" Graphics
   "${_graphics_consumer_source}")
+
+# #362: the getting-started example is also an external consumer of the installed
+# package, built against the Graphics-only install (the minimal configuration the
+# documentation recommends): it is the documented program, not a copy.
+file(READ "${TERREATE_SOURCE_DIR}/examples/getting_started/main.cpp" _getting_started_source)
+terreate_build_consumer(getting_started_runtime "${graphics_only_PREFIX}" Graphics
+  "${_getting_started_source}" "example\\.getting_started: bootstrap=PASS")
 
 set(_core_isolation_consumer
   "${_terreate_package_root}/all_components/core-isolation-consumer")
