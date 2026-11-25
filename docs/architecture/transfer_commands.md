@@ -99,3 +99,13 @@ changing the contract above: nothing is inferred, remembered or tracked.
   stages, accesses and layouts stays the application's job.
 - `SwapchainImage::nativeHandle()` returns the same `vk::Image` as `nativeImage()`, under
   the name `Image::nativeHandle()` uses.
+
+What the tests of the builders do and do not show: `graphics.barriers.cpu` and
+`graphics.barriers` check that every description field reaches the right native member (with
+distinct values, so a swapped field is caught), that a moved-from `Image` and an empty
+`SwapchainImage` give a null image and are refused, that a command buffer that is not recording
+is refused, and that what was recorded is submitted without a validation message. That
+`recordImageBarrier` makes exactly one native call holds by construction (it passes a
+one-element span to `recordBarriers`, which makes one call); no test counts native calls,
+because the tests avoid linker-specific call counting. A non-empty `SwapchainImage` is covered
+only through the Swapchain tests that use the examples' path, not by a unit test here.

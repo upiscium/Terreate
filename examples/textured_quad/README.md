@@ -24,7 +24,7 @@ pointer with one explicit flush.
 
 ## Gap report
 
-Native calls the example makes (the raw barrier structs, `vkQueueWaitIdle`, and `glfwSetWindowSize` on `Window::nativeHandle` for the scripted resize), and API friction found while writing it:
+Native calls the example makes (`vkQueueWaitIdle`, the raw `VkMemoryBarrier2` for the vertex and index data, and `glfwSetWindowSize` on `Window::nativeHandle` for the scripted resize), and API friction found while writing it. The image barriers used to be raw structs too; G1 and G2 record how #437 changed that:
 
 | # | Finding | Kind |
 | --- | --- | --- |
@@ -37,7 +37,7 @@ Native calls the example makes (the raw barrier structs, `vkQueueWaitIdle`, and 
 | G7 | `vkQueueWaitIdle` is called wherever no present fence proves the presents are done: a generation dropped behind an `out_of_date` present or on a device without present fences, a pipeline rebuild after a format change, and shutdown (carried over from the triangle; see its README). | native call |
 | G8 | A one-shot upload is submitted with a fence and waited on inside a block so the staging memory outlives the GPU use. `upload_batch.hpp` recommends handing the staging owner to a `RetirementQueue`; there is no helper for the simple "submit and wait" case, and if the wait fails the example returns while the GPU may still read the staging memory. | ergonomics, error path |
 
-These are findings, not changes: this example adds no library API.
+These findings were gathered without adding library API; G1 and G2 were then addressed separately by #437, which also moved this example to the new builders.
 
 ## Regenerating the shaders
 
