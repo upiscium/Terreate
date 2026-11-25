@@ -96,9 +96,13 @@
 
             # CMake reads CMAKE_CXX_COMPILER_LAUNCHER from the environment, so the
             # preset and every configure started by a test use the cache. The
-            # invoking environment may override either value.
-            export CMAKE_CXX_COMPILER_LAUNCHER="''${CMAKE_CXX_COMPILER_LAUNCHER:-ccache}"
-            export CCACHE_MAXSIZE="''${CCACHE_MAXSIZE:-5G}"
+            # invoking environment may override each value, and an empty
+            # CMAKE_CXX_COMPILER_LAUNCHER turns the cache off.
+            export CMAKE_CXX_COMPILER_LAUNCHER="''${CMAKE_CXX_COMPILER_LAUNCHER-ccache}"
+            export CCACHE_MAXSIZE="''${CCACHE_MAXSIZE-5G}"
+            # Hash the compiler wrapper by content, not by size and time (every file in the
+            # Nix store has the same time), so a new compiler never reuses old objects.
+            export CCACHE_COMPILERCHECK="''${CCACHE_COMPILERCHECK-content}"
           '';
         };
       });
