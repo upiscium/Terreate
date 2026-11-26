@@ -489,6 +489,6 @@ value is refused.
 
 What the test shows: `graphics.descriptor_builders` checks each builder's members, that a set written
 with builders passes `updateDescriptorSet` with the validation layer silent, that a wrong type name is
-refused, that the pool description sums correctly and the pool allocates exactly the sets it was sized
-for (and refuses one more), and the named errors. Descriptor arrays, update-after-bind and dynamic
+refused, that the pool description sums correctly and the pool allocates the sets it was sized for
+(whether a pool refuses one set more is up to the implementation and is not tested), and the named errors. Descriptor arrays, update-after-bind and dynamic
 buffer offsets at draw time are not covered by it.
