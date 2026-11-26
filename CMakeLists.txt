@@ -1229,4 +1229,6 @@ if(_terreate_has_components)
     "${_terreate_install_config}"
     "${CMAKE_CURRENT_BINARY_DIR}/TerreateConfigVersion.cmake"
     DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
+  # The license travels with the package (BSD-3-Clause requires the notice in redistributions).
+  install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" DESTINATION "${CMAKE_INSTALL_DOCDIR}")
 endif()

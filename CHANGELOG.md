@@ -14,6 +14,8 @@ planned next release.
 First release of the rewritten, modular library. The previous tags (`v0.0.1-alpha` to `v0.0.4`) belong to an
 earlier code base and are not described here. This draft is finalized when the release candidate is cut.
 
+License: BSD 3-Clause (`LICENSE`, installed with the package).
+
 Supported: Linux, GCC/g++ (the build refuses other compilers; some tests need GNU ld), Vulkan 1.3, built in the
 pinned Nix development shell. Static libraries only. Dependencies: GLFW 3.4 or newer, the Vulkan headers and
 loader (1.3), and VulkanMemoryAllocator. Other platforms and compilers are not verified, and the real-hardware

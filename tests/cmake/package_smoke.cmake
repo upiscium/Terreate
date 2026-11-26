@@ -420,6 +420,18 @@ terreate_package_configure_and_install(all_components ON ON)
 set(_all_prefix "${all_components_PREFIX}")
 terreate_check_version_compatibility("${all_components_PREFIX}")
 
+# BSD-3-Clause requires the notice in redistributions: the license is installed with the package.
+file(GLOB_RECURSE _installed_licenses "${all_components_PREFIX}/*/LICENSE")
+list(LENGTH _installed_licenses _installed_license_count)
+if(NOT _installed_license_count EQUAL 1)
+  message(FATAL_ERROR "expected the license installed once under ${all_components_PREFIX}, found ${_installed_license_count}")
+endif()
+file(STRINGS "${_terreate_source_dir}/LICENSE" _license_first_line LIMIT_COUNT 1)
+file(STRINGS "${_installed_licenses}" _installed_first_line LIMIT_COUNT 1)
+if(NOT "${_license_first_line}" STREQUAL "BSD 3-Clause License" OR NOT "${_installed_first_line}" STREQUAL "BSD 3-Clause License")
+  message(FATAL_ERROR "the license is not the BSD 3-Clause License")
+endif()
+
 if(NOT DEFINED ENV{VULKAN_HEADERS_INCLUDE} OR
    "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "")
   message(FATAL_ERROR
