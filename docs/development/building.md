@@ -47,3 +47,10 @@ when it fails, and the first failure fails the recipe.
 
 The test classes, outcome words and run environments are in the
 [test matrix](graphics-test-matrix.md).
+
+## Publishing the documentation
+
+`.github/workflows/pages.yml` builds the pages with `just project::docs` inside the Nix shell on every push to
+`main` that touches the documentation, the examples, a public header or the flake, and deploys them to GitHub
+Pages (the Sphinx pages at the root, the complete Doxygen output under `doxygen/`). The repository's Pages
+setting must use "GitHub Actions" as its source. The workflow only publishes: it is not the gate.

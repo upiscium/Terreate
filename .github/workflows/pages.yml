@@ -1,0 +1,59 @@
+# Publishes the documentation (the Sphinx pages and the complete Doxygen output) to GitHub Pages.
+# This is publication only: the quality gate stays `just project::check`, run locally.
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "examples/**"
+      - "core/include/**"
+      - "modules/*/include/**"
+      - "integrations/*/include/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Build the API reference and the pages
+        run: nix develop --command just project::docs
+      - name: Assemble the site
+        run: |
+          set -eu
+          rm -rf site
+          cp -r .build/default/docs/sphinx/html site
+          cp -r .build/default/docs/doxygen/html site/doxygen
+          touch site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

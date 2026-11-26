@@ -48,8 +48,10 @@ verification (see `docs/development/release-verification.md`) is done during the
 
 - `examples/getting_started` (headless), `examples/triangle` (windowed, application-owned frame loop with
   Swapchain recreation) and `examples/textured_quad` (vertex, index and uniform buffers, a texture, depth).
-- Architecture contracts, a development guide, a test matrix, and a generated API reference
-  (Doxygen) with Sphinx pages, built locally by `just project::docs`.
+- A "Getting started" guide (install, first program, where to read next), architecture contracts, a development
+  guide, a test matrix, and a generated API reference
+  (Doxygen) with Sphinx pages (Furo theme, light and dark), built locally by `just project::docs` and published to
+  GitHub Pages from `main`.
 
 ### Quality gate
 
@@ -67,4 +69,4 @@ the gate.
 - `platform.native_events` is skipped on Wayland (an unmapped Wayland window gets no resize event).
 - Native Vulkan calls the examples still make: `vkQueueWaitIdle` where no present fence proves the presents
   are done, and a raw `VkMemoryBarrier2` for vertex and index data.
-- The documentation is not published to a site; it is built from the repository.
+- The documentation is built from the repository (`just project::docs`) and published to GitHub Pages by `.github/workflows/pages.yml`; the gate does not run in CI.
