@@ -1198,7 +1198,8 @@ if(_terreate_has_components)
   write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/TerreateConfigVersion.cmake"
     VERSION "${PROJECT_VERSION}"
-    COMPATIBILITY SameMajorVersion)
+    # Before 1.0 a minor version may break the API: only the same MAJOR.MINOR is compatible.
+    COMPATIBILITY SameMinorVersion)
 
   if(TERREATE_BUILD_CORE)
     install(EXPORT TerreateCoreTargets

@@ -15,6 +15,7 @@ is an optional external, isolated Work Unit developer tool rather than a reposit
 
 The documentation (architecture, development guide, API reference) is built with
 `just project::docs`; its entry point is `docs/index.md`.
+The changelog is `CHANGELOG.md`; releases follow `docs/development/release.md`.
 
 ## Development shell
 
