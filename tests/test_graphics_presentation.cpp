@@ -595,11 +595,33 @@ int gpuTest() {
       check(found, "the presenting candidate has an evaluation");
     }
     PhysicalDeviceSelectionPolicy policy;
+    // Two drivers can expose one physical device with one UUID (a host driver next to the Nix one):
+    // an explicit UUID then names several candidates, which the library refuses as ambiguous.
+    const auto &presenting_uuid = presenting->capabilities().device_uuid;
+    std::size_t same_uuid_count = 0;
+    for (const auto &entry : inventory->candidates())
+      if (entry.capabilities().id_properties_available &&
+          entry.capabilities().device_uuid == presenting_uuid)
+        ++same_uuid_count;
+    const bool needs_uuid = selectable_count != 1;
+    const bool uuid_is_shared =
+        presenting->capabilities().id_properties_available && same_uuid_count > 1;
     const bool can_select =
-        selectable_count == 1 || presenting->capabilities().id_properties_available;
-    if (selectable_count != 1 && can_select)
-      policy.explicit_uuid = presenting->capabilities().device_uuid;
-    if (!can_select) {
+        !needs_uuid || (presenting->capabilities().id_properties_available && !uuid_is_shared);
+    if (needs_uuid && can_select)
+      policy.explicit_uuid = presenting_uuid;
+    if (needs_uuid && uuid_is_shared) {
+      PhysicalDeviceSelectionPolicy ambiguous;
+      ambiguous.explicit_uuid = presenting_uuid;
+      const auto refused = selectSurfacePhysicalDevice(*instance, inventory->candidates(), *surface,
+                                                       base, {}, ambiguous);
+      check(!refused &&
+                refused.error().code() == make_error_code(PhysicalDeviceError::ambiguous_match),
+            "a UUID shared by several candidates is refused as ambiguous");
+      std::puts(
+          "graphics.presentation: selection=SKIP reason=the presenting device UUID is shared by "
+          "several candidates (two drivers expose one device)");
+    } else if (!can_select) {
       std::puts(
           "graphics.presentation: selection=SKIP reason=several candidates and no device UUID");
     } else {

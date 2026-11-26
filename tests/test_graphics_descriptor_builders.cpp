@@ -238,7 +238,9 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
   auto set_b1 = pool->allocate(*second);
   auto set_b2 = pool->allocate(*second);
   check(set_a1 && set_a2 && set_b1 && set_b2, "the pool allocates the sets it was sized for");
-  check(!pool->allocate(*first), "one set more than the pool was sized for is refused");
+  // Allocating past maxSets is not required to fail (Vulkan 1.1 and later: it "may" fail, and a
+  // software device such as lavapipe can succeed), so no refusal is asserted: only that the sized
+  // sets are enough.
 
   // A set written with builders passes updateDescriptorSet; a wrong type is refused.
   if (set_a1) {

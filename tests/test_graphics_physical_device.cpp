@@ -870,16 +870,41 @@ synthetic_empty_query(const graphics_detail::PhysicalDeviceQueryInput &) {
   // Selection above observes the borrowed view while its parent Instance is
   // live.  Reacquire a native handle from the current owner after an Instance
   // move if native observation is needed again.
+  // A UUID order lists each UUID once and only UUIDs that name one candidate: two drivers can
+  // expose one physical device (a host driver next to the Nix one) under one UUID, which the
+  // library refuses as ambiguous (checked below), so such a UUID is kept out of the order.
   PhysicalDeviceSelectionPolicy explicit_order;
   explicit_order.uuid_order.reserve(inventory_result->size());
+  std::vector<PhysicalDeviceUuid> shared_uuids;
   for (const auto &runtime_candidate : *inventory_result) {
-    if (runtime_candidate.capabilities().id_properties_available) {
-      explicit_order.uuid_order.push_back(runtime_candidate.capabilities().device_uuid);
-    }
+    if (!runtime_candidate.capabilities().id_properties_available)
+      continue;
+    const auto &candidate_uuid = runtime_candidate.capabilities().device_uuid;
+    std::size_t same = 0;
+    for (const auto &other : *inventory_result)
+      if (other.capabilities().id_properties_available &&
+          other.capabilities().device_uuid == candidate_uuid)
+        ++same;
+    if (same == 1)
+      explicit_order.uuid_order.push_back(candidate_uuid);
+    else if (std::find(shared_uuids.begin(), shared_uuids.end(), candidate_uuid) ==
+             shared_uuids.end())
+      shared_uuids.push_back(candidate_uuid);
+  }
+  for (const auto &shared_uuid : shared_uuids) {
+    PhysicalDeviceSelectionPolicy ambiguous;
+    ambiguous.explicit_uuid = shared_uuid;
+    const auto refused = selectPhysicalDevice(inventory_result->candidates(),
+                                              PhysicalDeviceRequirements{}, ambiguous);
+    passed &= check(!refused && refused.error().code() ==
+                                    make_error_code(PhysicalDeviceError::ambiguous_match),
+                    "a UUID shared by several candidates is refused as ambiguous");
   }
   const auto selected = selectPhysicalDevice(inventory_result->candidates(),
                                              PhysicalDeviceRequirements{}, explicit_order);
-  if (!explicit_order.uuid_order.empty()) {
+  // With only unique UUIDs listed and every candidate listed, the order must select a device; when
+  // a shared UUID was left out, a candidate is unlisted and only the ambiguity check above applies.
+  if (!explicit_order.uuid_order.empty() && shared_uuids.empty()) {
     passed &= check(selected.has_value(),
                     "explicit UUID ordering could not select the runtime physical device");
   }
