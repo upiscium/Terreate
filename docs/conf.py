@@ -34,7 +34,7 @@ myst_heading_anchors = 4
 suppress_warnings = ["ref.ref", "ref.identifier", "duplicate_declaration.cpp"]
 nitpicky = True
 
-html_theme = "alabaster"
+html_theme = "furo"
 html_title = "Terreate"
 
 xml_dir = os.environ.get("TERREATE_DOXYGEN_XML", "")

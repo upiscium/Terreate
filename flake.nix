@@ -38,14 +38,14 @@
             gnused
 
             # Documentation generation (TERREATE_BUILD_DOCS): Doxygen for the API
-            # reference, Sphinx (MyST, breathe) for the pages; shell tools only,
+            # reference, Sphinx (Furo, MyST, breathe) for the pages; shell tools only,
             # never a dependency of the CMake package.
             # Compiler cache: the CMake-driven tests compile the same sources several
             # times, so a cache makes the gate and ordinary rebuilds much faster.
             ccache
 
             doxygen
-            (python3.withPackages (ps: [ ps.sphinx ps.myst-parser ps.breathe ]))
+            (python3.withPackages (ps: [ ps.sphinx ps.furo ps.myst-parser ps.breathe ]))
 
             # Vulkan headers, loader, validation, tools, and a software ICD
             # make the API/runtime surface observable in a clean shell.
