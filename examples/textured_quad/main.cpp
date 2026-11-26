@@ -17,8 +17,8 @@
 //   - glfwSetWindowSize on Window::nativeHandle (scripted resize only).
 // Image layout transitions use imageBarrier and recordImageBarrier (#437). The one
 // VkMemoryBarrier2 for the vertex and index data is still a raw struct (G1), and the
-// example passes a VMA flag for the host-visible uniform Buffer (G4). The depth format is asked of
-// the device (#438, G3).
+// example names the memory intent of its buffers (#439, G4) and asks the device for the depth
+// format (#438, G3).
 
 // Modes: no arguments runs until the window is closed. For tests:
 //   --frames N          present N frames, then exit

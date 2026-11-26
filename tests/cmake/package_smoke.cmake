@@ -359,8 +359,66 @@ set_target_properties(forge_regression PROPERTIES
   endif()
 endfunction()
 
+# The installed package is compatible only within the same MAJOR.MINOR (SameMinorVersion), and only with a
+# request that is not newer than the installed version: evaluate the installed version file the way
+# find_package does, for the installed version and for neighbours of it.
+function(terreate_check_version_compatibility prefix)
+  file(GLOB_RECURSE _version_files "${prefix}/*/TerreateConfigVersion.cmake")
+  list(LENGTH _version_files _version_file_count)
+  if(NOT _version_file_count EQUAL 1)
+    message(FATAL_ERROR "expected one installed TerreateConfigVersion.cmake under ${prefix}, found ${_version_file_count}")
+  endif()
+  list(GET _version_files 0 _version_file)
+  file(STRINGS "${_version_file}" _version_line REGEX "^set\\(PACKAGE_VERSION \"[0-9.]+\"\\)")
+  if(NOT _version_line MATCHES "PACKAGE_VERSION \"([0-9]+)\\.([0-9]+)\\.([0-9]+)\"")
+    message(FATAL_ERROR "cannot read the installed package version from ${_version_file}")
+  endif()
+  set(_major ${CMAKE_MATCH_1})
+  set(_minor ${CMAKE_MATCH_2})
+  set(_patch ${CMAKE_MATCH_3})
+  math(EXPR _next_patch "${_patch} + 1")
+  math(EXPR _next_minor "${_minor} + 1")
+  math(EXPR _next_major "${_major} + 1")
+  # requested version, expected compatibility
+  set(_cases "${_major}.${_minor}.${_patch}=TRUE"
+             "${_major}.${_minor}.${_next_patch}=FALSE"
+             "${_major}.${_next_minor}.0=FALSE"
+             "${_next_major}.0.0=FALSE")
+  if(_minor GREATER 0)
+    math(EXPR _previous_minor "${_minor} - 1")
+    list(APPEND _cases "${_major}.${_previous_minor}.0=FALSE")
+  endif()
+  foreach(_case IN LISTS _cases)
+    string(REPLACE "=" ";" _parts "${_case}")
+    list(GET _parts 0 _request)
+    list(GET _parts 1 _expected)
+    string(REPLACE "." ";" _request_parts "${_request}")
+    list(GET _request_parts 0 _request_major)
+    list(GET _request_parts 1 _request_minor)
+    list(GET _request_parts 2 _request_patch)
+    set(_script "${prefix}/version-check.cmake")
+    file(WRITE "${_script}"
+      "set(PACKAGE_FIND_VERSION ${_request})\n"
+      "set(PACKAGE_FIND_VERSION_MAJOR ${_request_major})\n"
+      "set(PACKAGE_FIND_VERSION_MINOR ${_request_minor})\n"
+      "set(PACKAGE_FIND_VERSION_PATCH ${_request_patch})\n"
+      "set(PACKAGE_FIND_VERSION_COUNT 3)\n"
+      "include(\"${_version_file}\")\n"
+      "message(STATUS \"compatible=\${PACKAGE_VERSION_COMPATIBLE}\")\n")
+    execute_process(COMMAND "${CMAKE_COMMAND}" -P "${_script}"
+      OUTPUT_VARIABLE _version_output ERROR_VARIABLE _version_error RESULT_VARIABLE _version_result)
+    file(REMOVE "${_script}")
+    if(NOT _version_result EQUAL 0 OR NOT "${_version_output}${_version_error}" MATCHES "compatible=${_expected}")
+      message(FATAL_ERROR
+        "installed package ${_major}.${_minor}.${_patch}: a request for ${_request} should be "
+        "compatible=${_expected}, got: ${_version_output}${_version_error}")
+    endif()
+  endforeach()
+endfunction()
+
 terreate_package_configure_and_install(all_components ON ON)
 set(_all_prefix "${all_components_PREFIX}")
+terreate_check_version_compatibility("${all_components_PREFIX}")
 
 if(NOT DEFINED ENV{VULKAN_HEADERS_INCLUDE} OR
    "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "")
