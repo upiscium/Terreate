@@ -17,6 +17,11 @@ The documentation (architecture, development guide, API reference) is built with
 `just project::docs`; its entry point is `docs/index.md`.
 The changelog is `CHANGELOG.md`; releases follow `docs/development/release.md`.
 
+## License
+
+Terreate is released under the BSD 3-Clause License: see `LICENSE`. The installed package carries it in the
+documentation directory (`share/doc/Terreate`).
+
 ## Development shell
 
 Enter the pinned project environment before configuring:

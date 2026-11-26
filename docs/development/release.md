@@ -37,8 +37,8 @@ approval (the rule of `AGENTS.md`: nothing is inferred from these instructions).
   recorded as a known limit in the changelog.
 - No open Issue labelled `release-blocker`.
 - `CHANGELOG.md` is final and the release notes say what is supported and what is not.
-- A license is in the repository (`LICENSE`, and the package metadata that names it). Until the owner has
-  chosen one this criterion is not met, and no candidate is published.
+- The license is in the repository (`LICENSE`, BSD 3-Clause) and installed with the package. A candidate is not
+  published without one.
 
 ## Cutting a candidate or the release
 
