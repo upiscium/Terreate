@@ -75,11 +75,7 @@ template <std::ranges::contiguous_range Range>
 }
 
 [[nodiscard]] inline BufferAllocationDescription defaultUploadStagingAllocation() noexcept {
-  BufferAllocationDescription result{};
-  result.usage = VMA_MEMORY_USAGE_AUTO;
-  result.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-  result.required_flags = vk::MemoryPropertyFlagBits::eHostVisible;
-  return result;
+  return bufferAllocationFor(BufferMemoryIntent::host_sequential_write);
 }
 
 /// Bounded Phase B: R8G8B8A8_UNORM, 2D, sample-count 1, one layer per

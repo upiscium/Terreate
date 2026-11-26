@@ -393,10 +393,14 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
   vertex_description.size = sizeof(vertices);
   vertex_description.usage =
       vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst;
+  vertex_description.allocation =
+      graphics::bufferAllocationFor(graphics::BufferMemoryIntent::device_local);
   graphics::BufferDescription index_description;
   index_description.size = sizeof(indices);
   index_description.usage =
       vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst;
+  index_description.allocation =
+      graphics::bufferAllocationFor(graphics::BufferMemoryIntent::device_local);
   auto vertex_buffer = graphics::createBuffer(*allocator, vertex_description);
   auto index_buffer = graphics::createBuffer(*allocator, index_description);
   if (!vertex_buffer || !index_buffer)
@@ -406,7 +410,8 @@ int runApplication(const Options &options, ValidationSink &validation, Outcome &
   graphics::BufferDescription uniform_description;
   uniform_description.size = sizeof(float) * 4;
   uniform_description.usage = vk::BufferUsageFlagBits::eUniformBuffer;
-  uniform_description.allocation.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+  uniform_description.allocation =
+      graphics::bufferAllocationFor(graphics::BufferMemoryIntent::host_sequential_write);
   auto uniform_buffer = graphics::createBuffer(*allocator, uniform_description);
   if (!uniform_buffer)
     return fail("create the uniform Buffer", uniform_buffer);

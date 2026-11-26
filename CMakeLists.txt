@@ -877,6 +877,19 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.swapchain_retirement: retirement=PASS"
       SKIP_REGULAR_EXPRESSION "graphics\\.swapchain_retirement: retirement=SKIP"
       FAIL_REGULAR_EXPRESSION "graphics\\.swapchain_retirement.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+    # #439: buffer memory intents (CPU and headless).
+    add_executable(terreate_graphics_buffer_intent_tests tests/test_graphics_buffer_intent.cpp)
+    target_link_libraries(terreate_graphics_buffer_intent_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_buffer_intent_tests)
+    add_test(NAME graphics.buffer_intent.cpu COMMAND terreate_graphics_buffer_intent_tests cpu)
+    set_tests_properties(graphics.buffer_intent.cpu PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.buffer_intent\\.cpu: cpu=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.buffer_intent.*: (assertion=FAIL|.*BLOCKED)")
+    add_test(NAME graphics.buffer_intent COMMAND terreate_graphics_buffer_intent_tests gpu)
+    set_tests_properties(graphics.buffer_intent PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.buffer_intent: buffer_intent=PASS validation-layer=PASS"
+      FAIL_REGULAR_EXPRESSION "graphics\\.buffer_intent.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+
     # #440: descriptor write builders and the pool description helper (headless).
     add_executable(terreate_graphics_descriptor_builders_tests tests/test_graphics_descriptor_builders.cpp)
     target_link_libraries(terreate_graphics_descriptor_builders_tests PRIVATE Terreate::Graphics)

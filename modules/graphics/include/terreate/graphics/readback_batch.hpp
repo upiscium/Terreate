@@ -52,11 +52,7 @@ struct BufferReadbackItem {
 };
 
 [[nodiscard]] inline BufferAllocationDescription defaultReadbackStagingAllocation() noexcept {
-  BufferAllocationDescription value{};
-  value.usage = VMA_MEMORY_USAGE_AUTO;
-  value.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
-  value.required_flags = vk::MemoryPropertyFlagBits::eHostVisible;
-  return value;
+  return bufferAllocationFor(BufferMemoryIntent::host_random_access);
 }
 
 /// Bounded RGBA8 2D single-sample color copy, exactly one mip/layer per item.

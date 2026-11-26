@@ -14,6 +14,53 @@ struct BufferAllocationDescription {
   std::uint32_t memory_type_bits = 0;
 };
 
+/// What the application means to do with a Buffer's memory, so that it does not have to know the
+/// VMA flags that say it. `bufferAllocationFor` turns an intent into an ordinary
+/// `BufferAllocationDescription`.
+enum class BufferMemoryIntent : std::uint8_t {
+  /// The GPU reads and writes it and the host does not map it (vertex, index and storage buffers,
+  /// filled by an upload batch or the GPU). It does not promise that the host cannot see the
+  /// memory:
+  /// an integrated GPU may make it host visible.
+  device_local,
+  /// The host writes it in order and the GPU reads it (a staging buffer, a per-frame uniform
+  /// buffer).
+  host_sequential_write,
+  /// The host reads it back, or writes it at random (a readback buffer).
+  host_random_access,
+};
+
+/// The allocation description for an intent. A plain value: every raw VMA field stays available, so
+/// take the preset and edit it when more is needed (a dedicated allocation, a preferred property, a
+/// memory type mask). The intent is a request, not a promise: the effective memory is observable
+/// through `Buffer::allocationInfo()`, and a device without a suitable memory type refuses the
+/// creation.
+///   - `device_local`: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, no host access flag.
+///   - `host_sequential_write`: AUTO, HOST_ACCESS_SEQUENTIAL_WRITE_BIT, required HostVisible.
+///   - `host_random_access`: AUTO, HOST_ACCESS_RANDOM_BIT, required HostVisible.
+/// A value outside the enumerators gives the zero-initialized description (AUTO, no flags): use
+/// only the named intents.
+[[nodiscard]] inline BufferAllocationDescription
+bufferAllocationFor(BufferMemoryIntent intent) noexcept {
+  BufferAllocationDescription value{};
+  switch (intent) {
+  case BufferMemoryIntent::device_local:
+    value.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    break;
+  case BufferMemoryIntent::host_sequential_write:
+    value.usage = VMA_MEMORY_USAGE_AUTO;
+    value.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+    value.required_flags = vk::MemoryPropertyFlagBits::eHostVisible;
+    break;
+  case BufferMemoryIntent::host_random_access:
+    value.usage = VMA_MEMORY_USAGE_AUTO;
+    value.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    value.required_flags = vk::MemoryPropertyFlagBits::eHostVisible;
+    break;
+  }
+  return value;
+}
+
 /// Exclusive queue-family sharing; no implicit usage bits or host access.
 struct BufferDescription {
   vk::DeviceSize size = 0;
