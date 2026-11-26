@@ -19,7 +19,7 @@ License: BSD 3-Clause (`LICENSE`, installed with the package).
 Supported: Linux, GCC/g++ (the build refuses other compilers; some tests need GNU ld), Vulkan 1.3, built in the
 pinned Nix development shell. Static libraries only. Dependencies: GLFW 3.4 or newer, the Vulkan headers and
 loader (1.3), and VulkanMemoryAllocator. Other platforms and compilers are not verified, and the real-hardware
-verification (see `docs/development/release-verification.md`) is done during the candidate period.
+verification (see `docs/development/release-verification.md`) was done during the candidate period (Linux; NVIDIA, Intel and llvmpipe).
 
 ### Components (CMake `Terreate::` targets)
 
