@@ -146,7 +146,9 @@ int exercise(const Instance &instance, const PhysicalDeviceCandidate &candidate,
       check(bool(random->invalidate()), "it can be invalidated before the host reads it");
   }
 
-  // device_local: created and usable as a transfer destination; no claim about host visibility.
+  // device_local: created with transfer-destination and vertex usage, and its allocation is
+  // observable. No claim about host visibility, and no transfer happens here: the textured quad
+  // example uploads into device_local buffers under the gate.
   auto local = make(BufferMemoryIntent::device_local,
                     vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst);
   if (check(bool(local), "a device_local buffer is created")) {

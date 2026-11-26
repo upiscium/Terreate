@@ -38,6 +38,8 @@ enum class BufferMemoryIntent : std::uint8_t {
 ///   - `device_local`: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, no host access flag.
 ///   - `host_sequential_write`: AUTO, HOST_ACCESS_SEQUENTIAL_WRITE_BIT, required HostVisible.
 ///   - `host_random_access`: AUTO, HOST_ACCESS_RANDOM_BIT, required HostVisible.
+/// A value outside the enumerators gives the zero-initialized description (AUTO, no flags): use
+/// only the named intents.
 [[nodiscard]] inline BufferAllocationDescription
 bufferAllocationFor(BufferMemoryIntent intent) noexcept {
   BufferAllocationDescription value{};
