@@ -11,12 +11,14 @@ Do not stop or restart the compositor session to run this; every step works insi
 
 ## 0. Prepare and record the environment
 
-Open a terminal inside the Wayland session (Hyprland), in a clean checkout of the release-candidate tag. Run the
+Open a terminal inside the Wayland session (Hyprland), in a clean checkout of the release-candidate tag
+(or, before the tag exists, of the commit that the release Issue names: the tag will be put on a commit with the
+same tree, so the results hold for it). Run the
 commands below either inside `nix develop` (an interactive shell) or as `nix develop --command <command>`.
 `unset DISPLAY` in that shell only, so that GLFW uses Wayland and not XWayland.
 
 ```sh
-git checkout v0.1.0-rc.1
+git checkout v0.1.0-rc.1          # or the commit named on the release Issue, before the tag exists
 nix develop                       # the pinned shell; then, inside it:
 unset DISPLAY
 vulkaninfo --summary              # GPU, driver and Vulkan version: record them
