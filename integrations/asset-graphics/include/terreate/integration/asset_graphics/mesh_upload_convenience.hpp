@@ -136,7 +136,7 @@ struct MeshUploadResult {
 
 /// BLOCKING upload of `mesh`: creates its own command pool (on `queue`'s family),
 /// command buffer and fence, performs `submitMeshUpload`, then waits on the
-/// fence for at most `timeout_ns` ((`UINT64_MAX` waits without limit, 0 only polls and so
+/// fence for at most `timeout_ns` (`UINT64_MAX` waits without limit, 0 only polls and so
 /// abandons the resources unless the copy already finished; there is no
 /// default), then destroys the helper objects, the staging included. It returns
 /// only when the copies have completed, so the buffers hold the mesh and any
