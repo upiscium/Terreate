@@ -1,8 +1,9 @@
-# Asset: the MeshData contract (#345) and primitive generators (#346)
+# Asset: MeshData (#345), primitive generators (#346) and ImageData (#276)
 
 `Terreate::Asset` (`terreate::asset`) holds CPU-side asset data that primitive
-generators, model decoders and rendering code share. Its first type is
-`MeshData`, declared in `<terreate/asset/mesh_data.hpp>`.
+generators, model decoders and rendering code share. Its types are `MeshData`, declared in
+`<terreate/asset/mesh_data.hpp>`, and `ImageData` ([below](#imagedata-276-part-1)), declared in
+`<terreate/asset/image_data.hpp>`.
 
 ## Responsibility and non-goals
 
@@ -222,3 +223,115 @@ are checked in this order: sizes, attribute combination, segment counts, element
 | `too_many_elements` | the vertex count or the index count would exceed 2^32 - 1 (checked without wrapping, before any allocation) |
 
 Allocation failure throws `std::bad_alloc`, as elsewhere in Asset.
+
+## ImageData (#276 part 1)
+
+`<terreate/asset/image_data.hpp>` holds one decoded image on the CPU, the way `MeshData`
+holds geometry: an owning, copyable value with public members, a `validate` that returns a
+`Result` with a named error category, no repair and no GPU type. It is what image decoders
+(#277, #278) produce and what the GPU conversion of #279 part 2 consumes.
+
+- **Format**: `PixelFormat` is Asset's own enum: `r8`, `rg8`, `rgb8`, `rgba8`, `r16`, `rg16`,
+  `rgba16` (unsigned normalized) and `r32f`, `rg32f`, `rgba32f` (binary32 floats). Components
+  are stored r, g, b, a, in host byte order, tightly packed per pixel. Compressed formats are
+  added as enumerators later. `componentCount`, `componentSize`, `byteSize`, `isFloat` and
+  `hasAlpha` describe a format.
+- **Interpretation** is a separate field, `ColorInterpretation`, so the same bytes can be a
+  color or a data texture: `srgb` (a color texture; sRGB-encoded color, linear alpha),
+  `linear` (a data texture or linear color, values used as stored) and `normal_map` (a
+  tangent-space normal remapped from -1..1 to 0..1, stored linearly). `AlphaMode` is `none`,
+  `straight` or `premultiplied`.
+- **Shape**: `extent` (width, height, depth), `array_layers` and `mip_levels`. 1D is height 1
+  and depth 1, 2D is depth 1, 3D has depth above 1 and exactly one layer. `mip_levels` is
+  the number of levels present: 1 is valid, and a partial chain is valid up to
+  `maxMipLevels(extent)`. Each level halves every dimension, rounding down, never below 1
+  (`mipExtent`).
+- **Storage**: one `data` byte vector and a `subresources` table of `{mip, layer, offset,
+  row_pitch, slice_pitch}`. `packedLayout(format, extent, mips, layers)` builds the tightly
+  packed table and the total size (layer-major, contiguous, `row_pitch` the tight row size,
+  `slice_pitch = row_pitch * height`). A decoder may use larger pitches (row padding, for
+  example); the table order is free and offsets may leave gaps.
+- **Access**: `find(mip, layer)` returns the table entry; `bytes(mip, layer)` returns a
+  `std::span` over the subresource, from its first pixel to the end of its last row
+  (`(depth-1)*slice_pitch + (height-1)*row_pitch + width*pixel size`; trailing padding is not
+  part of the span). It checks that the entry fits `data` and its pitches (the pitch and bounds
+  checks of `validate`), so it is safe on an image that was never validated; it does not check
+  the rest of the image.
+- **Custom and unsupported lists**: `custom` is a list of `{key, string-or-bytes}` entries for
+  format-specific information a decoder wants to keep (keys are non-empty and unique).
+  `unsupported` is a list of `{kind, name, detail}` for things the decoder could not
+  represent. The rule is that a decoder never drops such a thing silently: it lists it, and
+  validate only requires a non-empty `kind`.
+- **Cube maps** are left out of this part. A cube map is a 2D image with a multiple of 6
+  layers; the consumer decides at GPU conversion. A flag can be added later without changing
+  the layout.
+
+### ImageData conventions
+
+- **Row order** is top-first: row 0 is the top row of the image, matching the top-left origin
+  of texture coordinates in `MeshData` (`v` grows downward like rows). Asset never flips rows;
+  a decoder of a bottom-up format reorders rows into this order, and the application flips for
+  its own convention.
+- **Color interpretation** is only a statement; Asset never converts values between sRGB and
+  linear. `srgb` is allowed for the 8-bit formats only (there is no 16-bit sRGB storage
+  format to map to), `normal_map` for integer formats with two or more components, and
+  float formats are `linear` only.
+- **Alpha mode** `straight` and `premultiplied` need an rgba format; `none` is allowed
+  everywhere (an alpha channel of an rgba format is then ignored).
+- **Byte order** is host order; no alignment of `data` is assumed by Asset.
+
+### ImageData errors
+
+Failures return `ImageDataError` in the category `terreate.asset.image_data`; the Error's
+context is the operation and its detail names the offending field or subresource.
+
+| `ImageDataError` | Meaning |
+| --- | --- |
+| `zero_extent` | a dimension of the extent is 0 |
+| `invalid_layer_count` | `array_layers` is 0, or a 3D image has more than one layer |
+| `invalid_mip_count` | `mip_levels` is 0 or exceeds `maxMipLevels(extent)` |
+| `interpretation_not_allowed` | float formats allow `linear` only; `srgb` needs an 8-bit format; `normal_map` needs an integer format with at least two components |
+| `alpha_mode_not_allowed` | `straight` or `premultiplied` on a format without alpha |
+| `invalid_subresource` | a table entry names a mip or layer outside the image |
+| `duplicate_subresource` | two entries name the same (mip, layer) |
+| `missing_subresource` | a (mip, layer) has no entry (`bytes`: the entry is absent) |
+| `pitch_too_small` | a row pitch below the tight row size, or (3D only) a slice pitch below `row_pitch * height` |
+| `data_out_of_bounds` | a subresource reaches past the end of `data` |
+| `size_overflow` | a size or offset computation does not fit `std::size_t` (all arithmetic is checked, also for the extent alone) |
+| `invalid_custom_entry` | a custom key is empty or repeated |
+| `invalid_unsupported_entry` | an unsupported entry has an empty `kind` |
+
+`validate` reports the first violation in the order: extent, layer count, mip count,
+interpretation, alpha mode, tight size of the whole image, custom entries, unsupported
+entries, each table entry in order (range, pitches, bounds), duplicates, missing entries. It
+never repairs anything. Overlap between subresources is not checked. Allocation failure
+throws `std::bad_alloc`.
+
+### Relation to ModelData and GPU conversion
+
+A `ModelData` (#276 part 2, a later change) will hold its images as a list of `ImageData`,
+with samplers, textures and materials referring to them by index; the decoders #277 and #278
+produce both. Converting an image for the GPU (format mapping, staging, mip upload) is the
+job of the [Asset-Graphics Integration](asset_graphics.md), #279 part 2, through the public
+APIs of both components. Asset has no Graphics dependency, and `ImageData` stays usable alone.
+
+```cpp
+#include <terreate/asset/image_data.hpp>
+
+#include <cstddef>
+#include <utility>
+
+namespace asset = terreate::asset;
+
+asset::ImageData whiteTexture() {
+  asset::ImageData image;
+  image.format = asset::PixelFormat::rgba8;
+  image.interpretation = asset::ColorInterpretation::srgb;
+  image.extent = {2, 2, 1};
+  auto layout = terreate::unwrap(asset::packedLayout(image.format, image.extent, 1, 1));
+  image.data.assign(layout.byte_size, std::byte{255});
+  image.subresources = std::move(layout.subresources);
+  terreate::unwrap(asset::validate(image));
+  return image;
+}
+```

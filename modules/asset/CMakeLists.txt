@@ -8,8 +8,10 @@ endif()
 # links neither Graphics nor Platform, so a consumer of Asset alone receives
 # nothing but Core (#345).
 add_library(terreate_asset STATIC
+  src/image_data.cpp
   src/mesh_data.cpp
   src/primitives.cpp
+  include/terreate/asset/image_data.hpp
   include/terreate/asset/mesh_data.hpp
   include/terreate/asset/primitives.hpp)
 target_include_directories(terreate_asset
