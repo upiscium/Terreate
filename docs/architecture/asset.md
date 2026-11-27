@@ -1,4 +1,4 @@
-# Asset: the MeshData contract (#345)
+# Asset: the MeshData contract (#345) and primitive generators (#346)
 
 `Terreate::Asset` (`terreate::asset`) holds CPU-side asset data that primitive
 generators, model decoders and rendering code share. Its first type is
@@ -16,7 +16,7 @@ checks that it is consistent.
   on it.
 - Non-goals: no GPU handle, no `Buffer`, no Vulkan type, no file or image
   decoding, no materials, nodes or submesh ranges (those belong to the
-  `ModelData` of #276), no primitive generators (#346), no GPU upload or
+  `ModelData` of #276), no GPU upload or
   `VertexLayout` conversion (#279), no repair of malformed data.
 
 ## Public dependencies
@@ -84,7 +84,7 @@ and the typed index vectors can be handed to any API unchanged.
 ## Conventions
 
 These are the conventions of the data in a `MeshData`. Asset states them and
-never converts between them silently; generators (#346) produce them and decoders
+never converts between them silently; the generators (#346) produce them and decoders
 convert into them.
 
 - **Position space** (positions, normals, tangents): right-handed, +Y up.
@@ -146,3 +146,76 @@ installed Asset with Vulkan and GLFW disabled.
 `makeAttributeStream` and `computeBounds` are conveniences. The same result is
 reached by filling `AttributeStream::count` and `data` and `MeshData::bounds`
 directly; `validate` then checks it.
+
+## Primitive generators (#346)
+
+`<terreate/asset/primitives.hpp>` produces common shapes as `MeshData` on the CPU:
+`triangle`, `quad`, `box`, `plane` (a grid), `uvSphere` and `cylinder` (a cone is a
+cylinder whose `radiusTop` is 0). Each takes a plain description struct and returns
+`terreate::Result<MeshData>`:
+
+```cpp
+#include <terreate/asset/primitives.hpp>
+
+namespace asset = terreate::asset;
+
+auto sphere = asset::uvSphere({.radius = 1.0F, .segments = 24, .rings = 12, .tangents = true});
+auto cone = asset::cylinder({.radiusTop = 0.0F, .radiusBottom = 0.5F, .height = 1.0F});
+```
+
+Every returned mesh is a `triangle_list` with an index buffer, passes `validate` and has
+`bounds` computed. Each description has the flags `normals` (default true), `uvs`
+(default true) and `tangents` (default false); the returned streams are position,
+normal (float32x3), texcoord set 0 (float32x2) and tangent (float32x4) as requested, so
+presence and layout are read from the mesh (`find`, `layoutOf`). Generated meshes are
+deterministic: equal descriptions give equal bytes.
+
+| Generator | Description members (defaults) | Vertices | Indices |
+| --- | --- | --- | --- |
+| `triangle` | `width` 1, `height` 1 | 3 | 3 |
+| `quad` | `width` 1, `height` 1 | 4 | 6 |
+| `box` | `width`, `height`, `depth` 1 | 24 | 36 |
+| `plane` | `width` 1, `depth` 1, `segmentsX` 1, `segmentsZ` 1 | (sx+1)(sz+1) | 6 sx sz |
+| `uvSphere` | `radius` 0.5, `segments` 32, `rings` 16 | (s+1)(r+1) | 6 s (r-1) |
+| `cylinder` | `radiusTop` 0.5, `radiusBottom` 0.5, `height` 1, `segments` 32, `heightSegments` 1, `capTop`, `capBottom` true | (s+1)(h+1) + (s+2) per cap | 6 s h - 3 s per zero radius, + 3 s per cap |
+
+A cap whose radius is 0 is not generated, and triangles collapsed by a zero radius (the
+poles of a sphere, a cone's apex) are not emitted, so no generated triangle is degenerate.
+Defaults for the default sphere: 561 vertices and 2880 indices; for the default cylinder:
+134 vertices and 384 indices.
+
+### Geometry conventions of the generators
+
+These are the conventions of `MeshData`, checked by the `asset.primitives` test against the
+triangle data of every shape (geometric normal from positions, agreement with the normal
+stream, unit normals, UV range and orientation, tangent frame, bounds, and, for the box,
+sphere, cylinder and cone, that every edge is shared by exactly two consistently oriented
+triangles):
+
+- Right-handed, +Y up; triangles wind counter-clockwise seen from outside.
+- Every shape is centered on the origin. `triangle` and `quad` lie in the XY plane facing
+  +Z, `plane` in the XZ plane at y = 0 facing +Y, `cylinder` and `uvSphere` stand on the Y axis.
+- Texture coordinates start at the top-left (v grows downward). `quad`: the +Y edge has
+  v = 0. `plane`: u follows +X and v follows +Z. Spheres and cylinders: v = 0 at the +Y end,
+  u = 0 and u = 1 meet at the +Z meridian, with the seam vertices duplicated. Box faces map
+  the whole 0..1 square each. Caps map a planar disc.
+- Flat shapes use one normal per face; sphere and cylinder side use smooth normals (the
+  cylinder's follow the slope).
+- Tangents point toward increasing u and have w = +1; `cross(normal, tangent.xyz) * w` points
+  toward decreasing v (the glTF convention). No generated shape is mirrored.
+- The index type is `uint16` when the vertex count is at most 65536 and `uint32` otherwise.
+
+### Generator errors
+
+Failures return `PrimitiveError` in the category `terreate.asset.primitives`; the Error's
+context is the generator and its detail names the offending description member. Parameters
+are checked in this order: sizes, attribute combination, segment counts, element counts.
+
+| `PrimitiveError` | Meaning |
+| --- | --- |
+| `invalid_size` | a size or radius is zero, negative, NaN or infinite (a cylinder radius may be 0, not both) |
+| `invalid_attribute_combination` | `tangents` requested without both `normals` and `uvs` |
+| `too_few_segments` | `plane` segments below 1, sphere `segments` below 3 or `rings` below 2, cylinder `segments` below 3 or `heightSegments` below 1 |
+| `too_many_elements` | the vertex count or the index count would exceed 2^32 - 1 (checked without wrapping, before any allocation) |
+
+Allocation failure throws `std::bad_alloc`, as elsewhere in Asset.

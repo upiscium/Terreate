@@ -14,7 +14,13 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   float32 attribute streams (position, normal, tangent, texcoord, color, custom), `uint16`/`uint32` indices
   and optional bounds, with `validate`, `computeBounds`, `layoutOf` and `interleave` and the named error
   category `MeshDataError`. Conventions: right-handed, +Y up, counter-clockwise front faces, texture
-  origin at the top-left. The primitive generators (#346) are the next change.
+  origin at the top-left.
+- **Primitive generators** (`<terreate/asset/primitives.hpp>`, #346): `triangle`, `quad`, `box`, `plane`,
+  `uvSphere` and `cylinder` (a cone is a cylinder with top radius 0) return `Result<MeshData>` from a plain
+  description struct (sizes, segment counts, `normals`/`uvs`/`tangents` flags). Output is validated, has
+  bounds, is deterministic, uses `uint16` indices up to 65536 vertices and `uint32` beyond, and failures are
+  the named `PrimitiveError` category. Winding, normals, UV orientation and tangents follow the documented
+  conventions and are tested against the triangle data.
 
 ## [0.1.0] - 2026-11-26
 

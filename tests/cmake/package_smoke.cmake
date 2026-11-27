@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|asset/mesh_data|platform/(runtime|window|events)|integration/platform_graphics/surface|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|asset/(mesh_data|primitives)|platform/(runtime|window|events)|integration/platform_graphics/surface|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -145,9 +145,11 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(_asset)
-    if(NOT EXISTS "${_prefix}/include/terreate/asset/mesh_data.hpp")
-      message(FATAL_ERROR "${name} install is missing the public Asset mesh_data header")
-    endif()
+    foreach(_asset_header IN ITEMS mesh_data primitives)
+      if(NOT EXISTS "${_prefix}/include/terreate/asset/${_asset_header}.hpp")
+        message(FATAL_ERROR "${name} install is missing the public Asset ${_asset_header} header")
+      endif()
+    endforeach()
   elseif(EXISTS "${_prefix}/include/terreate/asset")
     message(FATAL_ERROR "${name} install has Asset headers although Asset is not built")
   endif()
@@ -1546,6 +1548,7 @@ terreate_build_consumer(core_only_runtime "${core_only_PREFIX}" Core
 terreate_package_configure_and_install(asset_only OFF OFF ON)
 set(_asset_source [=[
 #include <terreate/asset/mesh_data.hpp>
+#include <terreate/asset/primitives.hpp>
 
 #include <array>
 #include <cstdint>
@@ -1577,6 +1580,11 @@ int main() {
   const auto invalid = asset::validate(mesh);
   if (invalid || invalid.error().code() != asset::make_error_code(asset::MeshDataError::index_out_of_range))
     return 5;
+  // #346: an installed generator returns a validated mesh with bounds.
+  auto sphere = asset::uvSphere({.radius = 1.0F, .segments = 8, .rings = 4});
+  if (!sphere || !asset::validate(*sphere) || !sphere->bounds || sphere->vertexCount() != 45) return 6;
+  const auto bad = asset::box({.width = -1.0F});
+  if (bad || bad.error().code() != asset::make_error_code(asset::PrimitiveError::invalid_size)) return 7;
   std::puts("package.asset: mesh=PASS");
   return 0;
 }
