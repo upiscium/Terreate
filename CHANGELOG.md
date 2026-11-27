@@ -6,8 +6,15 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
 
 ## [Unreleased]
 
-Nothing yet. After `v0.1.0`, `MeshData` and the primitive generators (the geometry line, #214) are the
-planned next release.
+### Added
+
+- **Asset** (`Terreate::Asset`, `terreate::asset`, option `TERREATE_BUILD_ASSET`, `find_package` component `Asset`):
+  a new CPU-only component that depends on Core alone, so a consumer of it needs neither Vulkan nor GLFW.
+  Its first type is `MeshData` (#345), a backend-independent geometry value: topology, deinterleaved
+  float32 attribute streams (position, normal, tangent, texcoord, color, custom), `uint16`/`uint32` indices
+  and optional bounds, with `validate`, `computeBounds`, `layoutOf` and `interleave` and the named error
+  category `MeshDataError`. Conventions: right-handed, +Y up, counter-clockwise front faces, texture
+  origin at the top-left. The primitive generators (#346) are the next change.
 
 ## [0.1.0] - 2026-11-26
 

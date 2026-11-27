@@ -8,6 +8,7 @@ below. For the contract behind each part (what holds, ownership, lifetimes, erro
 :maxdepth: 1
 
 core
+asset
 platform
 graphics
 integration
@@ -18,6 +19,7 @@ integration
 | Component | CMake target | Namespace | Page |
 | --- | --- | --- | --- |
 | Core | `Terreate::Core` | `terreate` | [Core](core.md) |
+| Asset | `Terreate::Asset` | `terreate::asset` | [Asset](asset.md) |
 | Platform | `Terreate::Platform` | `terreate::platform` | [Platform](platform.md) |
 | Graphics | `Terreate::Graphics` | `terreate::graphics` | [Graphics](graphics.md) |
 | Platform-Graphics Integration | `Terreate::IntegrationPlatformGraphics` | `terreate::integration` | [Integration](integration.md) |

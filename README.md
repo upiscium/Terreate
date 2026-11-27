@@ -147,6 +147,10 @@ VMA on Core-only consumers. Only a Platform request discovers GLFW 3.4
 (`glfw3` CONFIG); a required Platform request fails when it is missing, and an
 optional one leaves Core usable.
 
+Asset (#345) is CPU-only: `TERREATE_BUILD_ASSET` (default ON) builds `Terreate::Asset`, which
+depends on Core alone. Like Platform and Graphics it requires Core and never enables it implicitly,
+and an `Asset` request searches for no external package, so it never brings Vulkan or GLFW.
+
 `cmake.package_smoke` checks this from outside the build tree (#285). It
 installs four packages (all components, Core only, Platform only, Graphics
 only), then configures separate consumer projects that use only
