@@ -34,6 +34,8 @@ public:
       return "a count, stride or size does not fit its 32-bit Vulkan field";
     case MeshUploadError::plan_mismatch:
       return "the plan or the buffers are not consistent with each other";
+    case MeshUploadError::wait_timeout:
+      return "the upload did not complete within the timeout";
     }
     return "unknown mesh upload error";
   }

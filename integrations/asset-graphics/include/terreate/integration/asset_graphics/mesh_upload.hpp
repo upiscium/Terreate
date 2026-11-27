@@ -101,6 +101,11 @@ struct MeshUploadPlan {
   /// Mesh attributes that have no binding and so are not in the vertex stream.
   /// Never dropped silently: the application decides whether that is intended.
   std::vector<asset::AttributeKey> unmapped;
+  /// True when `attributes` is the default mapping (`defaultMeshAttributeBindings`)
+  /// because the description's list was empty and the plan came from
+  /// `planMeshUploadWithDefaults`; false when the list was given by the
+  /// application (always the case for `planMeshUpload`).
+  bool used_default_attributes = false;
 
   /// Whether the mesh has an index buffer.
   [[nodiscard]] auto indexed() const noexcept -> bool { return index_buffer.has_value(); }
@@ -137,6 +142,9 @@ enum class MeshUploadError : std::uint8_t {
   /// A plan is not self-consistent (a size, usage or index buffer that does not
   /// match its bytes), or the buffers do not match the plan.
   plan_mismatch,
+  /// `uploadMeshBlocking`: the fence did not signal within the timeout. The GPU
+  /// may still use the resources, so they were deliberately not destroyed.
+  wait_timeout,
 };
 
 /// The category of MeshUploadError codes (name

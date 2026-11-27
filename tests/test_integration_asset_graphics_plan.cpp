@@ -334,7 +334,7 @@ void errors() {
   // The category is named and messages are defined for every value.
   const auto category_name = std::string{ag::mesh_upload_error_category().name()};
   check(category_name == "terreate.integration.asset_graphics", "the category name");
-  for (int value = 1; value <= 9; ++value)
+  for (int value = 1; value <= 10; ++value)
     check(!ag::mesh_upload_error_category().message(value).empty() &&
               ag::mesh_upload_error_category().message(value) != "unknown mesh upload error",
           "every MeshUploadError has a message");

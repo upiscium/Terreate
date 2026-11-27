@@ -1201,6 +1201,34 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       FAIL_REGULAR_EXPRESSION
         "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
 
+    # #463: the beginner mesh upload convenience. The plan test is CPU only; the GPU
+    # test needs the validation layer and a device, and fails (never passes) without
+    # the layer.
+    add_executable(terreate_integration_asset_graphics_convenience_plan_tests
+      tests/test_integration_asset_graphics_convenience_plan.cpp)
+    target_link_libraries(terreate_integration_asset_graphics_convenience_plan_tests PRIVATE
+      Terreate::IntegrationAssetGraphics)
+    terreate_configure_target(terreate_integration_asset_graphics_convenience_plan_tests)
+    add_test(NAME integration.asset_graphics.convenience_plan
+      COMMAND terreate_integration_asset_graphics_convenience_plan_tests)
+    set_tests_properties(integration.asset_graphics.convenience_plan PROPERTIES
+      PASS_REGULAR_EXPRESSION "integration\\.asset_graphics\\.convenience_plan: plan=PASS"
+      FAIL_REGULAR_EXPRESSION "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED)")
+
+    add_executable(terreate_integration_asset_graphics_convenience_tests
+      tests/test_integration_asset_graphics_convenience.cpp)
+    target_link_libraries(terreate_integration_asset_graphics_convenience_tests PRIVATE
+      Terreate::IntegrationAssetGraphics)
+    terreate_configure_target(terreate_integration_asset_graphics_convenience_tests)
+    add_test(NAME integration.asset_graphics.convenience
+      COMMAND terreate_integration_asset_graphics_convenience_tests)
+    set_tests_properties(integration.asset_graphics.convenience PROPERTIES
+      PASS_REGULAR_EXPRESSION
+        "integration\\.asset_graphics\\.convenience: convenience=PASS validation-layer=PASS"
+      SKIP_REGULAR_EXPRESSION "integration\\.asset_graphics\\.convenience: convenience=SKIP"
+      FAIL_REGULAR_EXPRESSION
+        "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+
     # #279 part 2: an ImageData becomes a Graphics image and upload items. The plan
     # test is CPU only; the GPU test needs the validation layer and a device, and a
     # format the device cannot use is SKIP per format (the whole test is SKIP only if
