@@ -78,10 +78,16 @@ template <std::ranges::contiguous_range Range>
   return bufferAllocationFor(BufferMemoryIntent::host_sequential_write);
 }
 
-/// Bounded Phase B: R8G8B8A8_UNORM, 2D, sample-count 1, one layer per
-/// operation, with explicit VkBufferImageCopy2 texel pitch and mip/extent.
+/// Bounded Phase B: 2D, sample-count 1, one layer per operation, with explicit
+/// VkBufferImageCopy2 texel pitch and mip/extent, for these uncompressed
+/// single-plane color formats: R8, R8G8 and R8G8B8A8 as UNORM and SRGB, R16,
+/// R16G16 and R16G16B16A16 UNORM, and R32, R32G32 and R32G32B32A32 SFLOAT. The
+/// texel size comes from the Vulkan-Hpp format traits; compressed, multi-plane,
+/// 3D, depth/stencil, packed and integer formats stay refused.
 /// The input region's bufferOffset must be zero: prepare assigns its own
-/// staging offset. No image layout transition is invented or recorded.
+/// staging offset, a multiple of the texel size and of 4. The byte span must
+/// have exactly the footprint in texels times the texel size. No image layout
+/// transition is invented or recorded.
 /// Destination is borrowed and must survive recording + all GPU use.
 struct ImageUploadItem {
   const Image *destination = nullptr;

@@ -10,7 +10,9 @@ endif()
 
 add_library(terreate_integration_asset_graphics STATIC
   src/mesh_upload.cpp
-  include/terreate/integration/asset_graphics/mesh_upload.hpp)
+  src/image_upload.cpp
+  include/terreate/integration/asset_graphics/mesh_upload.hpp
+  include/terreate/integration/asset_graphics/image_upload.hpp)
 target_include_directories(terreate_integration_asset_graphics
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"

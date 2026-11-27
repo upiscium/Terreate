@@ -223,6 +223,7 @@ elseif(_component STREQUAL "IntegrationAssetGraphics")
   # The public header of the Integration pulls in Asset and Graphics, so one
   # include proves both usage requirements reach a consumer (and no Platform).
   set(_consumer_source [=[
+#include <terreate/integration/asset_graphics/image_upload.hpp>
 #include <terreate/integration/asset_graphics/mesh_upload.hpp>
 
 #include <type_traits>
