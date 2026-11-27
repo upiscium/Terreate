@@ -679,6 +679,18 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "graphics\\.image_upload_batch: headless-rgba8-image=PASS"
       FAIL_REGULAR_EXPRESSION "graphics\\.image_upload_batch: (assertion=FAIL|.*BLOCKED)")
 
+    # The upload batch's Image upload covers the uncompressed single-plane color
+    # formats. Per format SKIP lines name the reason; only "no format tested" is SKIP.
+    add_executable(terreate_graphics_image_upload_formats_tests
+      tests/test_graphics_image_upload_formats.cpp)
+    target_link_libraries(terreate_graphics_image_upload_formats_tests PRIVATE Terreate::Graphics)
+    terreate_configure_target(terreate_graphics_image_upload_formats_tests)
+    add_test(NAME graphics.image_upload_formats COMMAND terreate_graphics_image_upload_formats_tests)
+    set_tests_properties(graphics.image_upload_formats PROPERTIES
+      PASS_REGULAR_EXPRESSION "graphics\\.image_upload_formats: formats=PASS"
+      SKIP_REGULAR_EXPRESSION "graphics\\.image_upload_formats: formats=SKIP"
+      FAIL_REGULAR_EXPRESSION "graphics\\.image_upload_formats: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_graphics_image_readback_batch_tests
       tests/test_graphics_image_readback_batch.cpp)
     target_link_libraries(terreate_graphics_image_readback_batch_tests PRIVATE Terreate::Graphics)

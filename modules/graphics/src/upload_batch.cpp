@@ -1,11 +1,13 @@
 #include <terreate/graphics/upload_batch.hpp>
 
+#include <array>
 #include <cstring>
 #include <limits>
 #include <new>
 #include <string>
 #include <terreate/graphics/transfer_commands.hpp>
 #include <utility>
+#include <vulkan/vulkan_format_traits.hpp>
 
 namespace terreate::graphics {
 namespace {
@@ -47,7 +49,7 @@ public:
     case UploadError::protected_recording:
       return "protected command recording is unsupported";
     case UploadError::unsupported_image:
-      return "Image upload requires R8G8B8A8_UNORM 2D sample-count 1";
+      return "Image upload requires an uncompressed single-plane color format, 2D, sample-count 1";
     case UploadError::unsupported_layout:
       return "copy requires explicit TRANSFER_DST_OPTIMAL or GENERAL layout";
     case UploadError::invalid_image_region:
@@ -74,9 +76,29 @@ bool overlaps(vk::DeviceSize a, vk::DeviceSize a_size, vk::DeviceSize b, vk::Dev
   // All inputs have been proven non-overflowing by within() beforehand.
   return a < b + b_size && b < a + a_size;
 }
+// The uncompressed single-plane color formats the image upload accepts: the 8-bit unorm and sRGB
+// formats, the 16-bit unorm formats and the 32-bit float formats with one, two or four components.
+// Everything else (compressed, multi-planar, depth/stencil, packed, integer) is refused.
+constexpr std::array supported_image_formats{
+    vk::Format::eR8Unorm,   vk::Format::eR8Srgb,        vk::Format::eR8G8Unorm,
+    vk::Format::eR8G8Srgb,  vk::Format::eR8G8B8A8Unorm, vk::Format::eR8G8B8A8Srgb,
+    vk::Format::eR16Unorm,  vk::Format::eR16G16Unorm,   vk::Format::eR16G16B16A16Unorm,
+    vk::Format::eR32Sfloat, vk::Format::eR32G32Sfloat,  vk::Format::eR32G32B32A32Sfloat,
+};
+// Bytes per texel from the Vulkan-Hpp format traits; 0 for an unsupported format.
+[[nodiscard]] std::uint32_t texelSize(vk::Format format) {
+  for (const auto supported : supported_image_formats)
+    if (supported == format)
+      return vk::blockSize(format);
+  return 0;
+}
+// Staging offsets of an image copy are a multiple of the texel size and of 4. All sizes are
+// powers of two, so the common multiple is the larger of the two.
+[[nodiscard]] std::uint32_t stagingAlignment(std::uint32_t texel_size) {
+  return texel_size > 4 ? texel_size : 4;
+}
 [[nodiscard]] bool supportedImage(const ImageConfiguration &configuration) {
-  return configuration.format == vk::Format::eR8G8B8A8Unorm &&
-         configuration.dimensions == vk::ImageType::e2D &&
+  return texelSize(configuration.format) != 0 && configuration.dimensions == vk::ImageType::e2D &&
          configuration.samples == vk::SampleCountFlagBits::e1;
 }
 [[nodiscard]] bool supportedLayout(vk::ImageLayout layout) {
@@ -89,7 +111,7 @@ bool overlaps(vk::DeviceSize a, vk::DeviceSize a_size, vk::DeviceSize b, vk::Dev
 [[nodiscard]] bool validImageRegion(const ImageConfiguration &configuration,
                                     const VkBufferImageCopy2 &region) {
   if (region.sType != VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2 || region.pNext ||
-      (region.bufferOffset % 4) != 0 ||
+      (region.bufferOffset % stagingAlignment(texelSize(configuration.format))) != 0 ||
       region.imageSubresource.aspectMask != VK_IMAGE_ASPECT_COLOR_BIT ||
       region.imageSubresource.layerCount != 1 ||
       region.imageSubresource.mipLevel >= configuration.mip_levels ||
@@ -103,8 +125,8 @@ bool overlaps(vk::DeviceSize a, vk::DeviceSize a_size, vk::DeviceSize b, vk::Dev
     return false;
   const auto row_texels =
       region.bufferRowLength ? region.bufferRowLength : region.imageExtent.width;
-  // VUID 09108: row texels times RGBA8 block size must fit in signed 31 bits.
-  if (static_cast<std::uint64_t>(row_texels) * 4 >
+  // VUID 09108: row texels times the texel size must fit in signed 31 bits.
+  if (static_cast<std::uint64_t>(row_texels) * texelSize(configuration.format) >
       static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max()))
     return false;
   return static_cast<std::uint64_t>(region.imageOffset.x) + region.imageExtent.width <=
@@ -112,8 +134,9 @@ bool overlaps(vk::DeviceSize a, vk::DeviceSize a_size, vk::DeviceSize b, vk::Dev
          static_cast<std::uint64_t>(region.imageOffset.y) + region.imageExtent.height <=
              mipDimension(configuration.extent.height, region.imageSubresource.mipLevel);
 }
-[[nodiscard]] std::optional<vk::DeviceSize> imageFootprint(const VkBufferImageCopy2 &region) {
-  // Exactly one 2D RGBA8 layer: last row ends after imageExtent.width texels.
+[[nodiscard]] std::optional<vk::DeviceSize> imageFootprint(const ImageConfiguration &configuration,
+                                                           const VkBufferImageCopy2 &region) {
+  // Exactly one 2D single-plane layer: last row ends after imageExtent.width texels.
   // bufferImageHeight controls slice/layer strides, neither of which occurs
   // in this bounded MVI; any nonzero height has already been validated.
   const std::uint64_t row_texels =
@@ -124,9 +147,11 @@ bool overlaps(vk::DeviceSize a, vk::DeviceSize a_size, vk::DeviceSize b, vk::Dev
   if (rows != 0 && row_texels > (limit - last_width) / rows)
     return std::nullopt;
   const auto texels = rows * row_texels + last_width;
-  if (texels > limit / 4 || texels > std::numeric_limits<std::size_t>::max() / 4)
+  const std::uint64_t texel_size = texelSize(configuration.format);
+  if (texel_size == 0 || texels > limit / texel_size ||
+      texels > std::numeric_limits<std::size_t>::max() / texel_size)
     return std::nullopt;
-  return static_cast<vk::DeviceSize>(texels * 4);
+  return static_cast<vk::DeviceSize>(texels * texel_size);
 }
 [[nodiscard]] bool sameImageSubresource(const PreparedImageUpload &a,
                                         const PreparedImageUpload &b) {
@@ -146,9 +171,15 @@ bool overlaps(vk::DeviceSize a, vk::DeviceSize a_size, vk::DeviceSize b, vk::Dev
   return ax < bx + right.imageExtent.width && bx < ax + left.imageExtent.width &&
          ay < by + right.imageExtent.height && by < ay + left.imageExtent.height;
 }
-[[nodiscard]] bool withinStaging(vk::DeviceSize used, std::size_t n, vk::DeviceSize &offset) {
+[[nodiscard]] bool withinStaging(vk::DeviceSize used, std::size_t n, vk::DeviceSize &offset,
+                                 std::uint32_t alignment = 1) {
   if (used > std::numeric_limits<std::size_t>::max())
     return false;
+  const vk::DeviceSize padding = (alignment - used % alignment) % alignment;
+  if (padding > std::numeric_limits<std::size_t>::max() - static_cast<std::size_t>(used) ||
+      padding > std::numeric_limits<vk::DeviceSize>::max() - used)
+    return false;
+  used += padding;
   if (n > std::numeric_limits<vk::DeviceSize>::max() - used ||
       n > std::numeric_limits<std::size_t>::max() - static_cast<std::size_t>(used))
     return false;
@@ -231,12 +262,15 @@ prepareUploadBatch(const Allocator &allocator, const UploadBatchDescription &des
       // The request must not assume the offset of the library-owned staging.
       if (write.region.bufferOffset != 0 || !validImageRegion(configuration, write.region))
         return fail(UploadError::invalid_image_region, "prepareUploadBatch");
-      const auto footprint = imageFootprint(write.region);
+      const auto footprint = imageFootprint(configuration, write.region);
       if (!footprint || write.bytes.empty() || !write.bytes.data() ||
           write.bytes.size() != *footprint)
         return fail(UploadError::invalid_image_footprint, "prepareUploadBatch");
       vk::DeviceSize offset = 0;
-      if (!withinStaging(staging_bytes, write.bytes.size(), offset))
+      // The staging offset respects the texel size and the 4-byte rule; the padding before it
+      // belongs to the staging Buffer but is never read.
+      if (!withinStaging(staging_bytes, write.bytes.size(), offset,
+                         stagingAlignment(texelSize(configuration.format))))
         return fail(UploadError::invalid_range, "prepareUploadBatch");
       auto effective = write.region;
       effective.bufferOffset = offset;
@@ -253,7 +287,7 @@ prepareUploadBatch(const Allocator &allocator, const UploadBatchDescription &des
           return fail(UploadError::overlapping_image_regions, "prepareUploadBatch");
       }
       images.push_back(snapshot);
-      staging_bytes += *footprint;
+      staging_bytes = offset + *footprint;
     }
   } catch (const std::bad_alloc &) {
     return fail(UploadError::allocation_failed, "prepareUploadBatch");
@@ -353,7 +387,7 @@ terreate::Result<void> recordUploadBatch(const Device &device, const CommandBuff
       return fail(UploadError::unsupported_layout, "recordUploadBatch");
     if (!validImageRegion(configuration, copy.region))
       return fail(UploadError::invalid_image_region, "recordUploadBatch");
-    const auto footprint = imageFootprint(copy.region);
+    const auto footprint = imageFootprint(configuration, copy.region);
     if (!footprint || *footprint != copy.payload_bytes ||
         !within(staging->configuration()->size, copy.region.bufferOffset, *footprint))
       return fail(UploadError::invalid_image_footprint, "recordUploadBatch");

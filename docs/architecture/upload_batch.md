@@ -1,8 +1,9 @@
 # Explicit Buffer and Image staging/upload batches (#338 Phases A/B)
 
 This module provides Phase A Buffer Upload and a **bounded Phase B** Image
-Upload path. The Image path deliberately supports only RGBA8 2D single-sample
-Images and explicitly described subresources/pitch. Neither path is a transfer
+Upload path. The Image path deliberately supports only 2D single-sample Images of
+the uncompressed single-plane color formats listed below, with explicitly described
+subresources/pitch. Neither path is a transfer
 scheduler, background uploader or alternative queue-submission system.
 The application owns and triggers every operation:
 
@@ -110,7 +111,7 @@ and VMA entrypoints; they do not establish portability to other linkers.
 Installed package smoke compiles/links the new public header from an
 external consumer. This document defines the contract, not proof of tests.
 
-## Bounded Phase B: explicit RGBA8 Image upload
+## Bounded Phase B: explicit Image upload
 
 An ImageUploadItem borrows a destination Image, specifies a VkBufferImageCopy2
 region (correct sType, null pNext, and **request bufferOffset == 0**), an
@@ -122,8 +123,11 @@ usually be nonzero for mixed Buffer/Image batches), snaps the native
 region/layout/borrowed Image handle and copies the CPU bytes. These
 values are available through PreparedUploadBatch::images().
 
-The bounded convenience path accepts only VK_FORMAT_R8G8B8A8_UNORM,
-VK_IMAGE_TYPE_2D, VK_SAMPLE_COUNT_1_BIT, COLOR aspect, depth 1, and
+The bounded convenience path accepts only these uncompressed single-plane color
+formats: R8, R8G8 and R8G8B8A8 (UNORM and SRGB), R16, R16G16 and R16G16B16A16
+(UNORM), and R32, R32G32 and R32G32B32A32 (SFLOAT). The texel size is the
+Vulkan-Hpp format-trait block size (1, 2, 4, 8 or 16 bytes), not a constant.
+It accepts VK_IMAGE_TYPE_2D, VK_SAMPLE_COUNT_1_BIT, COLOR aspect, depth 1, and
 exactly **one layer per operation**; a caller may explicitly upload
 separate mip levels or distinct nonoverlapping regions. All regions of
 one Image mip/layer in the same batch MUST declare the same copy_layout;
@@ -138,10 +142,10 @@ mip/layer are rejected rather than processed under false assumptions.
 The native bufferRowLength and bufferImageHeight fields are in
 **texels, not bytes**, per the Vulkan Copy Commands specification.
 Either may be zero (tight packing) or must meet the corresponding
-region extent. For one RGBA8 2D layer, the highest byte accessed in
+region extent. For one 2D layer, the highest byte accessed in
 the staging region ends at:
 
-    (((imageExtent.height - 1) * effectiveRowLength) + imageExtent.width) * 4
+    (((imageExtent.height - 1) * effectiveRowLength) + imageExtent.width) * texelSize
 
 where effectiveRowLength = bufferRowLength or imageExtent.width if zero.
 The byte span must have **exactly** that length, including inter-row
@@ -149,6 +153,12 @@ padding but not inventing unused trailing-row padding. All products
 and combined batch offsets are overflow-checked; the row stride
 obeys Vulkan's signed-31-bit row-size limit. Each requested native
 region has bufferOffset 0 because the batch owns its stage offsets.
+
+The effective staging offset of an Image item is a multiple of the texel size and of 4 (the larger of the two,
+since every size is a power of two), so a one-byte-texel image of odd size is followed by padding in the staging
+Buffer before the next Image item; the padding is never read, and the staging size ends at the last item's last
+byte. Buffer items keep the 4-byte offset and size rule. The CPU byte count must equal the footprint (texels
+times the texel size) exactly.
 
 The application records oldLayout -> copy_layout transitions explicitly
 through #264 recordBarriers *before* recordUploadBatch, with true
@@ -164,14 +174,26 @@ native validity preconditions, and actual prior Image layout/ownership
 remain caller responsibilities. This is not a state tracker or a
 substitute for native Vulkan escape hatches.
 
+### Format coverage
+
+The formats are an explicit list in `src/upload_batch.cpp`, not a trait predicate, so a format enters the upload
+only deliberately. Packed (for example A2B10G10R10), integer (UINT/SINT), half-float, BGRA and three-component
+formats are not in the list and stay `unsupported_image`, as do compressed, multi-planar, depth/stencil and 3D
+images. Whether the device can use a listed format for transfers (and, for the Asset-Graphics Integration,
+sampling) is the application's to ask (`queryFormatProperties`); `graphics.image_upload_formats` skips, with a
+printed reason, any listed format the device cannot create or use for optimal-tiling transfers and reports
+`formats=SKIP` only when it could test none.
+
 ### Phase B native validation
 
 The isolated graphics.image_upload_batch test covers mixed Buffer +
-multiple RGBA8 Image region staging, row-padded two-region Image copy,
+multiple Image region staging, row-padded two-region Image copy,
 explicit pre/post Synchronization2 layout transitions, native argument
 observations, host readback content, nontrivial effective staging
 offsets, invalid pitches/footprints/subresources/layouts/formats,
 prevalidation before *any* native copies, conflicting-layout rejection,
 compatible Queue minImageTransferGranularity selection, explicit submit/fence
 completion, and deferred staging destruction. Unsupported devices
-must return BLOCKED and fail, never be counted as a fake PASS.
+must return BLOCKED and fail, never be counted as a fake PASS. The
+graphics.image_upload_formats test round-trips every listed format the device supports (two mips, one with a
+padded row, staging-offset alignment, footprint and refusal checks) without any linker wrapper.
