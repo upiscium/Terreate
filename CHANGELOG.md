@@ -21,6 +21,14 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   bounds, is deterministic, uses `uint16` indices up to 65536 vertices and `uint32` beyond, and failures are
   the named `PrimitiveError` category. Winding, normals, UV orientation and tangents follow the documented
   conventions and are tested against the triangle data.
+- **ImageData** (`<terreate/asset/image_data.hpp>`, #276 part 1): a backend-independent, CPU-only decoded image,
+  in the style of `MeshData`. Its own `PixelFormat` (r8, rg8, rgb8, rgba8, r16, rg16, rgba16, r32f, rg32f,
+  rgba32f), a separate `ColorInterpretation` (srgb, linear, normal_map) and `AlphaMode`, an extent with array
+  layers and mip levels, one byte vector with a `{mip, layer, offset, row_pitch, slice_pitch}` table, the
+  `packedLayout` helper, `bytes(mip, layer)` spans, `custom` key/value entries and an `unsupported` list
+  (`{kind, name, detail}`; nothing is dropped silently). `validate` returns the named error category
+  `ImageDataError` and uses overflow-safe arithmetic; nothing is repaired. Rows run top-first, matching the
+  top-left texture origin. Cube maps are not a separate kind in this part. `ModelData` follows in a later change.
 - **Asset-Graphics Integration** (`Terreate::IntegrationAssetGraphics`, `terreate::integration::asset_graphics`,
   header `<terreate/integration/asset_graphics/mesh_upload.hpp>`, option
   `TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS`, `find_package` component `IntegrationAssetGraphics`; #279
