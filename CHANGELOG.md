@@ -53,7 +53,25 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   `prepareUploadBatch`; the plan must outlive it). The application gives each attribute's shader location,
   nothing is guessed, and the named error category `MeshUploadError` passes `MeshDataError` through for an
   invalid mesh. The option is on by default only when Asset and Graphics are; asking for it without one is a
-  configure error. Uploading an `ImageData` is part 2, after #276; a one-call convenience is planned as #463.
+  configure error. Uploading an `ImageData` is part 2 (next entry); a one-call convenience is planned as #463.
+- **Asset-Graphics Integration, part 2: images** (`<terreate/integration/asset_graphics/image_upload.hpp>`, #279):
+  an `ImageData` reaches the GPU in three explicit steps that record, submit and wait for nothing:
+  `planImageUpload` (CPU only; the observable `ImageUploadPlan` holds the Vulkan format, the `ImageDescription`
+  with usage `TransferDst | Sampled` plus the application's extra usage, the copy layout
+  `TransferDstOptimal` and one `VkBufferImageCopy2` region with an explicit texel row length per (mip, layer)),
+  `createImage` (no `ImageView`, no `Sampler`) and `imageUploadItems` (items borrow the pixels from the
+  `ImageData`, which must outlive `prepareUploadBatch`). `srgb` maps to the sRGB format where one exists, `linear`
+  and `normal_map` to the unorm or float one; `rgb8` has no portable Vulkan format and is `unsupported_format`.
+  Every subresource present is uploaded as it is: there is no mip generation and no layout transition (the
+  application uses `imageBarrier`); `ImageUploadDescription::mip_generation` and `layout_transition` are reserved
+  choices whose only value is `none`, for the explicit opt-in follow-ups #467 and #468. The named error category is
+  `ImageUploadError` (an invalid image returns its `ImageDataError` unchanged).
+- **Graphics upload batch: more Image formats** (#279): the Image upload of `prepareUploadBatch` and
+  `recordUploadBatch`, until now `R8G8B8A8_UNORM` only, accepts the uncompressed single-plane color formats R8, R8G8
+  and R8G8B8A8 (UNORM and SRGB), R16, R16G16 and R16G16B16A16 (UNORM) and R32, R32G32 and R32G32B32A32 (SFLOAT). The
+  texel size comes from the Vulkan-Hpp format traits and the footprint, the row-length limit and the staging offset
+  (a multiple of the texel size and of 4) follow it; 2D, one sample, one layer per operation and every existing error
+  are unchanged, and compressed, multi-plane, 3D, depth/stencil, packed and integer formats stay `unsupported_image`.
 
 ## [0.1.0] - 2026-11-26
 

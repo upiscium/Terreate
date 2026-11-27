@@ -125,7 +125,9 @@ also imports Platform and Graphics and their dependencies (GLFW and Vulkan).
 The second Integration (#279), `Terreate::IntegrationAssetGraphics`, connects Asset and Graphics: it
 plans an Asset `MeshData` as vertex and index buffers, creates them and returns the upload items for
 `graphics::prepareUploadBatch`, in three explicit steps that record, submit and wait for nothing (see
-[Asset-Graphics Integration](docs/architecture/asset_graphics.md)). Asset does not depend on Graphics
+[Asset-Graphics Integration](docs/architecture/asset_graphics.md)). Part 2 does the same for an `ImageData`: it plans the
+Vulkan format and one copy region per mip and layer, creates the image (no view, no sampler) and returns the upload
+items; mips are not generated and no layout transition is recorded (reserved opt-in follow-ups #467 and #468). Asset does not depend on Graphics
 and Graphics does not depend on Asset. Its option, `TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS`, is on by
 default only when both `TERREATE_BUILD_ASSET` and `TERREATE_BUILD_GRAPHICS` are, and turning it on without
 one of them is a configure error. Request it with

@@ -1200,6 +1200,35 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       SKIP_REGULAR_EXPRESSION "integration\\.asset_graphics: asset_graphics=SKIP"
       FAIL_REGULAR_EXPRESSION
         "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+
+    # #279 part 2: an ImageData becomes a Graphics image and upload items. The plan
+    # test is CPU only; the GPU test needs the validation layer and a device, and a
+    # format the device cannot use is SKIP per format (the whole test is SKIP only if
+    # no format could be tested), never PASS.
+    add_executable(terreate_integration_asset_graphics_image_plan_tests
+      tests/test_integration_asset_graphics_image_plan.cpp)
+    target_link_libraries(terreate_integration_asset_graphics_image_plan_tests PRIVATE
+      Terreate::IntegrationAssetGraphics)
+    terreate_configure_target(terreate_integration_asset_graphics_image_plan_tests)
+    add_test(NAME integration.asset_graphics.image_plan
+      COMMAND terreate_integration_asset_graphics_image_plan_tests)
+    set_tests_properties(integration.asset_graphics.image_plan PROPERTIES
+      PASS_REGULAR_EXPRESSION "integration\\.asset_graphics\\.image_plan: plan=PASS"
+      FAIL_REGULAR_EXPRESSION "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED)")
+
+    add_executable(terreate_integration_asset_graphics_image_tests
+      tests/test_integration_asset_graphics_image.cpp)
+    target_link_libraries(terreate_integration_asset_graphics_image_tests PRIVATE
+      Terreate::IntegrationAssetGraphics)
+    terreate_configure_target(terreate_integration_asset_graphics_image_tests)
+    add_test(NAME integration.asset_graphics.image
+      COMMAND terreate_integration_asset_graphics_image_tests)
+    set_tests_properties(integration.asset_graphics.image PROPERTIES
+      PASS_REGULAR_EXPRESSION
+        "integration\\.asset_graphics\\.image: image=PASS validation-layer=PASS"
+      SKIP_REGULAR_EXPRESSION "integration\\.asset_graphics\\.image: image=SKIP"
+      FAIL_REGULAR_EXPRESSION
+        "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
   endif()
 
   add_test(
