@@ -37,6 +37,18 @@ endif()
 option(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS
   "Build the optional Terreate Platform-Graphics Integration component"
   ${_terreate_integration_platform_graphics_default})
+# The Asset-Graphics Integration (#279) turns a MeshData into Graphics buffers
+# and upload items. Same rule: on by default only when both of its dependencies
+# are, and a configure error when asked for without one of them. Asset and
+# Graphics never depend on each other or on it.
+if(TERREATE_BUILD_ASSET AND TERREATE_BUILD_GRAPHICS)
+  set(_terreate_integration_asset_graphics_default ON)
+else()
+  set(_terreate_integration_asset_graphics_default OFF)
+endif()
+option(TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS
+  "Build the optional Terreate Asset-Graphics Integration component"
+  ${_terreate_integration_asset_graphics_default})
 # The examples use the Integration and follow its actual setting by default (so
 # the gate compiles them, and turning the Integration off turns them off); they
 # are not installed. Asking for them without the
@@ -394,6 +406,18 @@ if(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS)
   endforeach()
 endif()
 
+if(TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS)
+  foreach(_terreate_integration_dependency IN ITEMS ASSET GRAPHICS)
+    if(NOT TERREATE_BUILD_${_terreate_integration_dependency})
+      message(FATAL_ERROR
+        "TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS=ON requires "
+        "TERREATE_BUILD_${_terreate_integration_dependency}=ON; Terreate does "
+        "not enable a component implicitly. Enable it, or set "
+        "TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS=OFF")
+    endif()
+  endforeach()
+endif()
+
 # Keep C++ policy on every component target, including when Terreate is added
 # as a subdirectory by a consumer.  The private compiler context is applied as
 # compile options rather than a link dependency, so it can never leak into an
@@ -426,6 +450,9 @@ if(TERREATE_BUILD_GRAPHICS)
 endif()
 if(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS)
   add_subdirectory(integrations/platform-graphics)
+endif()
+if(TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS)
+  add_subdirectory(integrations/asset-graphics)
 endif()
 
 if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
@@ -1117,6 +1144,36 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
     endif()
   endif()
 
+  # #279 part 1: a MeshData becomes Graphics buffers and upload items. `plan` is
+  # CPU only; the GPU test needs the validation layer and a device, and fails
+  # (never passes) without the layer. No linker or platform mechanism is used.
+  if(TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS)
+    add_executable(terreate_integration_asset_graphics_plan_tests
+      tests/test_integration_asset_graphics_plan.cpp)
+    target_link_libraries(terreate_integration_asset_graphics_plan_tests PRIVATE
+      Terreate::IntegrationAssetGraphics)
+    terreate_configure_target(terreate_integration_asset_graphics_plan_tests)
+    add_test(NAME integration.asset_graphics.plan
+      COMMAND terreate_integration_asset_graphics_plan_tests)
+    set_tests_properties(integration.asset_graphics.plan PROPERTIES
+      PASS_REGULAR_EXPRESSION "integration\\.asset_graphics\\.plan: plan=PASS"
+      FAIL_REGULAR_EXPRESSION "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED)")
+
+    add_executable(terreate_integration_asset_graphics_tests
+      tests/test_integration_asset_graphics.cpp)
+    target_link_libraries(terreate_integration_asset_graphics_tests PRIVATE
+      Terreate::IntegrationAssetGraphics)
+    terreate_configure_target(terreate_integration_asset_graphics_tests)
+    add_test(NAME integration.asset_graphics
+      COMMAND terreate_integration_asset_graphics_tests)
+    set_tests_properties(integration.asset_graphics PROPERTIES
+      PASS_REGULAR_EXPRESSION
+        "integration\\.asset_graphics: asset_graphics=PASS validation-layer=PASS"
+      SKIP_REGULAR_EXPRESSION "integration\\.asset_graphics: asset_graphics=SKIP"
+      FAIL_REGULAR_EXPRESSION
+        "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+  endif()
+
   add_test(
     NAME cmake.component_matrix
     COMMAND ${CMAKE_COMMAND}
@@ -1192,6 +1249,11 @@ if(_terreate_has_components)
       FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateIntegrationPlatformGraphicsTargets.cmake"
       NAMESPACE Terreate::)
   endif()
+  if(TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS)
+    export(TARGETS terreate_integration_asset_graphics
+      FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateIntegrationAssetGraphicsTargets.cmake"
+      NAMESPACE Terreate::)
+  endif()
 
   set(_terreate_build_config "${CMAKE_CURRENT_BINARY_DIR}/TerreateConfig.cmake")
   set(_terreate_install_config
@@ -1259,6 +1321,12 @@ if(_terreate_has_components)
   if(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS)
     install(EXPORT TerreateIntegrationPlatformGraphicsTargets
       FILE TerreateIntegrationPlatformGraphicsTargets.cmake
+      NAMESPACE Terreate::
+      DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
+  endif()
+  if(TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS)
+    install(EXPORT TerreateIntegrationAssetGraphicsTargets
+      FILE TerreateIntegrationAssetGraphicsTargets.cmake
       NAMESPACE Terreate::
       DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
   endif()

@@ -17,7 +17,8 @@ checks that it is consistent.
 - Non-goals: no GPU handle, no `Buffer`, no Vulkan type, no file or image
   decoding, no materials, nodes or submesh ranges (those belong to the
   `ModelData` of #276), no GPU upload or
-  `VertexLayout` conversion (#279), no repair of malformed data.
+  `VertexLayout` conversion (the [Asset-Graphics Integration](asset_graphics.md), #279), no
+  repair of malformed data.
 
 ## Public dependencies
 
@@ -109,11 +110,13 @@ A `ModelData` (#276) will hold a list of `MeshData` plus materials, nodes and
 metadata about unsupported features; a glTF primitive maps to one `MeshData`.
 `MeshData` stays usable alone, which is how generators use it.
 
-Converting a mesh for the GPU is #279's job. `layoutOf(mesh)` and
+Converting a mesh for the GPU is the job of the [Asset-Graphics Integration](asset_graphics.md)
+(#279), not of this component. `layoutOf(mesh)` and
 `interleave(mesh, order)` return everything it needs without a Vulkan type:
 topology, index type and counts, and for each attribute its semantic, set,
-format, offset and stride. Mapping them to `vk::` structs or Graphics'
-`VertexLayout` is outside this component.
+format, offset and stride. Mapping them to `vk::` structs, creating the buffers and producing the
+upload items is done there, through the public APIs of both components; Asset itself has no
+Graphics dependency.
 
 ## Minimal explicit example
 
