@@ -3,8 +3,9 @@
 set(Terreate_FOUND TRUE)
 unset(Terreate_NOT_FOUND_MESSAGE)
 set(Terreate_VERSION "@PROJECT_VERSION@")
-set(_Terreate_supported_components Core Platform Graphics IntegrationPlatformGraphics)
+set(_Terreate_supported_components Core Asset Platform Graphics IntegrationPlatformGraphics)
 set(_Terreate_core_built "@TERREATE_BUILD_CORE@")
+set(_Terreate_asset_built "@TERREATE_BUILD_ASSET@")
 set(_Terreate_platform_built "@TERREATE_BUILD_PLATFORM@")
 set(_Terreate_graphics_built "@TERREATE_BUILD_GRAPHICS@")
 set(_Terreate_integration_platform_graphics_built
@@ -356,11 +357,18 @@ endif()
 # Keeping component exports separate also means optional Graphics with no
 # Vulkan target is not imported or reported as found alongside Core.
 set(_Terreate_import_Core FALSE)
+set(_Terreate_import_Asset FALSE)
 set(_Terreate_import_Platform FALSE)
 set(_Terreate_import_Graphics FALSE)
 set(_Terreate_import_IntegrationPlatformGraphics FALSE)
 if(NOT Terreate_FIND_COMPONENTS)
   if(_Terreate_core_built)
+    set(_Terreate_import_Core TRUE)
+  endif()
+  # Asset is CPU-only with no external dependency, so it is available whenever
+  # it was built.
+  if(_Terreate_asset_built)
+    set(_Terreate_import_Asset TRUE)
     set(_Terreate_import_Core TRUE)
   endif()
   if(_Terreate_platform_built AND _Terreate_platform_available)
@@ -377,6 +385,11 @@ if(NOT Terreate_FIND_COMPONENTS)
 else()
   foreach(_Terreate_requested_component IN LISTS Terreate_FIND_COMPONENTS)
     if(_Terreate_requested_component STREQUAL "Core")
+      set(_Terreate_import_Core TRUE)
+    elseif(_Terreate_requested_component STREQUAL "Asset" AND
+           _Terreate_asset_built)
+      # CPU-only: no external dependency to search for; it needs Core's target.
+      set(_Terreate_import_Asset TRUE)
       set(_Terreate_import_Core TRUE)
     elseif(_Terreate_requested_component STREQUAL "Platform" AND
            _Terreate_platform_available)
@@ -399,7 +412,7 @@ endif()
 
 # The Integration is last: its exported targets name Terreate::Platform and
 # Terreate::Graphics, which the earlier iterations have just imported.
-foreach(_Terreate_component IN ITEMS Core Platform Graphics IntegrationPlatformGraphics)
+foreach(_Terreate_component IN ITEMS Core Asset Platform Graphics IntegrationPlatformGraphics)
   set(Terreate_${_Terreate_component}_FOUND FALSE)
   if(_Terreate_import_${_Terreate_component})
     set(_Terreate_component_file
@@ -438,7 +451,7 @@ foreach(_Terreate_component IN LISTS Terreate_FIND_COMPONENTS)
       if(NOT Terreate_NOT_FOUND_MESSAGE)
         string(CONCAT Terreate_NOT_FOUND_MESSAGE
           "Terreate does not provide requested component '${_Terreate_component}'; "
-          "supported components are Core, Platform, Graphics, and "
+          "supported components are Core, Asset, Platform, Graphics, and "
           "IntegrationPlatformGraphics")
       endif()
   elseif(NOT Terreate_${_Terreate_component}_FOUND)

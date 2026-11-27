@@ -10,6 +10,7 @@ namespace each:
 | Component | Namespace | Responsibility |
 | --- | --- | --- |
 | Core | `terreate` | `Result`/`Error`, diagnostics: no Vulkan, no window system |
+| Asset | `terreate::asset` | CPU-side `MeshData`: no Vulkan, no window system |
 | Platform | `terreate::platform` | Runtime, Window and events |
 | Graphics | `terreate::graphics` | Vulkan Instance to Swapchain, resources, commands, submission |
 | Platform-Graphics Integration | `terreate::integration::platform_graphics` | A Window's Surface |

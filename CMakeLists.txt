@@ -20,6 +20,8 @@ endif()
 # turns Core on implicitly.
 option(TERREATE_BUILD_CORE
   "Build the dependency-free Terreate Core component" ON)
+option(TERREATE_BUILD_ASSET
+  "Build the independently selectable, CPU-only Terreate Asset component" ON)
 option(TERREATE_BUILD_PLATFORM
   "Build the independently selectable Terreate Platform component" ON)
 option(TERREATE_BUILD_GRAPHICS
@@ -366,10 +368,10 @@ include(GNUInstallDirs)
 set(TERREATE_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/Terreate"
   CACHE PATH "Installation directory for Terreate's CMake package")
 
-if((TERREATE_BUILD_PLATFORM OR TERREATE_BUILD_GRAPHICS) AND
+if((TERREATE_BUILD_ASSET OR TERREATE_BUILD_PLATFORM OR TERREATE_BUILD_GRAPHICS) AND
    NOT TERREATE_BUILD_CORE)
   message(FATAL_ERROR
-    "Terreate Platform and Graphics require Terreate Core; "
+    "Terreate Asset, Platform and Graphics require Terreate Core; "
     "set TERREATE_BUILD_CORE=ON instead of enabling Core implicitly")
 endif()
 
@@ -413,6 +415,9 @@ endfunction()
 if(TERREATE_BUILD_CORE)
   add_subdirectory(core)
 endif()
+if(TERREATE_BUILD_ASSET)
+  add_subdirectory(modules/asset)
+endif()
 if(TERREATE_BUILD_PLATFORM)
   add_subdirectory(modules/platform)
 endif()
@@ -443,6 +448,18 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
   target_link_libraries(terreate_core_diagnostics_tests PRIVATE Terreate::Core)
   terreate_configure_target(terreate_core_diagnostics_tests)
   add_test(NAME core.diagnostics COMMAND terreate_core_diagnostics_tests)
+
+  # #345: the CPU-only MeshData contract. The test links Asset alone: no
+  # Vulkan, no Graphics, no Platform, and no OS- or linker-specific behavior.
+  if(TERREATE_BUILD_ASSET)
+    add_executable(terreate_asset_mesh_data_tests tests/test_asset_mesh_data.cpp)
+    target_link_libraries(terreate_asset_mesh_data_tests PRIVATE Terreate::Asset)
+    terreate_configure_target(terreate_asset_mesh_data_tests)
+    add_test(NAME asset.mesh_data COMMAND terreate_asset_mesh_data_tests)
+    set_tests_properties(asset.mesh_data PROPERTIES
+      PASS_REGULAR_EXPRESSION "asset\\.mesh_data: mesh-data=PASS"
+      FAIL_REGULAR_EXPRESSION "asset\\.mesh_data: (assertion=FAIL|.*BLOCKED)")
+  endif()
 
   if(TERREATE_BUILD_GRAPHICS)
     add_executable(terreate_graphics_diagnostics_tests
@@ -1136,7 +1153,8 @@ endif()
 # this keeps an explicit all-disabled configuration valid while making a
 # package with no usable targets fail clearly at find_package time.
 set(_terreate_has_components FALSE)
-if(TERREATE_BUILD_CORE OR TERREATE_BUILD_PLATFORM OR TERREATE_BUILD_GRAPHICS)
+if(TERREATE_BUILD_CORE OR TERREATE_BUILD_ASSET OR TERREATE_BUILD_PLATFORM OR
+   TERREATE_BUILD_GRAPHICS)
   set(_terreate_has_components TRUE)
 endif()
 
@@ -1144,6 +1162,11 @@ if(_terreate_has_components)
   if(TERREATE_BUILD_CORE)
     export(TARGETS terreate_core
       FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateCoreTargets.cmake"
+      NAMESPACE Terreate::)
+  endif()
+  if(TERREATE_BUILD_ASSET)
+    export(TARGETS terreate_asset
+      FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateAssetTargets.cmake"
       NAMESPACE Terreate::)
   endif()
   if(TERREATE_BUILD_PLATFORM)
@@ -1204,6 +1227,12 @@ if(_terreate_has_components)
   if(TERREATE_BUILD_CORE)
     install(EXPORT TerreateCoreTargets
       FILE TerreateCoreTargets.cmake
+      NAMESPACE Terreate::
+      DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
+  endif()
+  if(TERREATE_BUILD_ASSET)
+    install(EXPORT TerreateAssetTargets
+      FILE TerreateAssetTargets.cmake
       NAMESPACE Terreate::
       DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
   endif()

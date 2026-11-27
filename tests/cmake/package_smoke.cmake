@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|platform/(runtime|window|events)|integration/platform_graphics/surface|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|asset/mesh_data|platform/(runtime|window|events)|integration/platform_graphics/surface|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -64,6 +64,7 @@ function(terreate_assert_install_boundary prefix name)
       "include/terreate/result.hpp"
       "include/project/lib.hpp"
       "include/terreate/core.hpp"
+      "include/terreate/asset.hpp"
       "include/terreate/platform.hpp"
       "include/terreate/graphics.hpp")
     if(EXISTS "${prefix}/${_forbidden_path}")
@@ -74,7 +75,18 @@ function(terreate_assert_install_boundary prefix name)
   endforeach()
 endfunction()
 
+# `ARGV3` overrides whether Asset is built and installed. Without it Asset is
+# installed only in the full configuration, so the Core-only, Platform-only and
+# Graphics-only installs keep their meaning.
 function(terreate_package_configure_and_install name platform graphics)
+  if(platform AND graphics)
+    set(_asset ON)
+  else()
+    set(_asset OFF)
+  endif()
+  if(NOT "${ARGV3}" STREQUAL "")
+    set(_asset "${ARGV3}")
+  endif()
   set(_fixture_build "${_terreate_package_root}/${name}/fixture-build")
   set(_prefix "${_terreate_package_root}/${name}/prefix")
   file(REMOVE_RECURSE "${_fixture_build}" "${_prefix}")
@@ -89,6 +101,7 @@ function(terreate_package_configure_and_install name platform graphics)
     "-DTERREATE_SOURCE_DIR:PATH=${_terreate_source_dir}"
     "-DCMAKE_INSTALL_PREFIX:PATH=${_prefix}"
     -DTERREATE_BUILD_CORE=ON
+    "-DTERREATE_BUILD_ASSET=${_asset}"
     "-DTERREATE_BUILD_PLATFORM=${platform}"
     "-DTERREATE_BUILD_GRAPHICS=${graphics}")
   if(platform AND graphics)
@@ -131,6 +144,13 @@ function(terreate_package_configure_and_install name platform graphics)
   endif()
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
+  if(_asset)
+    if(NOT EXISTS "${_prefix}/include/terreate/asset/mesh_data.hpp")
+      message(FATAL_ERROR "${name} install is missing the public Asset mesh_data header")
+    endif()
+  elseif(EXISTS "${_prefix}/include/terreate/asset")
+    message(FATAL_ERROR "${name} install has Asset headers although Asset is not built")
+  endif()
   if(platform)
     foreach(_resource IN ITEMS runtime window events)
       if(NOT EXISTS "${_prefix}/include/terreate/platform/${_resource}.hpp")
@@ -1520,6 +1540,50 @@ int main() {
 terreate_build_consumer(core_only_runtime "${core_only_PREFIX}" Core
   "${_core_source}")
 
+# Asset (#345) alone: CPU-only, so the install needs no Vulkan and no GLFW. The
+# consumer below is configured with both searches disabled, links only Core
+# and Asset, and exercises the installed MeshData.
+terreate_package_configure_and_install(asset_only OFF OFF ON)
+set(_asset_source [=[
+#include <terreate/asset/mesh_data.hpp>
+
+#include <array>
+#include <cstdint>
+#include <cstdio>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#if defined(VK_VERSION_1_0) || defined(VULKAN_HPP_H) || defined(GLFW_VERSION_MAJOR)
+#error "Asset must not expose Vulkan or GLFW"
+#endif
+
+int main() {
+  namespace asset = terreate::asset;
+  const std::array<float, 9> positions{0, 0, 0, 1, 0, 0, 0, 1, 0};
+  auto stream = asset::makeAttributeStream({asset::AttributeSemantic::position, 0, {}},
+                                           asset::AttributeFormat::float32x3, positions);
+  if (!stream) return 1;
+  asset::MeshData mesh;
+  mesh.attributes.push_back(std::move(*stream));
+  mesh.indices = std::vector<std::uint16_t>{0, 1, 2};
+  if (!asset::validate(mesh)) return 2;
+  auto bounds = asset::computeBounds(mesh);
+  if (!bounds || bounds->max[0] != 1.0F) return 3;
+  mesh.bounds = *bounds;
+  auto packed = asset::interleave(mesh);
+  if (!packed || packed->vertices.size() != 36) return 4;
+  mesh.indices = std::vector<std::uint16_t>{0, 1, 3};
+  const auto invalid = asset::validate(mesh);
+  if (invalid || invalid.error().code() != asset::make_error_code(asset::MeshDataError::index_out_of_range))
+    return 5;
+  std::puts("package.asset: mesh=PASS");
+  return 0;
+}
+]=])
+terreate_build_consumer(asset_only_runtime "${asset_only_PREFIX}" Asset
+  "${_asset_source}" "package\\.asset: mesh=PASS")
+
 terreate_package_configure_and_install(platform_only ON OFF)
 # The installed Platform runs on GLFW's null backend, which needs no display.
 set(_platform_source [=[
@@ -1813,6 +1877,8 @@ endfunction()
 # 1. Requesting a component that was not built is a clear configure error
 #    naming the component and the option to enable it.
 foreach(_disabled_case IN ITEMS "core_only;Graphics;GRAPHICS" "core_only;Platform;PLATFORM"
+                                "core_only;Asset;ASSET"
+                                "graphics_only;Asset;ASSET"
                                 "graphics_only;Platform;PLATFORM"
                                 "core_only;IntegrationPlatformGraphics;INTEGRATION_PLATFORM_GRAPHICS"
                                 "platform_only;IntegrationPlatformGraphics;INTEGRATION_PLATFORM_GRAPHICS"
@@ -1854,7 +1920,7 @@ endif()
 # 2. Installed package files and the include directories a consumer receives
 #    must not refer to the source tree or the fixture build trees. The install
 #    prefixes live under the build tree, so paths inside a prefix are allowed.
-foreach(_prefix_name IN ITEMS all_components core_only platform_only graphics_only)
+foreach(_prefix_name IN ITEMS all_components core_only asset_only platform_only graphics_only)
   file(GLOB_RECURSE _package_files "${${_prefix_name}_PREFIX}/*.cmake")
   if(NOT _package_files)
     message(FATAL_ERROR "${_prefix_name} install has no CMake package files")
@@ -1934,6 +2000,53 @@ foreach(_glfw_case IN ITEMS "core_only;Core" "graphics_only;Graphics" "all_compo
   if(NOT _no_glfw_result EQUAL 0)
     message(FATAL_ERROR
       "${_glfw_prefix_name} ${_glfw_components} consumer saw GLFW\n${_no_glfw_output}")
+  endif()
+endforeach()
+
+# 3b. An Asset consumer receives neither Vulkan nor GLFW nor Graphics nor
+#     Platform: the package is configured and built with both searches
+#     disabled, and Terreate::Asset links Core only (#345).
+foreach(_asset_prefix_name IN ITEMS asset_only all_components)
+  terreate_configure_consumer("asset-isolation-${_asset_prefix_name}"
+    "${${_asset_prefix_name}_PREFIX}" [=[
+set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
+set(CMAKE_DISABLE_FIND_PACKAGE_glfw3 TRUE)
+find_package(Terreate REQUIRED COMPONENTS Asset)
+if(NOT TARGET Terreate::Asset OR NOT TARGET Terreate::Core)
+  message(FATAL_ERROR "an Asset request did not import Asset and Core")
+endif()
+foreach(_unexpected IN ITEMS Terreate::Graphics Terreate::Platform
+                             Terreate::IntegrationPlatformGraphics glfw Vulkan::Vulkan)
+  if(TARGET ${_unexpected})
+    message(FATAL_ERROR "an Asset request imported ${_unexpected}")
+  endif()
+endforeach()
+get_target_property(_links Terreate::Asset INTERFACE_LINK_LIBRARIES)
+if(NOT "${_links}" MATCHES "Core" OR
+   "${_links}" MATCHES "[Vv]ulkan|[Gg]lfw|[Gg]raphics|[Pp]latform|[Ii]ntegration")
+  message(FATAL_ERROR "Terreate::Asset has an invalid link closure: ${_links}")
+endif()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/main.cpp"
+  "#include <terreate/asset/mesh_data.hpp>\nint main() { return terreate::asset::validate({}) ? 1 : 0; }\n")
+add_executable(asset_isolation "${CMAKE_CURRENT_BINARY_DIR}/main.cpp")
+target_link_libraries(asset_isolation PRIVATE Terreate::Asset)
+set_target_properties(asset_isolation PROPERTIES
+  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+]=] _asset_isolation_result _asset_isolation_output)
+  if(NOT _asset_isolation_result EQUAL 0)
+    message(FATAL_ERROR
+      "${_asset_prefix_name} Asset consumer needed more than Core\n${_asset_isolation_output}")
+  endif()
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build
+      "${_terreate_package_root}/external/asset-isolation-${_asset_prefix_name}-build"
+    RESULT_VARIABLE _asset_isolation_build_result
+    OUTPUT_VARIABLE _asset_isolation_build_output
+    ERROR_VARIABLE _asset_isolation_build_error)
+  if(NOT _asset_isolation_build_result EQUAL 0)
+    message(FATAL_ERROR
+      "${_asset_prefix_name} Asset consumer failed to build without Vulkan or GLFW\n"
+      "${_asset_isolation_build_output}\n${_asset_isolation_build_error}")
   endif()
 endforeach()
 

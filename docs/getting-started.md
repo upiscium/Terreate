@@ -95,6 +95,7 @@ Continue with the examples, in this order ([all three](examples.md)):
 | --- | --- | --- |
 | understand the request/plan/effective model | [Configuration](architecture/configuration-resolution.md) | [Graphics](api/graphics.md) |
 | handle errors, get diagnostics and validation messages | [Errors](architecture/error-result.md), [Diagnostics](architecture/diagnostics.md), [Debug utils](architecture/debug_utils.md) | [Core](api/core.md) |
+| describe geometry on the CPU (`MeshData`) | [Asset](architecture/asset.md) | [Asset](api/asset.md) |
 | open a window and poll events | [Platform runtime](architecture/platform_runtime.md) | [Platform](api/platform.md) |
 | pick a GPU and create a Device | [Physical device](architecture/physical-device.md), [Logical device](architecture/logical-device.md) | [Graphics](api/graphics.md) |
 | create buffers and images | [Allocator](architecture/allocator.md), [Buffer](architecture/buffer.md), [Image](architecture/image.md) | [Graphics](api/graphics.md) |

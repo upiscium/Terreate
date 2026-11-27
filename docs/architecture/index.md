@@ -27,7 +27,7 @@ target that gathers every optional dependency.
 | Category | Meaning | Today |
 | --- | --- | --- |
 | Core | The minimum contract every component needs: `Result`/`Error`, diagnostics, configuration pattern. Depends on nothing above it. | `Terreate::Core` |
-| Module | A domain capability. It need not be backend-neutral: Graphics states Vulkan as its backend. | `Terreate::Platform` (GLFW), `Terreate::Graphics` (Vulkan) |
+| Module | A domain capability. It need not be backend-neutral: Graphics states Vulkan as its backend. | `Terreate::Asset` (CPU-only), `Terreate::Platform` (GLFW), `Terreate::Graphics` (Vulkan) |
 | Adapter | Connects an external backend to an existing Module contract. A Module never depends on an Adapter. | none yet |
 | Integration | Optional glue that connects the public APIs of several components. | `Terreate::IntegrationPlatformGraphics` |
 | Extension | An optional abstraction or development utility on top of existing components. The lower Modules stay fully usable without it. | none yet |
@@ -68,7 +68,7 @@ The API reference is generated from the `include/` trees only.
 
 ## Build, package and options
 
-- Targets are per component: `Terreate::Core`, `Terreate::Platform`,
+- Targets are per component: `Terreate::Core`, `Terreate::Asset`, `Terreate::Platform`,
   `Terreate::Graphics`, `Terreate::IntegrationPlatformGraphics`. A consumer writes
   `find_package(Terreate REQUIRED COMPONENTS Graphics)` and links the targets it needs.
 - The source tree and the install tree expose the same public target names.

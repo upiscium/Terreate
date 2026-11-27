@@ -15,7 +15,7 @@ if(NOT TARGET Terreate::${_component})
   message(FATAL_ERROR "expected Terreate::${_component} to be configured")
 endif()
 
-foreach(_component_name IN ITEMS Core Platform Graphics)
+foreach(_component_name IN ITEMS Core Asset Platform Graphics)
   string(TOUPPER "${_component_name}" _component_upper)
   if(TERREATE_EXPECT_${_component_upper})
     if(NOT TARGET Terreate::${_component_name})
@@ -45,7 +45,7 @@ elseif(TARGET Terreate::IntegrationPlatformGraphics)
   message(FATAL_ERROR
     "disabled component unexpectedly created Terreate::IntegrationPlatformGraphics")
 endif()
-foreach(_module IN ITEMS core platform graphics)
+foreach(_module IN ITEMS core asset platform graphics)
   if(TARGET terreate_${_module})
     foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
       get_target_property(_module_links terreate_${_module} ${_link_property})
@@ -58,7 +58,7 @@ foreach(_module IN ITEMS core platform graphics)
   endif()
 endforeach()
 
-foreach(_target_name IN ITEMS Core Platform Graphics)
+foreach(_target_name IN ITEMS Core Asset Platform Graphics)
   string(TOLOWER "${_target_name}" _target_lower)
   if(TARGET terreate_${_target_lower})
     foreach(_interface_property IN ITEMS
@@ -84,10 +84,24 @@ endforeach()
 foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
   if(TARGET terreate_core)
     get_target_property(_core_links terreate_core ${_link_property})
-    if("${_core_links}" MATCHES "[Pp]latform|[Gg]raphics")
+    if("${_core_links}" MATCHES "[Aa]sset|[Pp]latform|[Gg]raphics")
       message(FATAL_ERROR
         "Core has an upward component dependency in ${_link_property}: "
         "${_core_links}")
+    endif()
+  endif()
+  # Asset is CPU-only: Core is its only dependency. It never links Graphics,
+  # Platform, an Integration, Vulkan or GLFW, in either direction of usage.
+  if(TARGET terreate_asset)
+    get_target_property(_asset_links terreate_asset ${_link_property})
+    if(NOT "${_asset_links}" MATCHES "[Cc]ore")
+      message(FATAL_ERROR
+        "Asset must retain its public Core dependency in "
+        "${_link_property}: ${_asset_links}")
+    endif()
+    if("${_asset_links}" MATCHES "[Gg]raphics|[Pp]latform|[Ii]ntegration|[Vv]ulkan|glfw")
+      message(FATAL_ERROR
+        "Asset has an invalid dependency in ${_link_property}: ${_asset_links}")
     endif()
   endif()
   if(TARGET terreate_platform)
@@ -118,7 +132,7 @@ foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
   endif()
 endforeach()
 
-if(NOT _component MATCHES "^(Core|Platform|Graphics|IntegrationPlatformGraphics)$")
+if(NOT _component MATCHES "^(Core|Asset|Platform|Graphics|IntegrationPlatformGraphics)$")
   message(FATAL_ERROR "unknown matrix component ${_component}")
 endif()
 
@@ -144,6 +158,21 @@ static_assert(std::is_move_constructible_v<terreate::graphics::Allocator>);
 int main() {
   const auto capabilities = terreate::graphics::queryInstanceCapabilities();
   return capabilities.has_value() ? 0 : 1;
+}
+]=])
+elseif(_component STREQUAL "Asset")
+  # One include proves the Asset usage requirements reach a consumer, and the
+  # consumer sees no Vulkan or GLFW header through them.
+  set(_consumer_source [=[
+#include <terreate/asset/mesh_data.hpp>
+
+#if defined(VK_VERSION_1_0) || defined(VULKAN_HPP_H) || defined(GLFW_VERSION_MAJOR)
+#error "Asset must not expose Vulkan or GLFW"
+#endif
+
+int main() {
+  const terreate::asset::MeshData mesh;
+  return terreate::asset::validate(mesh).has_value() ? 1 : 0;
 }
 ]=])
 elseif(_component STREQUAL "IntegrationPlatformGraphics")

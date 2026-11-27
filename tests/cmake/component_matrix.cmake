@@ -20,8 +20,17 @@ file(MAKE_DIRECTORY "${_terreate_matrix_root}")
 
 # `ARGV5` overrides the expected presence of the Platform-Graphics Integration
 # (default: present when Platform and Graphics are), and `ARGV6` is one extra
-# -D definition, for explicit option cases.
+# -D definition, for explicit option cases. `ARGV7` overrides whether Asset is
+# built and expected (default: when Core is, since Asset defaults to ON).
 function(terreate_matrix_case name component core platform graphics)
+  if("${core}" STREQUAL "ON")
+    set(_asset ON)
+  else()
+    set(_asset OFF)
+  endif()
+  if(NOT "${ARGV7}" STREQUAL "")
+    set(_asset "${ARGV7}")
+  endif()
   if("${platform}" STREQUAL "ON" AND "${graphics}" STREQUAL "ON")
     set(_expect_integration ON)
   else()
@@ -48,10 +57,12 @@ function(terreate_matrix_case name component core platform graphics)
     "-DTERREATE_SOURCE_DIR:PATH=${_terreate_source_dir}"
     "-DTERREATE_MATRIX_COMPONENT=${component}"
     "-DTERREATE_EXPECT_CORE=${core}"
+    "-DTERREATE_EXPECT_ASSET=${_asset}"
     "-DTERREATE_EXPECT_PLATFORM=${platform}"
     "-DTERREATE_EXPECT_GRAPHICS=${graphics}"
     "-DTERREATE_EXPECT_INTEGRATION_PLATFORM_GRAPHICS=${_expect_integration}"
     "-DTERREATE_BUILD_CORE=${core}"
+    "-DTERREATE_BUILD_ASSET=${_asset}"
     "-DTERREATE_BUILD_PLATFORM=${platform}"
     "-DTERREATE_BUILD_GRAPHICS=${graphics}")
   if(NOT "${ARGV6}" STREQUAL "")
@@ -101,6 +112,7 @@ if(DEFINED TERREATE_CXX_COMPILER AND
 endif()
 list(APPEND _direct_configure_command
   -DTERREATE_BUILD_CORE=ON
+  -DTERREATE_BUILD_ASSET=OFF
   -DTERREATE_BUILD_PLATFORM=OFF
   -DTERREATE_BUILD_GRAPHICS=OFF
   -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE)
@@ -125,7 +137,11 @@ if(NOT _direct_build_result EQUAL 0)
     "${_direct_build_output}\n${_direct_build_error}")
 endif()
 
-terreate_matrix_case(core_only Core ON OFF OFF)
+# Asset (#345) is CPU-only: Core plus Asset configures and builds with neither
+# Vulkan nor GLFW discoverable (the direct top-level case below), and an
+# explicit OFF removes the target instead of leaving a stale one.
+terreate_matrix_case(core_only Core ON OFF OFF "" "" OFF)
+terreate_matrix_case(asset_only Asset ON OFF OFF)
 terreate_matrix_case(platform_only Platform ON ON OFF)
 terreate_matrix_case(graphics_only Graphics ON OFF ON)
 # The Integration (#363): on by default when both dependencies are, and an
@@ -133,6 +149,50 @@ terreate_matrix_case(graphics_only Graphics ON OFF ON)
 terreate_matrix_case(integration IntegrationPlatformGraphics ON ON ON)
 terreate_matrix_case(integration_off Graphics ON ON ON OFF
   -DTERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=OFF)
+
+# Top-level Core + Asset with neither Vulkan nor GLFW discoverable: the Asset
+# boundary needs no native dependency.
+set(_direct_asset_binary_dir "${_terreate_matrix_root}/direct_asset_only")
+set(_direct_asset_configure_command
+  "${CMAKE_COMMAND}"
+  -S "${_terreate_source_dir}"
+  -B "${_direct_asset_binary_dir}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _direct_asset_configure_command -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _direct_asset_configure_command
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _direct_asset_configure_command
+  -DTERREATE_BUILD_CORE=ON
+  -DTERREATE_BUILD_ASSET=ON
+  -DTERREATE_BUILD_PLATFORM=OFF
+  -DTERREATE_BUILD_GRAPHICS=OFF
+  -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE
+  -DCMAKE_DISABLE_FIND_PACKAGE_glfw3=TRUE)
+execute_process(
+  COMMAND ${_direct_asset_configure_command}
+  RESULT_VARIABLE _direct_asset_configure_result
+  OUTPUT_VARIABLE _direct_asset_configure_output
+  ERROR_VARIABLE _direct_asset_configure_error)
+if(NOT _direct_asset_configure_result EQUAL 0)
+  message(FATAL_ERROR
+    "direct Asset-only source configuration failed (${_direct_asset_configure_result})\n"
+    "${_direct_asset_configure_output}\n${_direct_asset_configure_error}")
+endif()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" --build "${_direct_asset_binary_dir}"
+  RESULT_VARIABLE _direct_asset_build_result
+  OUTPUT_VARIABLE _direct_asset_build_output
+  ERROR_VARIABLE _direct_asset_build_error)
+if(NOT _direct_asset_build_result EQUAL 0)
+  message(FATAL_ERROR
+    "direct Asset-only source build failed (${_direct_asset_build_result})\n"
+    "${_direct_asset_build_output}\n${_direct_asset_build_error}")
+endif()
 
 # Source-subdirectory consumers must validate the effective Vulkan include
 # order.  The partial directory intentionally appears before a complete
@@ -229,6 +289,7 @@ list(APPEND _source_partial_cmake_command
   "-DTERREATE_SOURCE_DIR:PATH=${_terreate_source_dir}"
   -DTERREATE_MATRIX_COMPONENT=Graphics
   -DTERREATE_EXPECT_CORE=ON
+  -DTERREATE_EXPECT_ASSET=ON
   -DTERREATE_EXPECT_PLATFORM=OFF
   -DTERREATE_EXPECT_GRAPHICS=ON
   -DTERREATE_BUILD_CORE=ON
@@ -347,6 +408,45 @@ function(terreate_matrix_expect_integration_error name missing_option)
       "${_output}\n${_error}")
   endif()
 endfunction()
+
+# Asset needs Core; asking for it without Core is a configure error, never an
+# implicit Core (#345).
+set(_asset_no_core_binary "${_terreate_matrix_root}/asset_without_core")
+set(_asset_no_core_command
+  "${CMAKE_COMMAND}"
+  -S "${_terreate_source_dir}/tests/cmake/matrix-project"
+  -B "${_asset_no_core_binary}")
+if(DEFINED TERREATE_CMAKE_GENERATOR AND
+   NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+  list(APPEND _asset_no_core_command -G "${TERREATE_CMAKE_GENERATOR}")
+endif()
+if(DEFINED TERREATE_CXX_COMPILER AND
+   NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+  list(APPEND _asset_no_core_command
+    "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+endif()
+list(APPEND _asset_no_core_command
+  "-DTERREATE_SOURCE_DIR:PATH=${_terreate_source_dir}"
+  -DTERREATE_MATRIX_COMPONENT=Core
+  -DTERREATE_BUILD_CORE=OFF
+  -DTERREATE_BUILD_ASSET=ON
+  -DTERREATE_BUILD_PLATFORM=OFF
+  -DTERREATE_BUILD_GRAPHICS=OFF)
+execute_process(
+  COMMAND ${_asset_no_core_command}
+  RESULT_VARIABLE _asset_no_core_result
+  OUTPUT_VARIABLE _asset_no_core_output
+  ERROR_VARIABLE _asset_no_core_error)
+if(_asset_no_core_result EQUAL 0)
+  message(FATAL_ERROR "Asset without Core unexpectedly configured")
+endif()
+string(REGEX REPLACE "[ \n]+" " " _asset_no_core_diagnostics
+  "${_asset_no_core_output} ${_asset_no_core_error}")
+if(NOT _asset_no_core_diagnostics MATCHES "Asset.*require Terreate Core")
+  message(FATAL_ERROR
+    "Asset without Core did not report the Core dependency:\n"
+    "${_asset_no_core_diagnostics}")
+endif()
 
 terreate_matrix_expect_integration_error(integration_without_platform PLATFORM)
 terreate_matrix_expect_integration_error(integration_without_graphics GRAPHICS)
