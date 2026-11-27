@@ -1,9 +1,10 @@
-# Asset: MeshData (#345), primitive generators (#346) and ImageData (#276)
+# Asset: MeshData (#345), primitive generators (#346), ImageData and ModelData (#276)
 
 `Terreate::Asset` (`terreate::asset`) holds CPU-side asset data that primitive
 generators, model decoders and rendering code share. Its types are `MeshData`, declared in
 `<terreate/asset/mesh_data.hpp>`, and `ImageData` ([below](#imagedata-276-part-1)), declared in
-`<terreate/asset/image_data.hpp>`.
+`<terreate/asset/image_data.hpp>`, and `ModelData` ([below](#modeldata-276-part-2)), declared in
+`<terreate/asset/model_data.hpp>`.
 
 ## Responsibility and non-goals
 
@@ -107,7 +108,7 @@ convert into them.
 
 ## Relation to ModelData (#276) and GPU conversion (#279)
 
-A `ModelData` (#276) will hold a list of `MeshData` plus materials, nodes and
+A `ModelData` (#276, [below](#modeldata-276-part-2)) holds a list of `MeshData` plus materials, nodes and
 metadata about unsupported features; a glTF primitive maps to one `MeshData`.
 `MeshData` stays usable alone, which is how generators use it.
 
@@ -309,7 +310,7 @@ throws `std::bad_alloc`.
 
 ### Relation to ModelData and GPU conversion
 
-A `ModelData` (#276 part 2, a later change) will hold its images as a list of `ImageData`,
+A `ModelData` ([#276 part 2](#modeldata-276-part-2)) holds its images as a list of `ImageData`,
 with samplers, textures and materials referring to them by index; the decoders #277 and #278
 produce both. Converting an image for the GPU (format mapping, staging, mip upload) is the
 job of the [Asset-Graphics Integration](asset_graphics.md), #279 part 2, through the public
@@ -333,5 +334,135 @@ asset::ImageData whiteTexture() {
   image.subresources = std::move(layout.subresources);
   terreate::unwrap(asset::validate(image));
   return image;
+}
+```
+
+## ModelData (#276 part 2)
+
+`<terreate/asset/model_data.hpp>` holds one decoded model on the CPU: the meshes, images, samplers,
+textures, materials and node hierarchy that a glTF or similar decoder (#277, #278) produces. Like
+`MeshData` and `ImageData` it is an owning, copyable value with public members, a `validate` that returns
+a `Result` with a named error category and no repair, and no GPU type. It adds no dependency: the same
+`terreate_asset` target, Core only.
+
+### Structure and ownership
+
+`ModelData` owns every list by value; all cross references are indices into sibling lists of the same
+`ModelData`, never pointers, so a copy or a move keeps them valid and a copy is fully independent.
+
+| List | Element | References |
+| --- | --- | --- |
+| `meshes` | `MeshData` | none |
+| `primitives` | `ModelPrimitive {mesh, material?}` | `meshes`, `materials` |
+| `images` | `ImageData` | none |
+| `samplers` | `SamplerData {min_filter, mag_filter, mipmap_mode, wrap_u, wrap_v}` | none |
+| `textures` | `TextureData {image, sampler?}` | `images`, `samplers` |
+| `materials` | `MaterialData` (below) | `textures` through `TextureRef {texture, texcoord}` |
+| `nodes` | `ModelNode {name, children, transform, primitive?}` | `nodes`, `primitives` |
+| `scenes` | `ModelScene {name, roots}` | `nodes` |
+| `default_scene` | optional index | `scenes` |
+| `custom`, `unsupported` | `CustomEntry`, `UnsupportedFeature` (the types of `ImageData`) | none |
+
+Unused entries are valid (an unreferenced mesh, material or node is not an error). Sampler enumerators are
+Asset's own (`SamplerFilter`, `SamplerMipmapMode` with a `none` value, `SamplerWrap`) and name no Vulkan
+value; mapping them is the consumer's job. Vectors are plain `std::array<float, N>`; there is no math
+dependency.
+
+A `ModelPrimitive` pairs one `MeshData` with an optional material, the way a glTF primitive does. A node
+places one such primitive through `ModelNode::primitive`. A glTF mesh with several primitives therefore
+becomes one node per primitive under a common parent; Asset does not group primitives into a "mesh" level.
+
+### Node and transform conventions
+
+- The space is right-handed with +Y up, as for `MeshData`; Asset converts nothing.
+- A transform is relative to the parent and is a `std::variant<TrsTransform, MatrixTransform>`, like glTF.
+  `TrsTransform` holds a translation, a rotation quaternion in (x, y, z, w) order (the identity is
+  `0, 0, 0, 1`) and a scale; the matrix it stands for is `T * R * S`. `MatrixTransform` holds 16 floats in
+  column-major order (element `4 * c + r`, translation in elements 12 to 14). The default node transform is
+  the identity TRS.
+- The hierarchy is a forest: a node has at most one parent, and `scenes[i].roots` lists parentless nodes.
+  A node that no scene reaches is valid.
+
+### Materials
+
+`MaterialData` is the glTF 2.0 metallic-roughness model, with the glTF defaults: `base_color_factor` and
+optional `base_color_texture`, `metallic_factor` and `roughness_factor` with an optional
+`metallic_roughness_texture`, an optional `normal_texture` with `normal_scale`, `emissive_factor` with an
+optional `emissive_texture`, an optional `occlusion_texture` with `occlusion_strength`, `alpha_mode`
+(`opaque`, `mask`, `blend`) with `alpha_cutoff`, and `double_sided`. A `TextureRef` is a texture index plus
+the texcoord set that samples it (`TEXCOORD_n` is the `MeshData` attribute `texcoord` with set `n`).
+
+- **Mapping**: core glTF 2.0 PBR (no extensions) maps to these fields without loss: every core material property has a
+  field with the same meaning, and the factor ranges follow core glTF.
+- **Deliberately out of scope**: glTF material extensions (clearcoat, transmission, specular, sheen, IOR,
+  emissive strength, unlit, texture transform and others) and the legacy specular-glossiness model; a
+  decoder lists each it meets in `unsupported`. Rendering the material (shaders, lighting) is the PBR work
+  of #250, not part of Asset.
+- The color interpretation of a texture image (`srgb` for base color and emissive, `linear` or
+  `normal_map` otherwise) belongs to the `ImageData` and is not checked against how a material uses it,
+  because one image may legitimately serve several roles.
+
+### What is not represented
+
+Animation, skins, cameras and lights are not represented in `ModelData`. A decoder that meets any of them
+must record it in `unsupported` (for example `{"animation", "Walk", "..."}`) rather than drop it silently.
+The same holds for anything else it cannot represent. `custom` keeps format-specific data (for example the
+generator name) as key/value entries with non-empty, unique keys.
+
+### ModelData errors
+
+Failures return `ModelDataError` in the category `terreate.asset.model_data`; the Error's context is
+`validate(ModelData)` and its detail names the offending list and index. An invalid `MeshData` or
+`ImageData` is reported as `invalid_mesh` or `invalid_image` with the inner error's category, message and
+detail in the detail text (for example `meshes[2]: terreate.asset.mesh_data: ...`); the inner error code
+itself is not passed through, so test a model with `ModelDataError`.
+
+| `ModelDataError` | Meaning |
+| --- | --- |
+| `index_out_of_range` | any index past the end of its list, including a default scene without scenes |
+| `invalid_mesh` / `invalid_image` | a mesh or image fails its own `validate` |
+| `invalid_enum` | a sampler or alpha-mode enumerator is not a declared value |
+| `invalid_material_value` | base color, metallic, roughness, emissive or occlusion strength outside 0..1 or not finite; `normal_scale` not finite; `alpha_cutoff` negative or not finite |
+| `invalid_transform` | a non-finite TRS or matrix value, or a quaternion whose length is not within 1e-3 of 1 |
+| `node_cycle` | a node is its own ancestor |
+| `multiple_parents` | a node is a child more than once (of two nodes or twice of one) |
+| `invalid_scene_root` | a scene root has a parent or is listed twice in a scene |
+| `missing_texcoord_set` | a material used by a primitive samples a texcoord set that the primitive's mesh lacks |
+| `invalid_custom_entry` / `invalid_unsupported_entry` | an empty or repeated custom key, an empty unsupported kind |
+
+`validate` reports the first violation in the order: meshes, images, samplers, textures, materials,
+primitives, nodes (indices, transforms, child lists), cycles, scenes and default scene, texcoord sets,
+custom entries, unsupported entries. The texcoord rule applies to materials that a primitive uses; a mesh
+may lack a texcoord set that an unused material names. A matrix transform is only checked for finiteness;
+whether it decomposes into translation, rotation and scale is not. `validate` is iterative with memory
+linear in the node count, so a very long node chain cannot overflow the stack. Allocation failure throws
+`std::bad_alloc`.
+
+### Relation to decoders, GPU conversion and rendering
+
+The decoders #277 and #278 produce `ImageData` and `ModelData`. Converting an image or a mesh for the GPU
+is the job of the [Asset-Graphics Integration](asset_graphics.md) (#279: `MeshData` in part 1, `ImageData`
+in part 2); converting a whole `ModelData` to GPU resources is not defined here or by that part, and an
+application walks the lists with the public APIs of both components. Resolving external files a model
+refers to is the resolver of #280. Material rendering and PBR shading are #250. Asset has no Graphics
+dependency, and `ModelData` stays usable on the CPU alone.
+
+```cpp
+#include <terreate/asset/model_data.hpp>
+#include <terreate/asset/primitives.hpp>
+
+namespace asset = terreate::asset;
+
+asset::ModelData oneBox() {
+  asset::ModelData model;
+  model.meshes.push_back(terreate::unwrap(asset::box({})));
+  model.materials.emplace_back();
+  model.primitives.push_back({0, 0});
+  model.nodes.resize(1);
+  model.nodes[0].primitive = 0;
+  model.scenes.push_back({"main", {0}});
+  model.default_scene = 0;
+  terreate::unwrap(asset::validate(model));
+  return model;
 }
 ```

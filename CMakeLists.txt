@@ -502,6 +502,14 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
     set_tests_properties(asset.primitives PROPERTIES
       PASS_REGULAR_EXPRESSION "asset\\.primitives: primitives=PASS"
       FAIL_REGULAR_EXPRESSION "asset\\.primitives: (assertion=FAIL|.*BLOCKED)")
+
+    add_executable(terreate_asset_model_data_tests tests/test_asset_model_data.cpp)
+    target_link_libraries(terreate_asset_model_data_tests PRIVATE Terreate::Asset)
+    terreate_configure_target(terreate_asset_model_data_tests)
+    add_test(NAME asset.model_data COMMAND terreate_asset_model_data_tests)
+    set_tests_properties(asset.model_data PROPERTIES
+      PASS_REGULAR_EXPRESSION "asset\\.model_data: model-data=PASS"
+      FAIL_REGULAR_EXPRESSION "asset\\.model_data: (assertion=FAIL|.*BLOCKED)")
   endif()
 
   if(TERREATE_BUILD_GRAPHICS)

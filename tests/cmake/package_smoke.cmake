@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|asset/(image_data|mesh_data|primitives)|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/mesh_upload)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|asset/(image_data|mesh_data|model_data|primitives)|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/mesh_upload)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -150,7 +150,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(_asset)
-    foreach(_asset_header IN ITEMS image_data mesh_data primitives)
+    foreach(_asset_header IN ITEMS image_data mesh_data model_data primitives)
       if(NOT EXISTS "${_prefix}/include/terreate/asset/${_asset_header}.hpp")
         message(FATAL_ERROR "${name} install is missing the public Asset ${_asset_header} header")
       endif()
@@ -1561,6 +1561,7 @@ terreate_package_configure_and_install(asset_only OFF OFF ON)
 set(_asset_source [=[
 #include <terreate/asset/image_data.hpp>
 #include <terreate/asset/mesh_data.hpp>
+#include <terreate/asset/model_data.hpp>
 #include <terreate/asset/primitives.hpp>
 
 #include <array>
@@ -1615,6 +1616,24 @@ int main() {
   if (truncated ||
       truncated.error().code() != asset::make_error_code(asset::ImageDataError::data_out_of_bounds))
     return 11;
+  // #276 part 2: an installed ModelData with a two-node hierarchy validates, and
+  // a cycle is reported with the named category.
+  asset::ModelData model;
+  auto box = asset::box({});
+  if (!box) return 12;
+  model.meshes.push_back(std::move(*box));
+  model.materials.emplace_back();
+  model.primitives.push_back({0, 0});
+  model.nodes.resize(2);
+  model.nodes[0].children = {1};
+  model.nodes[1].primitive = 0;
+  model.scenes.push_back({"main", {0}});
+  model.default_scene = 0;
+  if (!asset::validate(model)) return 13;
+  model.nodes[1].children = {0};
+  const auto cyclic = asset::validate(model);
+  if (cyclic || cyclic.error().code() != asset::make_error_code(asset::ModelDataError::node_cycle))
+    return 14;
   std::puts("package.asset: mesh=PASS");
   return 0;
 }
