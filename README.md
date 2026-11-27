@@ -134,6 +134,15 @@ one of them is a configure error. Request it with
 `find_package(Terreate REQUIRED COMPONENTS IntegrationAssetGraphics)`, which imports Asset, Graphics and
 Core (and Vulkan, not GLFW).
 
+The stb_image Adapter (#277), `Terreate::AdapterAssetImageStb`, decodes the bytes of a PNG, JPEG, BMP, TGA or
+Radiance HDR in memory into an Asset `ImageData` (`terreate::adapter::asset_image_stb::decodeImage`), with
+decode limits, named errors and diagnostics (see [stb_image Adapter](docs/architecture/asset_image_stb.md)). It reads no
+file and creates no GPU resource; stb_image is a private build input, so a consumer needs nothing but Asset. Its
+option, `TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB`, is on by default only when `TERREATE_BUILD_ASSET` is on and
+`stb_image.h` is found (`TERREATE_STB_INCLUDE_DIR`, the environment variable `STB_INCLUDE` set by the devShell, or a
+standard search); turning it on without Asset or without the header is a configure error. Request it with
+`find_package(Terreate REQUIRED COMPONENTS AdapterAssetImageStb)`, which imports Asset and Core only.
+
 Graphics can also tell, before a Device exists, what a physical device can present
 to a Surface: `<terreate/graphics/presentation.hpp>` (#364) observes it and
 resolves the present queue, format, present mode and `VK_KHR_swapchain` into a

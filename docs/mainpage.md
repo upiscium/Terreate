@@ -15,6 +15,7 @@ namespace each:
 | Graphics | `terreate::graphics` | Vulkan Instance to Swapchain, resources, commands, submission |
 | Platform-Graphics Integration | `terreate::integration::platform_graphics` | A Window's Surface |
 | Asset-Graphics Integration | `terreate::integration::asset_graphics` | A MeshData to Graphics buffers and upload items |
+| stb_image Adapter | `terreate::adapter::asset_image_stb` | Image bytes in memory to a CPU-side `ImageData` |
 
 Use the *Namespaces* and *Files* tabs to navigate by component. Contracts and
 design notes are in the architecture documentation (see the repository's

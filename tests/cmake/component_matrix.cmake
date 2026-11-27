@@ -23,7 +23,10 @@ file(MAKE_DIRECTORY "${_terreate_matrix_root}")
 # -D definition, for explicit option cases. `ARGV7` overrides whether Asset is
 # built and expected (default: when Core is, since Asset defaults to ON), and
 # `ARGV8` overrides the expected presence of the Asset-Graphics Integration
-# (default: present when Asset and Graphics are both built).
+# (default: present when Asset and Graphics are both built). `ARGV9` overrides the
+# expected presence of the stb_image Adapter (default: present when Asset is built; the
+# case passes the option explicitly), and `ARGV10` = DEFAULT_OPTION leaves the Adapter's
+# option unset so that its own default decides.
 function(terreate_matrix_case name component core platform graphics)
   if("${core}" STREQUAL "ON")
     set(_asset ON)
@@ -49,6 +52,14 @@ function(terreate_matrix_case name component core platform graphics)
   if(NOT "${ARGV8}" STREQUAL "")
     set(_expect_asset_graphics "${ARGV8}")
   endif()
+  if("${_asset}" STREQUAL "ON")
+    set(_expect_adapter ON)
+  else()
+    set(_expect_adapter OFF)
+  endif()
+  if(NOT "${ARGV9}" STREQUAL "")
+    set(_expect_adapter "${ARGV9}")
+  endif()
   set(_binary_dir "${_terreate_matrix_root}/${name}")
   set(_configure_command
     "${CMAKE_COMMAND}"
@@ -72,10 +83,14 @@ function(terreate_matrix_case name component core platform graphics)
     "-DTERREATE_EXPECT_GRAPHICS=${graphics}"
     "-DTERREATE_EXPECT_INTEGRATION_PLATFORM_GRAPHICS=${_expect_integration}"
     "-DTERREATE_EXPECT_INTEGRATION_ASSET_GRAPHICS=${_expect_asset_graphics}"
+    "-DTERREATE_EXPECT_ADAPTER_ASSET_IMAGE_STB=${_expect_adapter}"
     "-DTERREATE_BUILD_CORE=${core}"
     "-DTERREATE_BUILD_ASSET=${_asset}"
     "-DTERREATE_BUILD_PLATFORM=${platform}"
     "-DTERREATE_BUILD_GRAPHICS=${graphics}")
+  if(NOT "${ARGV10}" STREQUAL "DEFAULT_OPTION")
+    list(APPEND _configure_command "-DTERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=${_expect_adapter}")
+  endif()
   if(NOT "${ARGV6}" STREQUAL "")
     list(APPEND _configure_command "${ARGV6}")
   endif()
@@ -171,6 +186,26 @@ terreate_matrix_case(integration_asset_graphics IntegrationAssetGraphics ON OFF 
 terreate_matrix_case(integration_asset_graphics_off Graphics ON OFF ON ""
   -DTERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS=OFF "" OFF)
 terreate_matrix_case(graphics_without_asset Graphics ON OFF ON "" "" OFF)
+
+# The stb_image Adapter (#277): the build input is the project devShell's stb (STB_INCLUDE).
+if(NOT DEFINED ENV{STB_INCLUDE} OR "$ENV{STB_INCLUDE}" STREQUAL "" OR
+   NOT EXISTS "$ENV{STB_INCLUDE}/stb_image.h")
+  message(FATAL_ERROR
+    "the stb_image Adapter cases require the pinned stb headers (STB_INCLUDE)")
+endif()
+# With Asset it is built, and Asset, Graphics and Platform stay free of it. An explicit
+# OFF is respected. Left unset, its default is ON when Asset is on and stb_image.h is found
+# (here through STB_INCLUDE), and OFF when the stb directory that was asked for is wrong:
+# a default never turns into an error, an explicit ON does (below).
+terreate_matrix_case(adapter_asset_image_stb AdapterAssetImageStb ON OFF OFF)
+terreate_matrix_case(adapter_asset_image_stb_with_graphics AdapterAssetImageStb ON ON ON)
+terreate_matrix_case(adapter_off Asset ON OFF OFF "" -DTERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=OFF
+  "" "" OFF)
+terreate_matrix_case(adapter_default_on AdapterAssetImageStb ON OFF OFF "" "" "" "" ON
+  DEFAULT_OPTION)
+terreate_matrix_case(adapter_default_without_stb Asset ON OFF OFF ""
+  "-DTERREATE_STB_INCLUDE_DIR=${_terreate_matrix_root}/no-such-stb" "" "" OFF DEFAULT_OPTION)
+terreate_matrix_case(adapter_default_without_asset Core ON OFF OFF "" "" OFF "" OFF DEFAULT_OPTION)
 
 # Top-level Core + Asset with neither Vulkan nor GLFW discoverable: the Asset
 # boundary needs no native dependency.
@@ -521,3 +556,55 @@ endfunction()
 
 terreate_matrix_expect_asset_graphics_error(asset_graphics_without_asset ASSET)
 terreate_matrix_expect_asset_graphics_error(asset_graphics_without_graphics GRAPHICS)
+
+# The stb_image Adapter needs Asset and a stb_image.h: asking for it without one of them is
+# a configure error that names what is missing, never a silent correction or a silent
+# switch-off (#277). `extra_environment` is passed to the configure step as `NAME=value`.
+function(terreate_matrix_expect_adapter_error name asset stb_dir expected_message)
+  set(_binary "${_terreate_matrix_root}/${name}")
+  set(_command "${CMAKE_COMMAND}" -E env ${ARGN}
+    "${CMAKE_COMMAND}"
+    -S "${_terreate_source_dir}/tests/cmake/matrix-project"
+    -B "${_binary}")
+  if(DEFINED TERREATE_CMAKE_GENERATOR AND
+     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+    list(APPEND _command -G "${TERREATE_CMAKE_GENERATOR}")
+  endif()
+  if(DEFINED TERREATE_CXX_COMPILER AND
+     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+    list(APPEND _command "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+  endif()
+  list(APPEND _command
+    "-DTERREATE_SOURCE_DIR:PATH=${_terreate_source_dir}"
+    -DTERREATE_MATRIX_COMPONENT=Core
+    -DTERREATE_BUILD_CORE=ON
+    -DTERREATE_BUILD_ASSET=${asset}
+    -DTERREATE_BUILD_PLATFORM=OFF
+    -DTERREATE_BUILD_GRAPHICS=OFF
+    -DTERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=ON)
+  if(NOT "${stb_dir}" STREQUAL "")
+    list(APPEND _command "-DTERREATE_STB_INCLUDE_DIR=${stb_dir}")
+  endif()
+  execute_process(
+    COMMAND ${_command}
+    RESULT_VARIABLE _result
+    OUTPUT_VARIABLE _output
+    ERROR_VARIABLE _error)
+  if(_result EQUAL 0)
+    message(FATAL_ERROR "${name}: the unsatisfiable Adapter request unexpectedly configured")
+  endif()
+  string(REGEX REPLACE "[ \n]+" " " _diagnostics "${_output} ${_error}")
+  if(NOT _diagnostics MATCHES "${expected_message}")
+    message(FATAL_ERROR
+      "${name}: the diagnostic did not match '${expected_message}':\n${_output}\n${_error}")
+  endif()
+endfunction()
+
+terreate_matrix_expect_adapter_error(adapter_without_asset OFF ""
+  "TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=ON requires TERREATE_BUILD_ASSET=ON")
+terreate_matrix_expect_adapter_error(adapter_without_stb ON
+  "${_terreate_matrix_root}/no-such-stb"
+  "needs stb_image.h, but TERREATE_STB_INCLUDE_DIR does not name a directory that contains it")
+terreate_matrix_expect_adapter_error(adapter_bad_environment ON ""
+  "needs stb_image.h, but STB_INCLUDE does not name a directory that contains it"
+  "STB_INCLUDE=${_terreate_matrix_root}/no-such-stb")

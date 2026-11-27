@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|asset/(decode|image_data|mesh_data|model_data|primitives|resource_resolver)|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/(mesh_upload|mesh_upload_convenience|image_upload))|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|asset/(decode|image_data|mesh_data|model_data|primitives|resource_resolver)|adapter/asset_image_stb/decoder|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/(mesh_upload|mesh_upload_convenience|image_upload))|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -113,6 +113,13 @@ function(terreate_package_configure_and_install name platform graphics)
     list(APPEND _configure_command -DTERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS=ON)
   else()
     list(APPEND _configure_command -DTERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS=OFF)
+  endif()
+  # The stb_image Adapter (#277) follows Asset here, explicitly; its stb_image.h comes from
+  # the project devShell (STB_INCLUDE), which is a build input of the fixture only.
+  if(_asset)
+    list(APPEND _configure_command -DTERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=ON)
+  else()
+    list(APPEND _configure_command -DTERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=OFF)
   endif()
 
   execute_process(
@@ -185,6 +192,28 @@ function(terreate_package_configure_and_install name platform graphics)
   elseif(EXISTS "${_prefix}/include/terreate/integration/asset_graphics")
     message(FATAL_ERROR "${name} install has Asset-Graphics headers without both dependencies")
   endif()
+  if(_asset)
+    if(NOT EXISTS "${_prefix}/include/terreate/adapter/asset_image_stb/decoder.hpp")
+      message(FATAL_ERROR "${name} install is missing the public stb_image Adapter decoder header")
+    endif()
+  elseif(EXISTS "${_prefix}/include/terreate/adapter")
+    message(FATAL_ERROR "${name} install has Adapter headers without Asset")
+  endif()
+  # stb_image is a build input of the Adapter's static library, never installed and never
+  # named by the package: no stb header in the install tree, and no package file that refers
+  # to it (by header, by variable or by its Nix store path).
+  file(GLOB_RECURSE _installed_stb "${_prefix}/*stb_image*")
+  if(_installed_stb)
+    message(FATAL_ERROR "${name} install contains stb_image files: ${_installed_stb}")
+  endif()
+  file(GLOB_RECURSE _installed_cmake_files "${_prefix}/*.cmake")
+  foreach(_installed_cmake_file IN LISTS _installed_cmake_files)
+    file(READ "${_installed_cmake_file}" _installed_cmake_contents)
+    if("${_installed_cmake_contents}" MATCHES "stb_image|STB_INCLUDE|TERREATE_STB|stb-[0-9]")
+      message(FATAL_ERROR
+        "${name} package file refers to stb_image: ${_installed_cmake_file}")
+    endif()
+  endforeach()
   if(graphics)
     foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write specialization pipeline_layout compute_pipeline graphics_pipeline pipeline_commands rendering_commands submission retirement image image_view sampler debug_utils surface presentation swapchain swapchain_frame swapchain_retirement synchronization)
       if(NOT EXISTS "${_prefix}/include/terreate/graphics/${_resource}.hpp")
@@ -1806,6 +1835,58 @@ int main() {
 terreate_build_consumer(asset_graphics_runtime "${all_components_PREFIX}"
   IntegrationAssetGraphics "${_asset_graphics_source}" "package\\.asset_graphics: plan=PASS")
 
+# The installed stb_image Adapter (#277): a consumer that links only the Adapter decodes a
+# tiny embedded PNG into an ImageData and sees the named errors. No Vulkan, no GLFW, no stb
+# on the consumer side: the Adapter's static library carries stb_image.
+set(_image_stb_source [=[
+#include <terreate/adapter/asset_image_stb/decoder.hpp>
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <span>
+
+#if defined(STBI_INCLUDE_STB_IMAGE_H)
+#error "the Adapter's header must not expose stb_image"
+#endif
+
+namespace {
+constexpr std::uint8_t png[] = { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xe0, 0x12, 0x91, 0xd3, 0x00, 0x00, 0x00, 0xcd, 0x00, 0x65, 0xb5, 0xc7, 0x96, 0x52, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82 };
+}
+
+int main() {
+  namespace asset = terreate::asset;
+  namespace stb = terreate::adapter::asset_image_stb;
+  const asset::DecodeInput input{std::as_bytes(std::span{png}), asset::makeSourceIdentity("embedded.png")};
+  const auto decoded = stb::decodeImage(input);
+  if (!decoded) return 1;
+  const asset::ImageData &image = decoded->image;
+  if (image.format != asset::PixelFormat::rgba8 || image.extent.width != 1 || image.extent.height != 1 ||
+      image.alpha != asset::AlphaMode::straight || image.data.size() != 4 ||
+      std::to_integer<int>(image.data[0]) != 10 || std::to_integer<int>(image.data[3]) != 40 ||
+      !asset::validate(image).has_value() || decoded->source.name != "embedded.png" ||
+      decoded->native.container != stb::ImageContainer::png)
+    return 2;
+  const auto refused = stb::decodeImage({});
+  if (refused || refused.error().code() != stb::make_error_code(stb::ImageDecodeError::malformed_image))
+    return 3;
+  asset::DecodeLimits limits;
+  limits.max_input_bytes = 8;
+  stb::ImageDecodeOptions options;
+  options.limits = limits;
+  const auto too_large = stb::decodeImage(input, options);
+  if (too_large || too_large.error().code() != asset::make_error_code(asset::DecodeError::input_too_large))
+    return 4;
+  std::puts("package.adapter_asset_image_stb: decode=PASS");
+  return 0;
+}
+]=])
+foreach(_image_stb_prefix_name IN ITEMS asset_only all_components)
+  terreate_build_consumer(image_stb_${_image_stb_prefix_name}_runtime
+    "${${_image_stb_prefix_name}_PREFIX}" AdapterAssetImageStb "${_image_stb_source}"
+    "package\\.adapter_asset_image_stb: decode=PASS")
+endforeach()
+
 terreate_package_configure_and_install(graphics_only OFF ON)
 terreate_build_consumer(graphics_only_runtime "${graphics_only_PREFIX}" Graphics
   "${_graphics_consumer_source}")
@@ -2035,7 +2116,10 @@ foreach(_disabled_case IN ITEMS "core_only;Graphics;GRAPHICS" "core_only;Platfor
                                 "graphics_only;IntegrationPlatformGraphics;INTEGRATION_PLATFORM_GRAPHICS"
                                 "core_only;IntegrationAssetGraphics;INTEGRATION_ASSET_GRAPHICS"
                                 "asset_only;IntegrationAssetGraphics;INTEGRATION_ASSET_GRAPHICS"
-                                "graphics_only;IntegrationAssetGraphics;INTEGRATION_ASSET_GRAPHICS")
+                                "graphics_only;IntegrationAssetGraphics;INTEGRATION_ASSET_GRAPHICS"
+                                "core_only;AdapterAssetImageStb;ADAPTER_ASSET_IMAGE_STB"
+                                "platform_only;AdapterAssetImageStb;ADAPTER_ASSET_IMAGE_STB"
+                                "graphics_only;AdapterAssetImageStb;ADAPTER_ASSET_IMAGE_STB")
   list(GET _disabled_case 0 _disabled_prefix_name)
   list(GET _disabled_case 1 _disabled_component)
   list(GET _disabled_case 2 _disabled_option)
@@ -2091,9 +2175,10 @@ foreach(_prefix_name IN ITEMS all_components core_only asset_only platform_only 
 endforeach()
 terreate_configure_consumer(source-independence "${_all_prefix}" [=[
 find_package(Terreate REQUIRED COMPONENTS Core Asset Platform Graphics IntegrationPlatformGraphics
-                                          IntegrationAssetGraphics)
+                                          IntegrationAssetGraphics AdapterAssetImageStb)
 foreach(_target IN ITEMS Terreate::Core Terreate::Asset Terreate::Platform Terreate::Graphics
-                         Terreate::IntegrationPlatformGraphics Terreate::IntegrationAssetGraphics)
+                         Terreate::IntegrationPlatformGraphics Terreate::IntegrationAssetGraphics
+                         Terreate::AdapterAssetImageStb)
   foreach(_property IN ITEMS INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
     get_target_property(_includes ${_target} ${_property})
     if(NOT _includes)
@@ -2296,6 +2381,86 @@ endif()
       "${_graphics_prefix_name} Graphics consumer received Asset\n${_graphics_no_asset_output}")
   endif()
 endforeach()
+
+# 7. The stb_image Adapter (#277) receives exactly Asset (and Core through it): no Vulkan,
+#    no GLFW, no Graphics, no Platform, no Integration, and no stb (the consumer is
+#    configured and built with the Vulkan and GLFW searches disabled and sees no stb
+#    anywhere in the usage requirements). The reverse holds too: no other component links
+#    the Adapter.
+foreach(_stb_prefix_name IN ITEMS asset_only all_components)
+  terreate_configure_consumer("image-stb-isolation-${_stb_prefix_name}"
+    "${${_stb_prefix_name}_PREFIX}" [=[
+set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
+set(CMAKE_DISABLE_FIND_PACKAGE_glfw3 TRUE)
+find_package(Terreate REQUIRED COMPONENTS AdapterAssetImageStb)
+foreach(_needed IN ITEMS Terreate::Core Terreate::Asset Terreate::AdapterAssetImageStb)
+  if(NOT TARGET ${_needed})
+    message(FATAL_ERROR "an Adapter request did not import ${_needed}")
+  endif()
+endforeach()
+foreach(_unexpected IN ITEMS Terreate::Graphics Terreate::Platform
+                             Terreate::IntegrationPlatformGraphics Terreate::IntegrationAssetGraphics
+                             glfw Vulkan::Vulkan stb)
+  if(TARGET ${_unexpected})
+    message(FATAL_ERROR "an Adapter request imported ${_unexpected}")
+  endif()
+endforeach()
+get_target_property(_links Terreate::AdapterAssetImageStb INTERFACE_LINK_LIBRARIES)
+if(NOT "${_links}" STREQUAL "Terreate::Asset")
+  message(FATAL_ERROR "the Adapter must link exactly Asset: ${_links}")
+endif()
+foreach(_property IN ITEMS INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
+                           INTERFACE_COMPILE_DEFINITIONS INTERFACE_COMPILE_OPTIONS
+                           INTERFACE_LINK_LIBRARIES)
+  get_target_property(_value Terreate::AdapterAssetImageStb ${_property})
+  if("${_value}" MATCHES "stb_image|stb-[0-9]|STB_")
+    message(FATAL_ERROR "stb_image leaked into the Adapter's ${_property}: ${_value}")
+  endif()
+endforeach()
+foreach(_target IN ITEMS Terreate::Core Terreate::Asset)
+  get_target_property(_other_links ${_target} INTERFACE_LINK_LIBRARIES)
+  if("${_other_links}" MATCHES "[Aa]dapter|[Ss]tb")
+    message(FATAL_ERROR "${_target} links the Adapter: ${_other_links}")
+  endif()
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/main.cpp"
+  "#include <terreate/adapter/asset_image_stb/decoder.hpp>\nint main() { return terreate::adapter::asset_image_stb::decodeImage({}) ? 1 : 0; }\n")
+add_executable(image_stb_isolation "${CMAKE_CURRENT_BINARY_DIR}/main.cpp")
+target_link_libraries(image_stb_isolation PRIVATE Terreate::AdapterAssetImageStb)
+set_target_properties(image_stb_isolation PROPERTIES
+  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+]=] _image_stb_isolation_result _image_stb_isolation_output)
+  if(NOT _image_stb_isolation_result EQUAL 0)
+    message(FATAL_ERROR
+      "${_stb_prefix_name} Adapter consumer needed more than Asset\n${_image_stb_isolation_output}")
+  endif()
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build
+      "${_terreate_package_root}/external/image-stb-isolation-${_stb_prefix_name}-build"
+    RESULT_VARIABLE _image_stb_isolation_build_result
+    OUTPUT_VARIABLE _image_stb_isolation_build_output
+    ERROR_VARIABLE _image_stb_isolation_build_error)
+  if(NOT _image_stb_isolation_build_result EQUAL 0)
+    message(FATAL_ERROR
+      "${_stb_prefix_name} Adapter consumer failed to build without Vulkan, GLFW or stb\n"
+      "${_image_stb_isolation_build_output}\n${_image_stb_isolation_build_error}")
+  endif()
+endforeach()
+# The components other than the Adapter never link it, in the full install.
+terreate_configure_consumer(no-link-to-adapter "${_all_prefix}" [=[
+find_package(Terreate REQUIRED COMPONENTS Core Asset Platform Graphics IntegrationPlatformGraphics
+                                          IntegrationAssetGraphics AdapterAssetImageStb)
+foreach(_target IN ITEMS Terreate::Core Terreate::Asset Terreate::Platform Terreate::Graphics
+                         Terreate::IntegrationPlatformGraphics Terreate::IntegrationAssetGraphics)
+  get_target_property(_links ${_target} INTERFACE_LINK_LIBRARIES)
+  if("${_links}" MATCHES "[Aa]dapter|[Ss]tb")
+    message(FATAL_ERROR "${_target} links the Adapter: ${_links}")
+  endif()
+endforeach()
+]=] _no_link_adapter_result _no_link_adapter_output)
+if(NOT _no_link_adapter_result EQUAL 0)
+  message(FATAL_ERROR "a component links the stb_image Adapter\n${_no_link_adapter_output}")
+endif()
 
 # Printed last: any failure above stops the script before this line.
 message(STATUS "package.external_consumer: disabled-diagnostic=PASS "

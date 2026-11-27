@@ -49,6 +49,47 @@ endif()
 option(TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS
   "Build the optional Terreate Asset-Graphics Integration component"
   ${_terreate_integration_asset_graphics_default})
+# The stb_image Adapter (#277) decodes baseline image formats from memory into an
+# Asset ImageData. stb_image is a single header compiled into the Adapter's static
+# library only: it is a build-time input, never a package dependency. Where the
+# header comes from, in order: the cache variable TERREATE_STB_INCLUDE_DIR, the
+# environment variable STB_INCLUDE (the project devShell sets it, like
+# VULKAN_HEADERS_INCLUDE), then a standard search for stb_image.h (also below an
+# `stb` directory). The first one that is set decides: a set but wrong value is an
+# error, never a fall-through to another stb.
+set(TERREATE_STB_INCLUDE_DIR "" CACHE PATH
+  "Directory that contains stb_image.h (AdapterAssetImageStb build input)")
+set(_terreate_stb_include_dir "")
+if(NOT "${TERREATE_STB_INCLUDE_DIR}" STREQUAL "")
+  set(_terreate_stb_include_source "TERREATE_STB_INCLUDE_DIR")
+  set(_terreate_stb_include_dir "${TERREATE_STB_INCLUDE_DIR}")
+elseif(DEFINED ENV{STB_INCLUDE} AND NOT "$ENV{STB_INCLUDE}" STREQUAL "")
+  set(_terreate_stb_include_source "STB_INCLUDE")
+  set(_terreate_stb_include_dir "$ENV{STB_INCLUDE}")
+endif()
+if(NOT "${_terreate_stb_include_dir}" STREQUAL "")
+  if(NOT EXISTS "${_terreate_stb_include_dir}/stb_image.h")
+    set(_terreate_stb_include_dir "")
+    set(_terreate_stb_invalid_source "${_terreate_stb_include_source}")
+  endif()
+else()
+  unset(_terreate_stb_include_dir)
+  find_path(_terreate_stb_include_dir NAMES stb_image.h PATH_SUFFIXES stb NO_CACHE)
+  if(NOT _terreate_stb_include_dir)
+    set(_terreate_stb_include_dir "")
+  endif()
+endif()
+# On by default only when Asset is on and a stb_image.h was found. Asking for it
+# without Asset, or without stb, is a configure error below, never a silent
+# correction.
+if(TERREATE_BUILD_ASSET AND NOT "${_terreate_stb_include_dir}" STREQUAL "")
+  set(_terreate_adapter_asset_image_stb_default ON)
+else()
+  set(_terreate_adapter_asset_image_stb_default OFF)
+endif()
+option(TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB
+  "Build the optional Terreate stb_image Adapter (decodes PNG/JPEG/BMP/TGA/HDR to Asset ImageData)"
+  ${_terreate_adapter_asset_image_stb_default})
 # The examples use the Integration and follow its actual setting by default (so
 # the gate compiles them, and turning the Integration off turns them off); they
 # are not installed. Asking for them without the
@@ -418,6 +459,29 @@ if(TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS)
   endforeach()
 endif()
 
+if(TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB)
+  if(NOT TERREATE_BUILD_ASSET)
+    message(FATAL_ERROR
+      "TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=ON requires "
+      "TERREATE_BUILD_ASSET=ON; Terreate does not enable a component implicitly. "
+      "Enable it, or set TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=OFF")
+  endif()
+  if(DEFINED _terreate_stb_invalid_source)
+    message(FATAL_ERROR
+      "TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=ON needs stb_image.h, but "
+      "${_terreate_stb_invalid_source} does not name a directory that contains it. "
+      "Fix it, or set TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=OFF")
+  endif()
+  if("${_terreate_stb_include_dir}" STREQUAL "")
+    message(FATAL_ERROR
+      "TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=ON needs stb_image.h, which was not "
+      "found. Set TERREATE_STB_INCLUDE_DIR (or the environment variable STB_INCLUDE) "
+      "to the directory that contains it, or set "
+      "TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=OFF")
+  endif()
+  message(STATUS "stb_image include directory: ${_terreate_stb_include_dir}")
+endif()
+
 # Keep C++ policy on every component target, including when Terreate is added
 # as a subdirectory by a consumer.  The private compiler context is applied as
 # compile options rather than a link dependency, so it can never leak into an
@@ -453,6 +517,9 @@ if(TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS)
 endif()
 if(TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS)
   add_subdirectory(integrations/asset-graphics)
+endif()
+if(TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB)
+  add_subdirectory(adapters/asset-image-stb)
 endif()
 
 if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
@@ -1180,6 +1247,22 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
     endif()
   endif()
 
+  # #277: the stb_image Adapter decodes in-memory bytes into an ImageData. The test is
+  # CPU-only: it links the Adapter (and so Asset) alone, with no Vulkan, no Graphics, no
+  # Platform, no display, no file system and no OS-, compiler- or linker-specific
+  # mechanism.
+  if(TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB)
+    add_executable(terreate_adapter_asset_image_stb_tests
+      tests/test_adapter_asset_image_stb.cpp)
+    target_link_libraries(terreate_adapter_asset_image_stb_tests PRIVATE
+      Terreate::AdapterAssetImageStb)
+    terreate_configure_target(terreate_adapter_asset_image_stb_tests)
+    add_test(NAME adapter.asset_image_stb COMMAND terreate_adapter_asset_image_stb_tests)
+    set_tests_properties(adapter.asset_image_stb PROPERTIES
+      PASS_REGULAR_EXPRESSION "adapter\\.asset_image_stb: image-stb=PASS"
+      FAIL_REGULAR_EXPRESSION "adapter\\.asset_image_stb: (assertion=FAIL|.*BLOCKED)")
+  endif()
+
   # #279 part 1: a MeshData becomes Graphics buffers and upload items. `plan` is
   # CPU only; the GPU test needs the validation layer and a device, and fails
   # (never passes) without the layer. No linker or platform mechanism is used.
@@ -1347,6 +1430,11 @@ if(_terreate_has_components)
       FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateIntegrationAssetGraphicsTargets.cmake"
       NAMESPACE Terreate::)
   endif()
+  if(TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB)
+    export(TARGETS terreate_adapter_asset_image_stb
+      FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateAdapterAssetImageStbTargets.cmake"
+      NAMESPACE Terreate::)
+  endif()
 
   set(_terreate_build_config "${CMAKE_CURRENT_BINARY_DIR}/TerreateConfig.cmake")
   set(_terreate_install_config
@@ -1420,6 +1508,12 @@ if(_terreate_has_components)
   if(TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS)
     install(EXPORT TerreateIntegrationAssetGraphicsTargets
       FILE TerreateIntegrationAssetGraphicsTargets.cmake
+      NAMESPACE Terreate::
+      DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
+  endif()
+  if(TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB)
+    install(EXPORT TerreateAdapterAssetImageStbTargets
+      FILE TerreateAdapterAssetImageStbTargets.cmake
       NAMESPACE Terreate::
       DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
   endif()
