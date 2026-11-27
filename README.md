@@ -127,7 +127,7 @@ plans an Asset `MeshData` as vertex and index buffers, creates them and returns 
 `graphics::prepareUploadBatch`, in three explicit steps that record, submit and wait for nothing (see
 [Asset-Graphics Integration](docs/architecture/asset_graphics.md)). Part 2 does the same for an `ImageData`: it plans the
 Vulkan format and one copy region per mip and layer, creates the image (no view, no sampler) and returns the upload
-items; mips are not generated and no layout transition is recorded (reserved opt-in follow-ups #467 and #468). Asset does not depend on Graphics
+items; mips are not generated and no layout transition is recorded (reserved opt-in follow-ups #467 and #468). For meshes only, a beginner layer (#463) adds `defaultMeshAttributeBindings`, a non-blocking `submitMeshUpload` (never waits; returns the buffers, the staging owner and the submission receipt for a `RetirementQueue`) and a blocking `uploadMeshBlocking` (own pool, command buffer and fence; the name says it waits); the image convenience waits for #468. Asset does not depend on Graphics
 and Graphics does not depend on Asset. Its option, `TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS`, is on by
 default only when both `TERREATE_BUILD_ASSET` and `TERREATE_BUILD_GRAPHICS` are, and turning it on without
 one of them is a configure error. Request it with

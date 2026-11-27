@@ -89,6 +89,31 @@ Continue with the examples, in this order ([all three](examples.md)):
 2. **Textured quad** (`examples/textured_quad`): vertex, index and uniform buffers, an uploaded texture,
    a descriptor set and depth. It also keeps a gap report of what the API could not yet express.
 
+### Your first mesh on the GPU
+
+With the optional Asset-Graphics Integration (`Terreate::IntegrationAssetGraphics`), one call puts a mesh on
+the GPU. It **blocks** until the copy is done, which is fine at start-up:
+
+```cpp
+#include <terreate/asset/primitives.hpp>
+#include <terreate/integration/asset_graphics/mesh_upload_convenience.hpp>
+
+namespace ag = terreate::integration::asset_graphics;
+
+auto mesh = terreate::unwrap(terreate::asset::box({}));
+// An empty description uses the default shader locations:
+// position 0, normal 1, texcoord 2, color 3, tangent 4 (only what the mesh has).
+auto uploaded = terreate::unwrap(ag::uploadMeshBlocking(device, allocator, queue, mesh, 10'000'000'000));
+// uploaded.buffers.vertex and uploaded.buffers.index hold the mesh; uploaded.plan.applyTo(pipeline)
+// fills the pipeline's vertex input.
+```
+
+When you cannot stall, `submitMeshUpload` does the same without waiting: you pass your own command buffer,
+fence and queue, and it returns the buffers, the staging owner and the receipt for your
+`RetirementQueue`. Both are written on the three explicit steps, which
+[the page on the Integration](architecture/asset_graphics.md) lists one by one. Images have no convenience
+yet (it waits for the layout-transition option, #468).
+
 ## 4. Where to look next
 
 | I want to... | Read | API reference |
@@ -97,6 +122,7 @@ Continue with the examples, in this order ([all three](examples.md)):
 | handle errors, get diagnostics and validation messages | [Errors](architecture/error-result.md), [Diagnostics](architecture/diagnostics.md), [Debug utils](architecture/debug_utils.md) | [Core](api/core.md) |
 | describe geometry on the CPU (`MeshData`, primitive generators) | [Asset](architecture/asset.md) | [Asset](api/asset.md) |
 | upload a `MeshData` to GPU buffers, explicitly | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
+| upload a `MeshData` in one call (beginner path: `uploadMeshBlocking`, or non-blocking `submitMeshUpload`) | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | upload an `ImageData` to a GPU image, explicitly | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | open a window and poll events | [Platform runtime](architecture/platform_runtime.md) | [Platform](api/platform.md) |
 | pick a GPU and create a Device | [Physical device](architecture/physical-device.md), [Logical device](architecture/logical-device.md) | [Graphics](api/graphics.md) |

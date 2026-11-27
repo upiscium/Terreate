@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|asset/(image_data|mesh_data|model_data|primitives)|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/(mesh_upload|image_upload))|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|asset/(image_data|mesh_data|model_data|primitives)|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/(mesh_upload|mesh_upload_convenience|image_upload))|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -178,6 +178,9 @@ function(terreate_package_configure_and_install name platform graphics)
     endif()
     if(NOT EXISTS "${_prefix}/include/terreate/integration/asset_graphics/image_upload.hpp")
       message(FATAL_ERROR "${name} install is missing the public Asset-Graphics image_upload header")
+    endif()
+    if(NOT EXISTS "${_prefix}/include/terreate/integration/asset_graphics/mesh_upload_convenience.hpp")
+      message(FATAL_ERROR "${name} install is missing the public Asset-Graphics mesh_upload_convenience header")
     endif()
   elseif(EXISTS "${_prefix}/include/terreate/integration/asset_graphics")
     message(FATAL_ERROR "${name} install has Asset-Graphics headers without both dependencies")
@@ -1723,6 +1726,7 @@ terreate_build_consumer(integration_runtime "${all_components_PREFIX}"
 set(_asset_graphics_source [=[
 #include <terreate/integration/asset_graphics/image_upload.hpp>
 #include <terreate/integration/asset_graphics/mesh_upload.hpp>
+#include <terreate/integration/asset_graphics/mesh_upload_convenience.hpp>
 
 #include <terreate/asset/primitives.hpp>
 
@@ -1768,6 +1772,11 @@ int main() {
   const auto refused_image = ag::planImageUpload(image);
   if (refused_image || refused_image.error().code() != ag::make_error_code(ag::ImageUploadError::unsupported_format))
     return 8;
+  // #463: the default mapping and the plan that reports it, on the CPU.
+  const auto defaulted = ag::planMeshUploadWithDefaults(*box, {});
+  if (!defaulted || !defaulted->used_default_attributes || defaulted->attributes.size() != 3 ||
+      ag::defaultMeshAttributeBindings(*box).size() != 3)
+    return 9;
   std::puts("package.asset_graphics: plan=PASS");
   return 0;
 }

@@ -24,8 +24,7 @@ It does three things, as three explicit steps:
 
 Non-goals: it records no command, selects no queue, submits nothing and waits for nothing. It
 creates no pipeline and has no draw helper. It does not guess shader locations, deduplicate
-vertices or narrow or widen indices. It handles no `ModelData` (#276); images are part 2 below. A one-call convenience for beginners is planned separately (issue #463, below) and is
-not part of this work.
+vertices or narrow or widen indices. It handles no `ModelData` (#276); images are part 2 below. The one-call mesh convenience of #463 is a separate layer on top, described in the convenience section below.
 
 ## Public dependencies
 
@@ -73,7 +72,7 @@ before anything exists:
 The rules, none of them hidden:
 
 - **Shader locations are the application's.** Each binding names the mesh attribute and its
-  location. Nothing is guessed from the semantic, so there is no default "position 0, normal 1".
+  location. Nothing is guessed from the semantic: the three explicit steps have no default mapping and an empty list is an error. The optional convenience layer (below) offers a documented default mapping only when you ask for it with an empty list.
 - **Unbound attributes are reported.** A mesh attribute with no binding is not in the vertex
   stream and is listed in `plan.unmapped`: never dropped silently.
 - **Formats**: float32 with 1 to 4 components map to `eR32Sfloat`, `eR32G32Sfloat`,
@@ -181,14 +180,102 @@ it, reads both buffers back through a `ReadbackBatch` and compares them with `ve
 checks the plan fields and the errors reachable without a device on the CPU (`plan_mismatch` is checked in the GPU test, which needs an Allocator), and the installed-package consumer in
 `cmake.package_smoke` plans a mesh against an installed package.
 
-## Convenience API and its lower-level equivalent
+## Convenience API and its lower-level equivalent (#463, meshes)
 
-This API is the explicit layer. A beginner-oriented one-call convenience, which would plan, create
-the buffers and upload in one step for someone who does not want to see the three steps, is
-planned as issue #463 on top of this API. It is not part of this work, and this API does not
-change to make room for it. Until then, the lower-level equivalent of anything it would do is
-exactly the three calls above, and below them `asset::interleave`, `graphics::createBuffer` and
-`graphics::prepareUploadBatch` can be called directly.
+Header: `<terreate/integration/asset_graphics/mesh_upload_convenience.hpp>`. The explicit three steps above
+remain the base layer and do not change (`planMeshUpload` still rejects an empty `attributes` list). The
+convenience is written only with them and the Graphics upload batch, for someone who wants a mesh on
+the GPU without wiring the steps. **Meshes only.** The image convenience waits for the layout-transition
+opt-in (#468): without it the uploaded image stays in the copy layout and a beginner could not sample it.
+Out of scope: pipelines, materials, a draw helper and uploading a whole `ModelData`.
+
+| Function | What it does | Waits? |
+| --- | --- | --- |
+| `defaultMeshAttributeBindings(mesh)` | the default shader locations as an editable `std::vector<MeshAttributeBinding>` | no, CPU |
+| `planMeshUploadWithDefaults(mesh, description)` | `planMeshUpload`, but an empty `attributes` list means the default mapping | no, CPU |
+| `submitMeshUpload(device, allocator, queue, command, fence, identity, mesh, description)` | plan, create buffers, prepare staging, record, end the command buffer, `submitFenced` | **never** |
+| `uploadMeshBlocking(device, allocator, queue, mesh, timeout_ns, description)` | does the same on its own command pool, command buffer and fence, then waits on the fence | **yes, the name says so** |
+
+### The default mapping
+
+position 0, normal 1, texcoord set 0 at 2, color set 0 at 3, tangent 4. Only attributes the mesh has are
+listed, in this order. Other texcoord and color sets and every `custom` attribute are never in the default:
+they are reported in `plan.unmapped`, never guessed. A valid mesh always has a position
+(`asset::validate`), so the list is never empty for a valid mesh; a mesh without one is refused by the plan
+with its `asset::MeshDataError` unchanged (the helper itself does not fail and lists what exists).
+`description.attributes` empty means this mapping; a non-empty list is used exactly as given. The plan
+says which: `MeshUploadPlan::used_default_attributes` is true when the default was used, and the resolved
+list is always `plan.attributes` (locations) so the shader can be written against it. The helper's result
+is an ordinary value: edit it (change a location, drop an attribute) and pass it as `attributes`.
+
+### `submitMeshUpload`: non-blocking
+
+The application passes a `graphics::CommandBuffer` in the **recording** state, the queue, an unsignaled
+fence and a `CompletionIdentity`. The function plans, creates the buffers, prepares the staging batch,
+records the copies, **ends** the command buffer and calls `graphics::submitFenced` once. It never waits,
+resets or reuses anything. It returns `MeshUploadSubmission`:
+
+| Member | Contract |
+| --- | --- |
+| `plan` | the effective state (bytes, native vertex input structs, `used_default_attributes`, `unmapped`) |
+| `buffers` | `MeshBuffers`; contents valid once the fence has signaled |
+| `staging` | the `graphics::PreparedUploadBatch`, move-only, ready for `RetirementQueue::retire` with `receipt` |
+| `receipt` | the `SubmissionReceipt` of the one submission (evidence of submit, not of completion) |
+
+What must outlive what: `mesh` and `description` only have to live during the call. `device`, `allocator`, the
+command pool of `command` and `fence` outlive every GPU use. The command buffer and fence stay alive and
+unreset until the fence signals and the staging is retired; `staging` goes into a `RetirementQueue` with
+`receipt` and is collected after completion; the buffers are retired like any buffer. No barrier is recorded:
+the transfer write must be made available to the later use (vertex input) by the application's own barrier,
+semaphore, or a host wait on the fence before a later submission. Errors are those of the explicit steps,
+unchanged. On an error everything the call created is destroyed before it returns, which is right for
+every failure before the native submit and for a rejected submit; a submit that fails with a lost device is
+handled as any lost device. After an error `command` is left as it was reached and the application resets
+or discards its pool.
+
+### `uploadMeshBlocking`: blocking
+
+Creates its own command pool (on the family of `queue`), command buffer and fence, performs
+`submitMeshUpload`, then waits on the fence for at most `timeout_ns` (`UINT64_MAX` is no limit; there is no
+default). It destroys the helper objects and the staging once complete and returns only the buffers and the
+plan (`MeshUploadResult`), so it suits start-up code where a stall is acceptable. The application still
+synchronizes `queue` externally as for any submission. If the wait times out (`MeshUploadError::wait_timeout`)
+or fails natively (returned unchanged), the GPU may still use the staging memory, the buffers and the
+helper objects, so none of them is destroyed: they are deliberately leaked and the application should treat
+the device as hung or lost. `integration.asset_graphics.convenience` checks the success paths only.
+
+### The lower-level equivalent, step by step
+
+`submitMeshUpload` is this, after you have begun the command buffer yourself (the same code the `integration.asset_graphics.convenience` test uses
+for its comparison):
+
+```cpp
+// default mapping: position 0, normal 1, texcoord 2, color 3, tangent 4 (what the mesh has)
+ag::MeshUploadDescription description;
+description.attributes = ag::defaultMeshAttributeBindings(mesh);   // or your own list
+auto plan    = terreate::unwrap(ag::planMeshUpload(mesh, description));
+auto buffers = terreate::unwrap(ag::createMeshBuffers(allocator, plan));
+auto items   = terreate::unwrap(ag::meshUploadItems(plan, buffers));
+auto staging = terreate::unwrap(graphics::prepareUploadBatch(
+    allocator, graphics::UploadBatchDescription{.buffers = items}));
+command.begin(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);      // your command buffer
+graphics::recordUploadBatch(device, command, staging);
+command.end();
+const std::array<const graphics::CommandBuffer *, 1> commands{&command};
+auto receipt = terreate::unwrap(graphics::submitFenced(
+    device, queue, fence, identity, {.command_buffers = commands}));
+// later, after fence.wait(...) or a polled signal:
+//   retirement.retire(staging, std::array{receipt}); retirement.collect();
+```
+
+`uploadMeshBlocking` adds to that a command pool, `allocatePrimary`, a `createFence`, and
+`fence.wait(timeout_ns)` before returning. And the beginner path in four lines:
+
+```cpp
+auto mesh = terreate::unwrap(asset::box({}));
+auto uploaded = terreate::unwrap(ag::uploadMeshBlocking(device, allocator, queue, mesh, 10'000'000'000));
+// uploaded.buffers.vertex / .index are ready; uploaded.plan.applyTo(pipeline_description);
+```
 
 ## What the consistency checks cover
 
@@ -318,5 +405,4 @@ Without this Integration: `asset::packedLayout` or your own table gives the rows
 creates the image with the format you pick, and you build one `graphics::ImageUploadItem` per (mip, layer)
 with a `VkBufferImageCopy2` (zero `bufferOffset`, the row length in texels) and `image.bytes(mip, layer)`.
 The plan is that code made observable. Beyond the Integration, `graphics::prepareUploadBatch` accepts the
-twelve formats listed in [the upload batch](upload_batch.md); the one-call convenience for beginners
-(#463) is planned on top of these functions.
+twelve formats listed in [the upload batch](upload_batch.md); the one-call convenience for meshes (#463) is described above; the image convenience waits for #468 (the layout-transition opt-in), because without it the uploaded image stays in the copy layout.

@@ -53,7 +53,7 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   `prepareUploadBatch`; the plan must outlive it). The application gives each attribute's shader location,
   nothing is guessed, and the named error category `MeshUploadError` passes `MeshDataError` through for an
   invalid mesh. The option is on by default only when Asset and Graphics are; asking for it without one is a
-  configure error. Uploading an `ImageData` is part 2 (next entry); a one-call convenience is planned as #463.
+  configure error. Uploading an `ImageData` is part 2 (next entry); the one-call mesh convenience is the entry after it.
 - **Asset-Graphics Integration, part 2: images** (`<terreate/integration/asset_graphics/image_upload.hpp>`, #279):
   an `ImageData` reaches the GPU in three explicit steps that record, submit and wait for nothing:
   `planImageUpload` (CPU only; the observable `ImageUploadPlan` holds the Vulkan format, the `ImageDescription`
@@ -66,6 +66,18 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   application uses `imageBarrier`); `ImageUploadDescription::mip_generation` and `layout_transition` are reserved
   choices whose only value is `none`, for the explicit opt-in follow-ups #467 and #468. The named error category is
   `ImageUploadError` (an invalid image returns its `ImageDataError` unchanged).
+- **Asset-Graphics Integration: beginner mesh upload** (`<terreate/integration/asset_graphics/mesh_upload_convenience.hpp>`, #463;
+  meshes only, additive): `defaultMeshAttributeBindings(mesh)` returns the default shader locations (position 0,
+  normal 1, texcoord set 0 at 2, color set 0 at 3, tangent 4; only what the mesh has, never custom) as an editable
+  value; `planMeshUploadWithDefaults` treats an empty `attributes` list as that mapping and
+  `MeshUploadPlan::used_default_attributes` reports it (`planMeshUpload` still rejects an empty list);
+  `submitMeshUpload` is non-blocking: given a recording command buffer, a queue and an unsignaled fence it plans,
+  creates the buffers, records, ends the command buffer and calls `submitFenced`, and returns the plan, the buffers,
+  the staging owner and the `SubmissionReceipt` for a `RetirementQueue` (it never waits); `uploadMeshBlocking`
+  creates its own command pool, command buffer and fence, waits on the fence for the given timeout and returns the
+  buffers and the plan. `MeshUploadError::wait_timeout` is appended (on a timeout the GPU may still use the
+  resources, which are then deliberately not destroyed). The image convenience waits for the layout-transition
+  opt-in (#468). The lower-level equivalent is documented step by step.
 - **Graphics upload batch: more Image formats** (#279): the Image upload of `prepareUploadBatch` and
   `recordUploadBatch`, until now `R8G8B8A8_UNORM` only, accepts the uncompressed single-plane color formats R8, R8G8
   and R8G8B8A8 (UNORM and SRGB), R16, R16G16 and R16G16B16A16 (UNORM) and R32, R32G32 and R32G32B32A32 (SFLOAT). The
