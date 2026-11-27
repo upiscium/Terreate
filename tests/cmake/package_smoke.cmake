@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|asset/(image_data|mesh_data|model_data|primitives)|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/(mesh_upload|mesh_upload_convenience|image_upload))|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|asset/(decode|image_data|mesh_data|model_data|primitives|resource_resolver)|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/(mesh_upload|mesh_upload_convenience|image_upload))|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -150,7 +150,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(_asset)
-    foreach(_asset_header IN ITEMS image_data mesh_data model_data primitives)
+    foreach(_asset_header IN ITEMS decode image_data mesh_data model_data primitives resource_resolver)
       if(NOT EXISTS "${_prefix}/include/terreate/asset/${_asset_header}.hpp")
         message(FATAL_ERROR "${name} install is missing the public Asset ${_asset_header} header")
       endif()
@@ -1565,10 +1565,12 @@ terreate_build_consumer(core_only_runtime "${core_only_PREFIX}" Core
 # and Asset, and exercises the installed MeshData.
 terreate_package_configure_and_install(asset_only OFF OFF ON)
 set(_asset_source [=[
+#include <terreate/asset/decode.hpp>
 #include <terreate/asset/image_data.hpp>
 #include <terreate/asset/mesh_data.hpp>
 #include <terreate/asset/model_data.hpp>
 #include <terreate/asset/primitives.hpp>
+#include <terreate/asset/resource_resolver.hpp>
 
 #include <array>
 #include <cstdint>
@@ -1641,6 +1643,26 @@ int main() {
   const auto cyclic = asset::validate(model);
   if (cyclic || cyclic.error().code() != asset::make_error_code(asset::ModelDataError::node_cycle))
     return 14;
+  // #280: an installed MemoryResolver resolves through a bounded ResolveSession
+  // and records provenance; an absent resolver and a bad reference fail with
+  // the named categories.
+  asset::MemoryResolver memory;
+  if (!memory.add("models/a.bin", std::vector<std::byte>(4, std::byte{1}))) return 15;
+  asset::ResolveSession session{asset::ResourceResolverView::bind(memory),
+                                asset::defaultDecodeLimits(),
+                                asset::makeSourceIdentity("models/scene.gltf")};
+  const auto resolved = session.resolve(session.makeRequest("a.bin", asset::ResourceKind::buffer));
+  if (!resolved || resolved->size() != 4 || session.provenance().resources.size() != 1 ||
+      session.provenance().resources[0].request.normalized != "models/a.bin")
+    return 16;
+  const auto escaped = session.resolve(session.makeRequest("../../x", asset::ResourceKind::buffer));
+  if (escaped ||
+      escaped.error().code() != asset::make_error_code(asset::ResolveError::reference_rejected))
+    return 17;
+  asset::ResolveSession bare{asset::ResourceResolverView{}, asset::defaultDecodeLimits(), {}};
+  const auto none = bare.resolve(bare.makeRequest("a.bin", asset::ResourceKind::buffer));
+  if (none || none.error().code() != asset::make_error_code(asset::ResolveError::no_resolver))
+    return 18;
   std::puts("package.asset: mesh=PASS");
   return 0;
 }

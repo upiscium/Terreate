@@ -10,12 +10,16 @@ endif()
 add_library(terreate_asset STATIC
   src/image_data.cpp
   src/mesh_data.cpp
+  src/decode.cpp
   src/model_data.cpp
   src/primitives.cpp
+  src/resource_resolver.cpp
+  include/terreate/asset/decode.hpp
   include/terreate/asset/image_data.hpp
   include/terreate/asset/mesh_data.hpp
   include/terreate/asset/model_data.hpp
-  include/terreate/asset/primitives.hpp)
+  include/terreate/asset/primitives.hpp
+  include/terreate/asset/resource_resolver.hpp)
 target_include_directories(terreate_asset
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"

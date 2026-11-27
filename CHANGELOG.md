@@ -41,6 +41,15 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   `ModelDataError` (index range, empty meshes, node cycles and double parents, transforms, material values, texcoord sets,
   wrapped mesh and image errors); it is iterative, so a long node chain is safe, and nothing is repaired.
   Converting a whole model to GPU resources is not defined by this change.
+- **Decode contracts and resource resolver** (`<terreate/asset/decode.hpp>`, `<terreate/asset/resource_resolver.hpp>`, #280):
+  the CPU-only contracts the image and glTF decoders share, with no I/O and no new dependency. `ByteView`
+  byte-source convention, `SourceIdentity` and `DecodeInput`, `DecodeLimits` with conservative documented
+  defaults (`defaultDecodeLimits`) and the size checks `checkInputSize`/`checkImageSize`, `DecodeDiagnostic`
+  and `DecodeProvenance`, the type-erased borrowed synchronous `ResourceResolverView` (bound like
+  `DiagnosticSinkView`), the `MemoryResolver` reference resolver, `normalizeReference` (path traversal,
+  absolute, backslash, drive-letter, control-character and URI-scheme rejection with stated percent-decoding
+  rules) and `ResolveSession`, which enforces the count, size and depth limits centrally and records every
+  request. Named categories `ResolveError`, `ReferenceError` and `DecodeError`.
 - **Asset-Graphics Integration** (`Terreate::IntegrationAssetGraphics`, `terreate::integration::asset_graphics`,
   header `<terreate/integration/asset_graphics/mesh_upload.hpp>`, option
   `TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS`, `find_package` component `IntegrationAssetGraphics`; #279

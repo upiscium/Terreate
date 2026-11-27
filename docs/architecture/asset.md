@@ -1,4 +1,4 @@
-# Asset: MeshData (#345), primitive generators (#346), ImageData and ModelData (#276)
+# Asset: MeshData (#345), primitive generators (#346), ImageData and ModelData (#276), decode contracts (#280)
 
 `Terreate::Asset` (`terreate::asset`) holds CPU-side asset data that primitive
 generators, model decoders and rendering code share. Its types are `MeshData`, declared in
@@ -466,7 +466,7 @@ The decoders #277 and #278 produce `ImageData` and `ModelData`. Converting an im
 is the job of the [Asset-Graphics Integration](asset_graphics.md) (#279: `MeshData` in part 1, `ImageData`
 in part 2); converting a whole `ModelData` to GPU resources is not defined here or by that part, and an
 application walks the lists with the public APIs of both components. Resolving external files a model
-refers to is the resolver of #280. Material rendering and PBR shading are #250. Asset has no Graphics
+refers to is the [resolver of #280](#decode-contracts-and-the-resource-resolver-280). Material rendering and PBR shading are #250. Asset has no Graphics
 dependency, and `ModelData` stays usable on the CPU alone.
 
 ```cpp
@@ -489,3 +489,153 @@ asset::ModelData oneBox() {
   return model;
 }
 ```
+
+## Decode contracts and the resource resolver (#280)
+
+Decoders (the image decoder #277 and the glTF decoder #278) are adapters outside Asset, but the contracts
+they share live here, in `<terreate/asset/decode.hpp>` and `<terreate/asset/resource_resolver.hpp>`. They
+are CPU-only, add no dependency, and give a decoder no authority: **a decoder never opens a file, a socket
+or an archive**. Everything it needs beyond its input comes through an application-provided resolver.
+
+### Byte-source rule
+
+A decoder takes its input as `ByteView` (`std::span<const std::byte>`) plus a `SourceIdentity`
+(`DecodeInput` bundles the two). The caller owns the bytes and keeps them alive for the call; a decoder
+that needs them later copies them. Bytes obtained from an external reference come back from the resolver
+as a `ResolvedResource` and are then decoded under the same rule, so there is one input convention.
+
+`SourceIdentity` is metadata: `name` is what the application calls the source (a path, an archive entry, a
+URL) and `base` is the root-less directory against which the source's relative references resolve. It
+grants no access and is used for provenance and for resolving references.
+
+### Resolver
+
+A reference found in an asset (a glTF `uri`) becomes a `ResourceRequest`: the reference exactly as written,
+the `SourceIdentity` that contains it, a `ResourceKind` (`buffer`, `image`, `other`) and an optional
+declared size and media type (untrusted hints). The application answers with a `ResolvedResource`: owned or
+shared bytes plus the identity they were resolved to.
+
+`ResourceResolverView` is a type-erased, non-owning, synchronous view bound to an application object or
+callable with `ResourceResolverView::bind(target)`, the same pattern as `DiagnosticSinkView` (the target is
+an object lvalue that outlives every call; binding allocates nothing). An unbound view fails with
+`ResolveError::no_resolver`. `MemoryResolver` is the reference resolver: a map from a normalized reference to
+bytes, for tests and for archive-like use (the application adds the entries of an archive it has read).
+A resolver backed by a file system or a network is application code written against the same signature,
+`Result<ResolvedResource>(const ResourceRequest &)`.
+
+**Sync and async.** The contract is synchronous: the call returns bytes or an error. An application that
+fetches asynchronously resolves ahead of time (it can read the asset, ask a decoder or its own code for the
+reference list, fetch everything) and gives the decoder a `MemoryResolver` that already holds the bytes.
+Asset starts no thread and never waits.
+
+### Limits
+
+`DecodeLimits` bounds a decode; `defaultDecodeLimits()` returns the conservative defaults below. Raising a
+limit is the application's explicit act (assign the field). Exceeding a limit is a named error, never
+truncation; a limit of 0 allows none of the thing.
+
+| Field | Default | Enforced by |
+| --- | --- | --- |
+| `max_input_bytes` | 256 MiB | `checkInputSize` (`DecodeError::input_too_large`) |
+| `max_pixels` | 67108864 (8192 x 8192) | `checkImageSize` (`pixel_count_exceeded`) |
+| `max_dimension` | 16384 | `checkImageSize` (`dimension_exceeded`) |
+| `max_nodes` | 65536 | the glTF decoder (`DecodeError::count_exceeded`) |
+| `max_meshes` | 16384 | the glTF decoder (`count_exceeded`) |
+| `max_primitives` | 65536 | the glTF decoder (`count_exceeded`) |
+| `max_hierarchy_depth` | 256 | the glTF decoder (`DecodeError::hierarchy_too_deep`) |
+| `max_external_resources` | 256 | `ResolveSession` (`ResolveError::limit_exceeded`) |
+| `max_resource_bytes` | 256 MiB | `ResolveSession` (`limit_exceeded`) |
+| `max_total_resource_bytes` | 1 GiB | `ResolveSession` (`limit_exceeded`) |
+| `max_resolve_depth` | 4 | `ResolveSession` (`ResolveError::depth_exceeded`) |
+
+The size checks run before the decoder allocates or decodes, and use overflow-safe arithmetic.
+
+### Reference rules
+
+`normalizeReference(reference, base_directory, options)` is the path-traversal information for a reference
+from an untrusted asset. It is lexical (no file system, no network) and returns the normalized reference
+(a root-less `/`-separated path) or a `ReferenceError` (category `terreate.asset.reference`).
+
+- Rejected: empty reference; longer than `ReferenceOptions::max_length` (2048); NUL or another control
+  character, raw or percent-encoded; a leading `/` (absolute, `//host`); `\` raw or `%5C`; a drive letter
+  (`C:`); an unencoded `?` or `#` and any `:` in a path; a `%2F`; a malformed `%` escape; a reference naming
+  a directory (ending in `/`, `.` or `..`); a `..` that would leave the root.
+- Percent-decoding: each path segment is decoded exactly once, before the `.`/`..` handling. `%2e%2e` is
+  `..` (rejected when it escapes); `%252e` is the literal name `%2e`. Non-ASCII bytes pass unchanged.
+- Normalization: empty and `.` segments are dropped, `..` pops. The reference is applied to the source's
+  `base` directory, so `../textures/a.png` from `models/` is `textures/a.png`, while `../../x` is rejected.
+- URI schemes are rejected unless `ReferenceOptions::allowed_schemes` lists them. An allowed URI keeps its
+  remainder as written (only a `..` segment, control characters and `\` are refused) and is the resolver's
+  responsibility. `data:` URIs carry their bytes inline; a decoder either decodes them itself, without
+  I/O, or the application allows `data` and handles it in the resolver.
+
+This does not make a file system lookup safe alone. Symbolic links, case-insensitive or
+Unicode-normalizing file systems and operating-system device names are the resolver's concern; a
+file-system resolver should resolve the normalized path under a fixed root and re-check the result.
+
+### ResolveSession and provenance
+
+A decoder resolves every external reference through one `ResolveSession(resolver, limits, source, options)`,
+so the limits are enforced centrally. `session.makeRequest(reference, kind)` builds a request whose base is
+the source; for a reference inside a resolved resource, set `request.base = resource.identity()` and pass
+`depth + 1`. `resolve(request, depth)` checks, in order: the request count and depth limits, the resolver
+(`no_resolver`), the reference (`reference_rejected`, the detail names the reason), a declared size against
+the per-resource and remaining-total limits, then calls the resolver and checks the actual size.
+
+Errors: a failure from the resolver that already carries a `ResolveError` code (for example `not_found`) is
+returned unchanged; any other failure, or an exception, is wrapped as `ResolveError::resolver_failed`
+with the original category, value and message in the detail.
+
+| `ResolveError` | Meaning |
+| --- | --- |
+| `no_resolver` | an external resource is needed and no resolver is bound |
+| `reference_rejected` | `normalizeReference` refused the reference |
+| `not_found` | the resolver has no resource for it |
+| `limit_exceeded` | the request count, a resource size or the total size is over its limit |
+| `resolver_failed` | the resolver failed with another error (wrapped) |
+| `depth_exceeded` | the request is nested too deeply |
+
+`session.provenance()` (`DecodeProvenance`) holds the source identity and one `ResolveRecord` per request,
+including refused and failed ones: the request (reference as written and the normalized reference), the
+depth, the identity it resolved to, the size and the outcome code.
+
+### Diagnostics
+
+`DecodeDiagnostic` is `{severity (info, warning, error), code, message, location}` with a `DecodeLocation`
+(source name, a format-specific path such as `/nodes/3`, an optional byte offset). Decoders fill them for
+what they could not represent, next to the `unsupported` lists of `ModelData` and `ImageData`; nothing is
+dropped silently. `DecodeError` (category `terreate.asset.decode`) names the shared decode failures
+(`input_too_large`, `dimension_exceeded`, `pixel_count_exceeded`, `count_exceeded`,
+`hierarchy_too_deep`, `malformed_input`, `unsupported_input`).
+
+### Security notes for untrusted input
+
+Treat every reference, declared size and media type as attacker-controlled. Keep the default limits unless
+the application has a reason and a trusted source; do not bind a resolver that reads outside a root you
+chose; allow URI schemes only deliberately; check sizes before allocating (the session does so with the
+declared size and again with the real size); and keep the provenance of what was loaded.
+
+### How the adapters use it
+
+The image decoder (#277) takes `DecodeInput` and `DecodeLimits`, calls `checkInputSize` and `checkImageSize`
+before decoding, and needs no resolver. The glTF decoder (#278) takes `DecodeInput`, `DecodeLimits` and a
+`ResourceResolverView`, builds a `ResolveSession` for the external buffers and images, resolves a
+reference once and shares the result, reports diagnostics and the `DecodeProvenance` to the caller, and does
+no I/O of its own. An application that already has the bytes passes a `MemoryResolver`.
+
+### Further notes
+
+- `ResourceRequest::max_bytes` is filled by the session with the smaller of the per-resource limit and the
+  remaining total. A resolver that reads a file or stream should stop there; the session checks the real size
+  again, but only after the resolver has allocated the bytes.
+- A URI reference is returned undecoded. A resolver for it decodes exactly once. `%2F` in a URI is refused
+  and the length limit (default 2048) also applies, so a long `data:` URI needs a larger `max_length` or is
+  better decoded by the decoder itself. `file` in `allowed_schemes` would allow `file:///...`: that is the
+  application's explicit choice.
+- The reference is untrusted text; error details contain only a short printable prefix of it. The reason a
+  reference was refused is in the detail (the message of the `ReferenceError`); call `normalizeReference`
+  directly to branch on the code.
+- The base directory must not start with `/`, may not escape with `..`, and may not contain control
+  characters, `\` or `:`; it is normalized again with each reference.
+- Windows ignores trailing dots and spaces, reserves device names and treats some non-ASCII forms
+  specially; a file-system resolver on such a system must handle that itself.
