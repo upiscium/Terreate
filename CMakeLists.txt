@@ -510,6 +510,14 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
     set_tests_properties(asset.model_data PROPERTIES
       PASS_REGULAR_EXPRESSION "asset\\.model_data: model-data=PASS"
       FAIL_REGULAR_EXPRESSION "asset\\.model_data: (assertion=FAIL|.*BLOCKED)")
+
+    add_executable(terreate_asset_resource_resolver_tests tests/test_asset_resource_resolver.cpp)
+    target_link_libraries(terreate_asset_resource_resolver_tests PRIVATE Terreate::Asset)
+    terreate_configure_target(terreate_asset_resource_resolver_tests)
+    add_test(NAME asset.resource_resolver COMMAND terreate_asset_resource_resolver_tests)
+    set_tests_properties(asset.resource_resolver PROPERTIES
+      PASS_REGULAR_EXPRESSION "asset\\.resource_resolver: resource-resolver=PASS"
+      FAIL_REGULAR_EXPRESSION "asset\\.resource_resolver: (assertion=FAIL|.*BLOCKED)")
   endif()
 
   if(TERREATE_BUILD_GRAPHICS)
