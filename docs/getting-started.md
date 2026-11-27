@@ -54,7 +54,7 @@ cmake_minimum_required(VERSION 3.28)
 project(app CXX)
 set(CMAKE_CXX_STANDARD 23)
 
-find_package(Terreate REQUIRED COMPONENTS Graphics)   # also: Core, Platform, IntegrationPlatformGraphics
+find_package(Terreate REQUIRED COMPONENTS Graphics)   # also: Core, Asset, Platform, IntegrationPlatformGraphics, IntegrationAssetGraphics
 add_executable(app main.cpp)
 target_link_libraries(app PRIVATE Terreate::Graphics)
 ```
@@ -96,6 +96,7 @@ Continue with the examples, in this order ([all three](examples.md)):
 | understand the request/plan/effective model | [Configuration](architecture/configuration-resolution.md) | [Graphics](api/graphics.md) |
 | handle errors, get diagnostics and validation messages | [Errors](architecture/error-result.md), [Diagnostics](architecture/diagnostics.md), [Debug utils](architecture/debug_utils.md) | [Core](api/core.md) |
 | describe geometry on the CPU (`MeshData`, primitive generators) | [Asset](architecture/asset.md) | [Asset](api/asset.md) |
+| upload a `MeshData` to GPU buffers, explicitly | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | open a window and poll events | [Platform runtime](architecture/platform_runtime.md) | [Platform](api/platform.md) |
 | pick a GPU and create a Device | [Physical device](architecture/physical-device.md), [Logical device](architecture/logical-device.md) | [Graphics](api/graphics.md) |
 | create buffers and images | [Allocator](architecture/allocator.md), [Buffer](architecture/buffer.md), [Image](architecture/image.md) | [Graphics](api/graphics.md) |

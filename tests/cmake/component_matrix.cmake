@@ -21,7 +21,9 @@ file(MAKE_DIRECTORY "${_terreate_matrix_root}")
 # `ARGV5` overrides the expected presence of the Platform-Graphics Integration
 # (default: present when Platform and Graphics are), and `ARGV6` is one extra
 # -D definition, for explicit option cases. `ARGV7` overrides whether Asset is
-# built and expected (default: when Core is, since Asset defaults to ON).
+# built and expected (default: when Core is, since Asset defaults to ON), and
+# `ARGV8` overrides the expected presence of the Asset-Graphics Integration
+# (default: present when Asset and Graphics are both built).
 function(terreate_matrix_case name component core platform graphics)
   if("${core}" STREQUAL "ON")
     set(_asset ON)
@@ -38,6 +40,14 @@ function(terreate_matrix_case name component core platform graphics)
   endif()
   if(NOT "${ARGV5}" STREQUAL "")
     set(_expect_integration "${ARGV5}")
+  endif()
+  if("${_asset}" STREQUAL "ON" AND "${graphics}" STREQUAL "ON")
+    set(_expect_asset_graphics ON)
+  else()
+    set(_expect_asset_graphics OFF)
+  endif()
+  if(NOT "${ARGV8}" STREQUAL "")
+    set(_expect_asset_graphics "${ARGV8}")
   endif()
   set(_binary_dir "${_terreate_matrix_root}/${name}")
   set(_configure_command
@@ -61,6 +71,7 @@ function(terreate_matrix_case name component core platform graphics)
     "-DTERREATE_EXPECT_PLATFORM=${platform}"
     "-DTERREATE_EXPECT_GRAPHICS=${graphics}"
     "-DTERREATE_EXPECT_INTEGRATION_PLATFORM_GRAPHICS=${_expect_integration}"
+    "-DTERREATE_EXPECT_INTEGRATION_ASSET_GRAPHICS=${_expect_asset_graphics}"
     "-DTERREATE_BUILD_CORE=${core}"
     "-DTERREATE_BUILD_ASSET=${_asset}"
     "-DTERREATE_BUILD_PLATFORM=${platform}"
@@ -149,6 +160,17 @@ terreate_matrix_case(graphics_only Graphics ON OFF ON)
 terreate_matrix_case(integration IntegrationPlatformGraphics ON ON ON)
 terreate_matrix_case(integration_off Graphics ON ON ON OFF
   -DTERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=OFF)
+
+# The Asset-Graphics Integration (#279): on by default when Asset and Graphics
+# are both built (the Platform need not be), an explicit OFF is respected, and
+# each of its two dependencies stays free of the other. Graphics without Asset
+# has no Asset target (and so no Integration); Asset alone has no Graphics
+# target and no Vulkan (the direct top-level Asset-only case below also hides
+# the Vulkan package).
+terreate_matrix_case(integration_asset_graphics IntegrationAssetGraphics ON OFF ON)
+terreate_matrix_case(integration_asset_graphics_off Graphics ON OFF ON ""
+  -DTERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS=OFF "" OFF)
+terreate_matrix_case(graphics_without_asset Graphics ON OFF ON "" "" OFF)
 
 # Top-level Core + Asset with neither Vulkan nor GLFW discoverable: the Asset
 # boundary needs no native dependency.
@@ -450,3 +472,52 @@ endif()
 
 terreate_matrix_expect_integration_error(integration_without_platform PLATFORM)
 terreate_matrix_expect_integration_error(integration_without_graphics GRAPHICS)
+
+# The Asset-Graphics Integration needs Asset and Graphics: asking for it without
+# one of them is a configure error that names the missing option, never a silent
+# correction (#279).
+function(terreate_matrix_expect_asset_graphics_error name missing_option)
+  set(_binary "${_terreate_matrix_root}/${name}")
+  set(_command
+    "${CMAKE_COMMAND}"
+    -S "${_terreate_source_dir}/tests/cmake/matrix-project"
+    -B "${_binary}")
+  if(DEFINED TERREATE_CMAKE_GENERATOR AND
+     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+    list(APPEND _command -G "${TERREATE_CMAKE_GENERATOR}")
+  endif()
+  if(DEFINED TERREATE_CXX_COMPILER AND
+     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+    list(APPEND _command "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+  endif()
+  list(APPEND _command
+    "-DTERREATE_SOURCE_DIR:PATH=${_terreate_source_dir}"
+    -DTERREATE_MATRIX_COMPONENT=Core
+    -DTERREATE_BUILD_CORE=ON
+    -DTERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS=ON)
+  foreach(_option IN ITEMS ASSET GRAPHICS)
+    if(_option STREQUAL missing_option)
+      list(APPEND _command "-DTERREATE_BUILD_${_option}=OFF")
+    else()
+      list(APPEND _command "-DTERREATE_BUILD_${_option}=ON")
+    endif()
+  endforeach()
+  execute_process(
+    COMMAND ${_command}
+    RESULT_VARIABLE _result
+    OUTPUT_VARIABLE _output
+    ERROR_VARIABLE _error)
+  if(_result EQUAL 0)
+    message(FATAL_ERROR "${name}: the contradictory options unexpectedly configured")
+  endif()
+  string(REGEX REPLACE "[ \n]+" " " _diagnostics "${_output} ${_error}")
+  if(NOT _diagnostics MATCHES
+     "TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS=ON requires TERREATE_BUILD_${missing_option}=ON")
+    message(FATAL_ERROR
+      "${name}: the diagnostic did not name TERREATE_BUILD_${missing_option}:\n"
+      "${_output}\n${_error}")
+  endif()
+endfunction()
+
+terreate_matrix_expect_asset_graphics_error(asset_graphics_without_asset ASSET)
+terreate_matrix_expect_asset_graphics_error(asset_graphics_without_graphics GRAPHICS)

@@ -21,6 +21,19 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   bounds, is deterministic, uses `uint16` indices up to 65536 vertices and `uint32` beyond, and failures are
   the named `PrimitiveError` category. Winding, normals, UV orientation and tangents follow the documented
   conventions and are tested against the triangle data.
+- **Asset-Graphics Integration** (`Terreate::IntegrationAssetGraphics`, `terreate::integration::asset_graphics`,
+  header `<terreate/integration/asset_graphics/mesh_upload.hpp>`, option
+  `TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS`, `find_package` component `IntegrationAssetGraphics`; #279
+  part 1, meshes): an optional component that connects Asset and Graphics through their public APIs only,
+  so neither depends on the other or on it. A `MeshData` reaches the GPU in three explicit steps that
+  record, submit and wait for nothing: `planMeshUpload` (CPU only; the observable `MeshUploadPlan` holds the
+  interleaved bytes, the native vertex binding, attribute, topology and index type, the buffer descriptions
+  and the attributes left `unmapped`, and `plan.applyTo(pipeline_description)` fills a
+  `GraphicsPipelineDescription`), `createMeshBuffers` and `meshUploadItems` (items for
+  `prepareUploadBatch`; the plan must outlive it). The application gives each attribute's shader location,
+  nothing is guessed, and the named error category `MeshUploadError` passes `MeshDataError` through for an
+  invalid mesh. The option is on by default only when Asset and Graphics are; asking for it without one is a
+  configure error. Uploading an `ImageData` is part 2, after #276; a one-call convenience is planned as #463.
 
 ## [0.1.0] - 2026-11-26
 

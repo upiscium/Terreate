@@ -45,6 +45,27 @@ elseif(TARGET Terreate::IntegrationPlatformGraphics)
   message(FATAL_ERROR
     "disabled component unexpectedly created Terreate::IntegrationPlatformGraphics")
 endif()
+
+# The Asset-Graphics Integration (#279): present exactly when expected, and its
+# public dependencies are exactly Asset and Graphics (Core and Vulkan reach it
+# through them). Nothing links Platform, and no module links it.
+if(TERREATE_EXPECT_INTEGRATION_ASSET_GRAPHICS)
+  if(NOT TARGET Terreate::IntegrationAssetGraphics)
+    message(FATAL_ERROR "expected enabled target Terreate::IntegrationAssetGraphics")
+  endif()
+  foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+    get_target_property(_ag_links terreate_integration_asset_graphics ${_link_property})
+    list(SORT _ag_links)
+    if(NOT "${_ag_links}" STREQUAL "Terreate::Asset;Terreate::Graphics")
+      message(FATAL_ERROR
+        "the Asset-Graphics Integration must publicly link exactly Asset and Graphics "
+        "in ${_link_property}: ${_ag_links}")
+    endif()
+  endforeach()
+elseif(TARGET Terreate::IntegrationAssetGraphics)
+  message(FATAL_ERROR
+    "disabled component unexpectedly created Terreate::IntegrationAssetGraphics")
+endif()
 foreach(_module IN ITEMS core asset platform graphics)
   if(TARGET terreate_${_module})
     foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
@@ -124,6 +145,11 @@ foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
         "Graphics must retain its public Core dependency in "
         "${_link_property}: ${_graphics_links}")
     endif()
+    if("${_graphics_links}" MATCHES "[Aa]sset")
+      message(FATAL_ERROR
+        "Graphics must not depend on Asset in ${_link_property}: "
+        "${_graphics_links}")
+    endif()
     if("${_graphics_links}" MATCHES "[Pp]latform")
       message(FATAL_ERROR
         "Graphics must not depend on Platform in ${_link_property}: "
@@ -132,7 +158,7 @@ foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
   endif()
 endforeach()
 
-if(NOT _component MATCHES "^(Core|Asset|Platform|Graphics|IntegrationPlatformGraphics)$")
+if(NOT _component MATCHES "^(Core|Asset|Platform|Graphics|IntegrationPlatformGraphics|IntegrationAssetGraphics)$")
   message(FATAL_ERROR "unknown matrix component ${_component}")
 endif()
 
@@ -190,6 +216,27 @@ static_assert(std::is_same_v<
         std::declval<const terreate::platform::Runtime &>(),
         std::declval<const terreate::platform::Window &>())),
     terreate::Result<terreate::graphics::Surface>>);
+
+int main() { return 0; }
+]=])
+elseif(_component STREQUAL "IntegrationAssetGraphics")
+  # The public header of the Integration pulls in Asset and Graphics, so one
+  # include proves both usage requirements reach a consumer (and no Platform).
+  set(_consumer_source [=[
+#include <terreate/integration/asset_graphics/mesh_upload.hpp>
+
+#include <type_traits>
+#include <utility>
+
+#if defined(GLFW_VERSION_MAJOR)
+#error "the Asset-Graphics Integration must not expose GLFW"
+#endif
+
+static_assert(std::is_same_v<
+    decltype(terreate::integration::asset_graphics::planMeshUpload(
+        std::declval<const terreate::asset::MeshData &>(),
+        std::declval<const terreate::integration::asset_graphics::MeshUploadDescription &>())),
+    terreate::Result<terreate::integration::asset_graphics::MeshUploadPlan>>);
 
 int main() { return 0; }
 ]=])

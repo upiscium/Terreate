@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|asset/(mesh_data|primitives)|platform/(runtime|window|events)|integration/platform_graphics/surface|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|asset/(mesh_data|primitives)|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/mesh_upload)|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -109,6 +109,11 @@ function(terreate_package_configure_and_install name platform graphics)
   else()
     list(APPEND _configure_command -DTERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS=OFF)
   endif()
+  if(_asset AND graphics)
+    list(APPEND _configure_command -DTERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS=ON)
+  else()
+    list(APPEND _configure_command -DTERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS=OFF)
+  endif()
 
   execute_process(
     COMMAND ${_configure_command}
@@ -164,8 +169,15 @@ function(terreate_package_configure_and_install name platform graphics)
     if(NOT EXISTS "${_prefix}/include/terreate/integration/platform_graphics/surface.hpp")
       message(FATAL_ERROR "${name} install is missing the public Integration surface header")
     endif()
-  elseif(EXISTS "${_prefix}/include/terreate/integration")
-    message(FATAL_ERROR "${name} install has Integration headers without both dependencies")
+  elseif(EXISTS "${_prefix}/include/terreate/integration/platform_graphics")
+    message(FATAL_ERROR "${name} install has Platform-Graphics headers without both dependencies")
+  endif()
+  if(_asset AND graphics)
+    if(NOT EXISTS "${_prefix}/include/terreate/integration/asset_graphics/mesh_upload.hpp")
+      message(FATAL_ERROR "${name} install is missing the public Asset-Graphics mesh_upload header")
+    endif()
+  elseif(EXISTS "${_prefix}/include/terreate/integration/asset_graphics")
+    message(FATAL_ERROR "${name} install has Asset-Graphics headers without both dependencies")
   endif()
   if(graphics)
     foreach(_resource IN ITEMS buffer command_pool command_buffer transfer_commands upload_batch readback_batch spirv_binary shader_module descriptor_set_layout descriptor_pool descriptor_set descriptor_write specialization pipeline_layout compute_pipeline graphics_pipeline pipeline_commands rendering_commands submission retirement image image_view sampler debug_utils surface presentation swapchain swapchain_frame swapchain_retirement synchronization)
@@ -1664,6 +1676,46 @@ int main() {
 terreate_build_consumer(integration_runtime "${all_components_PREFIX}"
   IntegrationPlatformGraphics "${_integration_source}")
 
+# The installed Asset-Graphics Integration (#279): a consumer that includes only
+# its header plans a generated mesh on the CPU, applies the plan to a pipeline
+# description and sees the named errors. No device is needed.
+set(_asset_graphics_source [=[
+#include <terreate/integration/asset_graphics/mesh_upload.hpp>
+
+#include <terreate/asset/primitives.hpp>
+
+#include <cstdio>
+
+int main() {
+  namespace asset = terreate::asset;
+  namespace ag = terreate::integration::asset_graphics;
+  auto box = asset::box({});
+  if (!box) return 1;
+  const asset::AttributeKey position{asset::AttributeSemantic::position, 0, {}};
+  const asset::AttributeKey texcoord{asset::AttributeSemantic::texcoord, 0, {}};
+  ag::MeshUploadDescription description;
+  description.attributes = {{position, 0}, {texcoord, 1}};
+  const auto plan = ag::planMeshUpload(*box, description);
+  if (!plan) return 2;
+  if (plan->binding.stride != 20 || plan->vertex_count != 24 || plan->index_count != 36 ||
+      plan->index_type != vk::IndexType::eUint16 || plan->unmapped.size() != 1 ||
+      plan->vertex_bytes.size() != 24 * 20 || !plan->index_buffer)
+    return 3;
+  terreate::graphics::GraphicsPipelineDescription pipeline;
+  plan->applyTo(pipeline);
+  if (pipeline.vertex_attributes.size() != 2 || pipeline.vertex_bindings.size() != 1 ||
+      pipeline.topology != vk::PrimitiveTopology::eTriangleList)
+    return 4;
+  const auto refused = ag::planMeshUpload(*box, {});
+  if (refused || refused.error().code() != ag::make_error_code(ag::MeshUploadError::no_attributes))
+    return 5;
+  std::puts("package.asset_graphics: plan=PASS");
+  return 0;
+}
+]=])
+terreate_build_consumer(asset_graphics_runtime "${all_components_PREFIX}"
+  IntegrationAssetGraphics "${_asset_graphics_source}" "package\\.asset_graphics: plan=PASS")
+
 terreate_package_configure_and_install(graphics_only OFF ON)
 terreate_build_consumer(graphics_only_runtime "${graphics_only_PREFIX}" Graphics
   "${_graphics_consumer_source}")
@@ -1890,7 +1942,10 @@ foreach(_disabled_case IN ITEMS "core_only;Graphics;GRAPHICS" "core_only;Platfor
                                 "graphics_only;Platform;PLATFORM"
                                 "core_only;IntegrationPlatformGraphics;INTEGRATION_PLATFORM_GRAPHICS"
                                 "platform_only;IntegrationPlatformGraphics;INTEGRATION_PLATFORM_GRAPHICS"
-                                "graphics_only;IntegrationPlatformGraphics;INTEGRATION_PLATFORM_GRAPHICS")
+                                "graphics_only;IntegrationPlatformGraphics;INTEGRATION_PLATFORM_GRAPHICS"
+                                "core_only;IntegrationAssetGraphics;INTEGRATION_ASSET_GRAPHICS"
+                                "asset_only;IntegrationAssetGraphics;INTEGRATION_ASSET_GRAPHICS"
+                                "graphics_only;IntegrationAssetGraphics;INTEGRATION_ASSET_GRAPHICS")
   list(GET _disabled_case 0 _disabled_prefix_name)
   list(GET _disabled_case 1 _disabled_component)
   list(GET _disabled_case 2 _disabled_option)
@@ -1945,9 +2000,10 @@ foreach(_prefix_name IN ITEMS all_components core_only asset_only platform_only 
   endforeach()
 endforeach()
 terreate_configure_consumer(source-independence "${_all_prefix}" [=[
-find_package(Terreate REQUIRED COMPONENTS Core Platform Graphics IntegrationPlatformGraphics)
-foreach(_target IN ITEMS Terreate::Core Terreate::Platform Terreate::Graphics
-                         Terreate::IntegrationPlatformGraphics)
+find_package(Terreate REQUIRED COMPONENTS Core Asset Platform Graphics IntegrationPlatformGraphics
+                                          IntegrationAssetGraphics)
+foreach(_target IN ITEMS Terreate::Core Terreate::Asset Terreate::Platform Terreate::Graphics
+                         Terreate::IntegrationPlatformGraphics Terreate::IntegrationAssetGraphics)
   foreach(_property IN ITEMS INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
     get_target_property(_includes ${_target} ${_property})
     if(NOT _includes)
@@ -2024,7 +2080,8 @@ if(NOT TARGET Terreate::Asset OR NOT TARGET Terreate::Core)
   message(FATAL_ERROR "an Asset request did not import Asset and Core")
 endif()
 foreach(_unexpected IN ITEMS Terreate::Graphics Terreate::Platform
-                             Terreate::IntegrationPlatformGraphics glfw Vulkan::Vulkan)
+                             Terreate::IntegrationPlatformGraphics Terreate::IntegrationAssetGraphics
+                             glfw Vulkan::Vulkan)
   if(TARGET ${_unexpected})
     message(FATAL_ERROR "an Asset request imported ${_unexpected}")
   endif()
@@ -2101,6 +2158,54 @@ if(NOT _integration_dependency_result EQUAL 0)
   message(FATAL_ERROR
     "an Integration consumer did not receive its dependencies\n${_integration_dependency_output}")
 endif()
+
+# 6. The Asset-Graphics Integration (#279) receives exactly Asset and Graphics
+#    (and Core and Vulkan through them) and no GLFW or Platform; the two
+#    components it connects stay free of each other: a Graphics consumer gets
+#    no Asset, and an Asset consumer gets no Graphics (3b above).
+terreate_configure_consumer("asset-graphics-dependencies" "${all_components_PREFIX}" [=[
+find_package(Terreate REQUIRED COMPONENTS IntegrationAssetGraphics)
+foreach(_needed IN ITEMS Vulkan::Vulkan Terreate::Core Terreate::Asset
+                         Terreate::Graphics Terreate::IntegrationAssetGraphics)
+  if(NOT TARGET ${_needed})
+    message(FATAL_ERROR "an Asset-Graphics request did not import ${_needed}")
+  endif()
+endforeach()
+foreach(_unexpected IN ITEMS glfw Terreate::Platform Terreate::IntegrationPlatformGraphics)
+  if(TARGET ${_unexpected})
+    message(FATAL_ERROR "an Asset-Graphics request imported ${_unexpected}")
+  endif()
+endforeach()
+get_target_property(_links Terreate::IntegrationAssetGraphics INTERFACE_LINK_LIBRARIES)
+list(SORT _links)
+if(NOT "${_links}" STREQUAL "Terreate::Asset;Terreate::Graphics")
+  message(FATAL_ERROR "the Integration must link exactly Asset and Graphics: ${_links}")
+endif()
+]=] _asset_graphics_dependency_result _asset_graphics_dependency_output)
+if(NOT _asset_graphics_dependency_result EQUAL 0)
+  message(FATAL_ERROR
+    "an Asset-Graphics consumer did not receive exactly its dependencies\n"
+    "${_asset_graphics_dependency_output}")
+endif()
+foreach(_graphics_prefix_name IN ITEMS graphics_only all_components)
+  terreate_configure_consumer("graphics-without-asset-${_graphics_prefix_name}"
+    "${${_graphics_prefix_name}_PREFIX}" [=[
+find_package(Terreate REQUIRED COMPONENTS Graphics)
+foreach(_unexpected IN ITEMS Terreate::Asset Terreate::IntegrationAssetGraphics)
+  if(TARGET ${_unexpected})
+    message(FATAL_ERROR "a Graphics request imported ${_unexpected}")
+  endif()
+endforeach()
+get_target_property(_links Terreate::Graphics INTERFACE_LINK_LIBRARIES)
+if("${_links}" MATCHES "[Aa]sset")
+  message(FATAL_ERROR "Terreate::Graphics links Asset: ${_links}")
+endif()
+]=] _graphics_no_asset_result _graphics_no_asset_output)
+  if(NOT _graphics_no_asset_result EQUAL 0)
+    message(FATAL_ERROR
+      "${_graphics_prefix_name} Graphics consumer received Asset\n${_graphics_no_asset_output}")
+  endif()
+endforeach()
 
 # Printed last: any failure above stops the script before this line.
 message(STATUS "package.external_consumer: disabled-diagnostic=PASS "
