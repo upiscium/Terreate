@@ -138,11 +138,12 @@ struct MaterialData {
   [[nodiscard]] friend bool operator==(const MaterialData &, const MaterialData &) = default;
 };
 
-/// One renderable: a mesh with an optional material. Indices are into
-/// ModelData::meshes and ModelData::materials. A glTF primitive maps to one
-/// ModelPrimitive.
+/// One drawable piece: a MeshData (the geometry of one primitive) with an
+/// optional material. Indices are into ModelData::meshes and
+/// ModelData::materials. A glTF primitive maps to one ModelPrimitive. Several
+/// ModelMesh entries may refer to the same ModelPrimitive.
 struct ModelPrimitive {
-  /// Index into ModelData::meshes.
+  /// Index into ModelData::meshes (a MeshData, not a ModelMesh).
   std::size_t mesh = 0;
   /// Index into ModelData::materials, or none for the consumer's default
   /// material.
@@ -150,6 +151,20 @@ struct ModelPrimitive {
 
   /// Primitives are equal when mesh and material are equal.
   [[nodiscard]] friend bool operator==(const ModelPrimitive &, const ModelPrimitive &) = default;
+};
+
+/// A glTF mesh: a named group of primitives that a node places together. Not
+/// to be confused with MeshData, which is the geometry of one primitive. Two
+/// nodes may refer to the same ModelMesh (instancing).
+struct ModelMesh {
+  /// A name for humans; may be empty.
+  std::string name;
+  /// Indices into ModelData::primitives; at least one in a valid model. A
+  /// primitive may be listed by several ModelMesh entries.
+  std::vector<std::size_t> primitives;
+
+  /// Meshes are equal when name and primitives are equal.
+  [[nodiscard]] friend bool operator==(const ModelMesh &, const ModelMesh &) = default;
 };
 
 /// A node transform as translation, rotation and scale. The matrix is
@@ -191,10 +206,10 @@ struct ModelNode {
   std::vector<std::size_t> children;
   /// The transform relative to the parent.
   NodeTransform transform;
-  /// Index into ModelData::primitives of the renderable this node places, or
-  /// none. (A glTF node's mesh with several primitives maps to a node with
-  /// one child node per primitive.)
-  std::optional<std::size_t> primitive;
+  /// Index into ModelData::model_meshes of the mesh this node places, or none.
+  /// Several nodes may name the same mesh (instancing). This is the glTF
+  /// node.mesh; no node is invented per primitive.
+  std::optional<std::size_t> mesh;
 
   /// Nodes are equal when all members are equal.
   [[nodiscard]] friend bool operator==(const ModelNode &, const ModelNode &) = default;
@@ -214,7 +229,8 @@ struct ModelScene {
 
 /// A reusable, backend-independent, CPU-side model: meshes, images, samplers,
 /// textures, materials and a node hierarchy, the data a glTF or similar
-/// decoder produces.
+/// decoder produces. The structure mirrors glTF:
+/// `scene -> node -> ModelMesh -> ModelPrimitive -> MeshData + material`.
 ///
 /// ModelData is an owning, copyable value (copying CPU data is explicit and
 /// legitimate). It holds no GPU handle. Members are plain data; nothing is
@@ -227,8 +243,11 @@ struct ModelScene {
 struct ModelData {
   /// The geometry; each entry is one glTF primitive's worth of vertex data.
   std::vector<MeshData> meshes;
-  /// The renderables: a mesh with an optional material.
+  /// The primitives: a MeshData with an optional material.
   std::vector<ModelPrimitive> primitives;
+  /// The glTF meshes: groups of primitives that nodes place. Named
+  /// `model_meshes` because `meshes` holds MeshData (one primitive's geometry).
+  std::vector<ModelMesh> model_meshes;
   /// The decoded images.
   std::vector<ImageData> images;
   /// The sampler descriptions.
@@ -279,13 +298,15 @@ enum class ModelDataError : std::uint8_t {
   multiple_parents,
   /// A scene root has a parent, or is listed twice in one scene.
   invalid_scene_root,
-  /// A material used by a primitive samples a texcoord set the primitive's
-  /// mesh does not have.
+  /// A material used by a primitive that a node's mesh reaches samples a
+  /// texcoord set the primitive's MeshData does not have.
   missing_texcoord_set,
   /// A custom entry has an empty or repeated key.
   invalid_custom_entry,
   /// An unsupported-feature entry has an empty kind.
   invalid_unsupported_entry,
+  /// A ModelMesh lists no primitive.
+  empty_model_mesh,
 };
 
 /// The category of ModelDataError codes (name "terreate.asset.model_data").
@@ -301,19 +322,20 @@ enum class ModelDataError : std::uint8_t {
 /// sampler enumerators are declared values; every texture's image and sampler
 /// index is in range; every material has in-range finite factors, declared
 /// enumerators and in-range texture references; every primitive's mesh and
-/// material index is in range; every node's children and primitive index are
-/// in range and its transform is finite (a quaternion within 1e-3 of unit
-/// length); no node is listed as a child twice (multiple_parents); the child
-/// lists contain no cycle (node_cycle); every scene root is in range, has no
-/// parent and is listed once; the default scene is in range; every texcoord
-/// set that a primitive's material samples exists on the primitive's mesh
-/// (materials no primitive uses are not checked); custom keys are non-empty and
-/// unique; unsupported kinds are non-empty.
+/// material index is in range; every ModelMesh lists at least one primitive
+/// (empty_model_mesh) and every listed primitive index is in range; every
+/// node's children and mesh index are in range and its transform is finite (a quaternion within
+/// 1e-3 of unit length); no node is listed as a child twice (multiple_parents); the child lists
+/// contain no cycle (node_cycle); every scene root is in range, has no parent and is listed once;
+/// the default scene is in range; every texcoord set that a material samples exists on the MeshData
+/// of each primitive that a node's mesh reaches and that uses the material (anything no node
+/// reaches is not checked for this); custom keys are non-empty and unique; unsupported kinds are
+/// non-empty.
 ///
 /// A matrix transform is only checked for finiteness; whether it can be
 /// decomposed into translation, rotation and scale is not checked. Unused
-/// meshes, images, samplers, textures, materials, primitives and nodes are
-/// valid. The check is iterative (no recursion), so a very long node chain
+/// meshes, images, samplers, textures, materials, primitives, model meshes and
+/// nodes are valid. The check is iterative (no recursion), so a very long node chain
 /// cannot overflow the stack, and its memory is linear in the node count.
 /// Allocation failure throws std::bad_alloc.
 [[nodiscard]] auto validate(const ModelData &model) -> terreate::Result<void>;

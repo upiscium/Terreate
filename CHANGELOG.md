@@ -31,12 +31,14 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   top-left texture origin. Cube maps are not a separate kind in this part.
 - **ModelData** (`<terreate/asset/model_data.hpp>`, #276 part 2): a backend-independent, CPU-only decoded
   model, in the style of `MeshData` and `ImageData`. It owns `meshes` (`MeshData`), `primitives` (mesh plus
-  optional material), `images` (`ImageData`), `samplers` (Asset's own filter, mipmap and wrap enums),
+  optional material), `model_meshes` (glTF meshes: groups of primitives; a node's optional `mesh` indexes them,
+  so the shape is `scene -> node -> ModelMesh -> ModelPrimitive -> MeshData + material` as in glTF, and nodes may
+  instance one mesh), `images` (`ImageData`), `samplers` (Asset's own filter, mipmap and wrap enums),
   `textures`, minimal glTF metallic-roughness `materials` (texture references carry a texcoord set), a node
   hierarchy (TRS with an xyzw quaternion, or a column-major 4x4 matrix, as a variant), `scenes` and a default
   scene, all linked by indices, plus `custom` and `unsupported` lists (animation, skins, cameras and lights
   are not represented; a decoder lists them in `unsupported`). `validate` returns the named error category
-  `ModelDataError` (index range, node cycles and double parents, transforms, material values, texcoord sets,
+  `ModelDataError` (index range, empty meshes, node cycles and double parents, transforms, material values, texcoord sets,
   wrapped mesh and image errors); it is iterative, so a long node chain is safe, and nothing is repaired.
   Converting a whole model to GPU resources is not defined by this change.
 - **Asset-Graphics Integration** (`Terreate::IntegrationAssetGraphics`, `terreate::integration::asset_graphics`,

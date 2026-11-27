@@ -58,8 +58,8 @@ ImageData whiteImage() {
   return image;
 }
 
-// A box with a material that uses a base color texture, in a two-node
-// hierarchy under one scene.
+// A box with a material that uses a base color texture, one primitive and one
+// model mesh, in a two-node hierarchy under one scene.
 ModelData makeModel() {
   ModelData model;
   model.meshes.push_back(terreate::unwrap(box({})));
@@ -71,11 +71,12 @@ ModelData makeModel() {
   material.base_color_texture = TextureRef{0, 0};
   model.materials.push_back(material);
   model.primitives.push_back({0, 0});
+  model.model_meshes.push_back({"mesh", {0}});
   model.nodes.resize(2);
   model.nodes[0].name = "root";
   model.nodes[0].children = {1};
   model.nodes[1].name = "leaf";
-  model.nodes[1].primitive = 0;
+  model.nodes[1].mesh = 0;
   model.nodes[1].transform = TrsTransform{{1.0F, 2.0F, 3.0F}, {0.0F, 0.0F, 0.0F, 1.0F}, {2, 2, 2}};
   model.scenes.push_back({"main", {0}});
   model.default_scene = 0;
@@ -116,9 +117,33 @@ void validModels() {
   noUv.materials[0].base_color_texture.reset();
   check(validate(noUv).has_value(), "a mesh without uv is valid without a texture");
   noUv.materials[0].base_color_texture = TextureRef{0, 0};
-  noUv.primitives.clear();
-  noUv.nodes[1].primitive.reset();
-  check(validate(noUv).has_value(), "an unused material's texcoord is not checked");
+  noUv.nodes[1].mesh.reset();
+  check(validate(noUv).has_value(), "a texcoord of a primitive no node reaches is not checked");
+
+  // glTF shape: one mesh with two primitives (two MeshData, two materials), used
+  // by two instancing nodes; a primitive is also shared by a second mesh.
+  ModelData shape = makeModel();
+  shape.meshes.push_back(terreate::unwrap(quad({})));
+  shape.materials.emplace_back();
+  shape.primitives.push_back({1, 1});
+  shape.model_meshes[0].primitives = {0, 1};
+  shape.model_meshes.push_back({"shared", {1}});
+  shape.nodes.emplace_back();
+  shape.nodes[1].children = {2};
+  shape.nodes[2].name = "instance";
+  shape.nodes[2].mesh = 0;
+  check(validate(shape).has_value(), "a two-primitive mesh used by two nodes is valid");
+  check(shape.nodes[1].mesh == shape.nodes[2].mesh, "two nodes refer to the same mesh");
+  shape.nodes[2].mesh = 1;
+  check(validate(shape).has_value(), "a primitive shared by two meshes is valid");
+  // A texcoord problem in the second primitive of a reached mesh is found.
+  shape.meshes[1] = terreate::unwrap(quad({.uvs = false}));
+  shape.materials[1].base_color_texture = TextureRef{0, 0};
+  check(hasError(validate(shape), ModelDataError::missing_texcoord_set),
+        "a texcoord is checked for the second primitive of a reached mesh");
+  shape.nodes[1].mesh.reset();
+  shape.nodes[2].mesh.reset();
+  check(validate(shape).has_value(), "a mesh no node reaches is not checked for texcoords");
 }
 
 void everyError() {
@@ -165,7 +190,19 @@ void everyError() {
   expect(E::index_out_of_range, "primitive mesh", [](ModelData &m) { m.primitives[0].mesh = 1; });
   expect(E::index_out_of_range, "primitive material",
          [](ModelData &m) { m.primitives[0].material = 1; });
-  expect(E::index_out_of_range, "node primitive", [](ModelData &m) { m.nodes[1].primitive = 1; });
+  expect(E::index_out_of_range, "node mesh", [](ModelData &m) { m.nodes[1].mesh = 1; });
+  expect(E::index_out_of_range, "mesh primitive",
+         [](ModelData &m) { m.model_meshes[0].primitives = {0, 1}; });
+  expect(E::empty_model_mesh, "empty mesh",
+         [](ModelData &m) { m.model_meshes[0].primitives.clear(); });
+  expect(E::empty_model_mesh, "empty mesh that no node uses", [](ModelData &m) {
+    m.nodes[1].mesh.reset();
+    m.model_meshes[0].primitives.clear();
+  });
+  expect(E::index_out_of_range, "mesh primitive that no node uses", [](ModelData &m) {
+    m.nodes[1].mesh.reset();
+    m.model_meshes[0].primitives = {7};
+  });
   expect(E::index_out_of_range, "node child", [](ModelData &m) { m.nodes[1].children = {2}; });
   expect(E::index_out_of_range, "scene root", [](ModelData &m) { m.scenes[0].roots = {2}; });
   expect(E::index_out_of_range, "default scene", [](ModelData &m) { m.default_scene = 1; });

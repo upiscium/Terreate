@@ -354,11 +354,12 @@ a `Result` with a named error category and no repair, and no GPU type. It adds n
 | --- | --- | --- |
 | `meshes` | `MeshData` | none |
 | `primitives` | `ModelPrimitive {mesh, material?}` | `meshes`, `materials` |
+| `model_meshes` | `ModelMesh {name, primitives}` (at least one primitive) | `primitives` |
 | `images` | `ImageData` | none |
 | `samplers` | `SamplerData {min_filter, mag_filter, mipmap_mode, wrap_u, wrap_v}` | none |
 | `textures` | `TextureData {image, sampler?}` | `images`, `samplers` |
 | `materials` | `MaterialData` (below) | `textures` through `TextureRef {texture, texcoord}` |
-| `nodes` | `ModelNode {name, children, transform, primitive?}` | `nodes`, `primitives` |
+| `nodes` | `ModelNode {name, children, transform, mesh?}` | `nodes`, `model_meshes` |
 | `scenes` | `ModelScene {name, roots}` | `nodes` |
 | `default_scene` | optional index | `scenes` |
 | `custom`, `unsupported` | `CustomEntry`, `UnsupportedFeature` (the types of `ImageData`) | none |
@@ -368,9 +369,28 @@ Asset's own (`SamplerFilter`, `SamplerMipmapMode` with a `none` value, `SamplerW
 value; mapping them is the consumer's job. Vectors are plain `std::array<float, N>`; there is no math
 dependency.
 
-A `ModelPrimitive` pairs one `MeshData` with an optional material, the way a glTF primitive does. A node
-places one such primitive through `ModelNode::primitive`. A glTF mesh with several primitives therefore
-becomes one node per primitive under a common parent; Asset does not group primitives into a "mesh" level.
+### The glTF structure, mirrored
+
+glTF places geometry through four levels, and `ModelData` has the same four:
+
+```text
+glTF:       scene -> node -> mesh      -> primitive      -> geometry + material
+Terreate:   scene -> node -> ModelMesh -> ModelPrimitive -> MeshData + material
+            (ModelScene, ModelNode::mesh, ModelData::model_meshes, ModelMesh::primitives,
+             ModelPrimitive{mesh, material?})
+```
+
+- **Naming.** `MeshData` is the geometry of one glTF *primitive* (vertex attributes and indices), not a
+  glTF *mesh*; it is the shared geometry type of Asset and also describes generated shapes. The glTF mesh
+  (a group of primitives) is `ModelMesh`, stored in `ModelData::model_meshes`; the name differs from
+  `ModelData::meshes` (the `MeshData` list) so the two cannot be confused. `ModelPrimitive::mesh` indexes
+  `meshes` (a `MeshData`), while `ModelNode::mesh` indexes `model_meshes` (a `ModelMesh`).
+- **Instancing.** Two or more nodes may name the same `ModelMesh`, and several `ModelMesh` entries may list
+  the same `ModelPrimitive`. Each node places the whole mesh with its own transform; the geometry is stored
+  once.
+- **Decoders map 1:1.** A glTF mesh becomes one `ModelMesh` with one `ModelPrimitive` per glTF primitive,
+  and a glTF node with a mesh becomes one `ModelNode` whose `mesh` names it. A decoder invents no nodes
+  (no node per primitive) and no extra mesh level.
 
 ### Node and transform conventions
 
@@ -427,13 +447,15 @@ itself is not passed through, so test a model with `ModelDataError`.
 | `node_cycle` | a node is its own ancestor |
 | `multiple_parents` | a node is a child more than once (of two nodes or twice of one) |
 | `invalid_scene_root` | a scene root has a parent or is listed twice in a scene |
-| `missing_texcoord_set` | a material used by a primitive samples a texcoord set that the primitive's mesh lacks |
+| `empty_model_mesh` | a `ModelMesh` lists no primitive |
+| `missing_texcoord_set` | a material used by a primitive that a node's mesh reaches samples a texcoord set that the primitive's `MeshData` lacks |
 | `invalid_custom_entry` / `invalid_unsupported_entry` | an empty or repeated custom key, an empty unsupported kind |
 
 `validate` reports the first violation in the order: meshes, images, samplers, textures, materials,
-primitives, nodes (indices, transforms, child lists), cycles, scenes and default scene, texcoord sets,
-custom entries, unsupported entries. The texcoord rule applies to materials that a primitive uses; a mesh
-may lack a texcoord set that an unused material names. A matrix transform is only checked for finiteness;
+primitives, model meshes (not empty, primitive indices), nodes (mesh index, transforms, child lists), cycles, scenes and default scene, texcoord sets,
+custom entries, unsupported entries. The texcoord rule applies to the primitives that a node's mesh reaches and
+to the materials they use; a `MeshData` may lack a texcoord set that an unused material, or a primitive no
+node reaches, names. A matrix transform is only checked for finiteness;
 whether it decomposes into translation, rotation and scale is not. `validate` is iterative with memory
 linear in the node count, so a very long node chain cannot overflow the stack. Allocation failure throws
 `std::bad_alloc`.
@@ -458,8 +480,9 @@ asset::ModelData oneBox() {
   model.meshes.push_back(terreate::unwrap(asset::box({})));
   model.materials.emplace_back();
   model.primitives.push_back({0, 0});
+  model.model_meshes.push_back({"box", {0}});
   model.nodes.resize(1);
-  model.nodes[0].primitive = 0;
+  model.nodes[0].mesh = 0;
   model.scenes.push_back({"main", {0}});
   model.default_scene = 0;
   terreate::unwrap(asset::validate(model));

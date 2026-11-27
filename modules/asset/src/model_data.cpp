@@ -38,11 +38,13 @@ public:
     case ModelDataError::invalid_scene_root:
       return "a scene root has a parent or is listed twice";
     case ModelDataError::missing_texcoord_set:
-      return "a material samples a texcoord set its mesh does not have";
+      return "a material samples a texcoord set its primitive's mesh does not have";
     case ModelDataError::invalid_custom_entry:
       return "a custom entry has an empty or repeated key";
     case ModelDataError::invalid_unsupported_entry:
       return "an unsupported-feature entry has an empty kind";
+    case ModelDataError::empty_model_mesh:
+      return "a model mesh lists no primitive";
     }
     return "unknown ModelData error";
   }
@@ -179,10 +181,10 @@ terreate::Result<void> checkNodes(const ModelData &model, std::vector<std::uint8
   parents.assign(count, 0);
   for (std::size_t i = 0; i < count; ++i) {
     const ModelNode &node = model.nodes[i];
-    if (node.primitive && *node.primitive >= model.primitives.size())
+    if (node.mesh && *node.mesh >= model.model_meshes.size())
       return fail(ModelDataError::index_out_of_range,
-                  at("nodes", i) + ".primitive " + std::to_string(*node.primitive) +
-                      " is not below " + std::to_string(model.primitives.size()) + " primitives");
+                  at("nodes", i) + ".mesh " + std::to_string(*node.mesh) + " is not below " +
+                      std::to_string(model.model_meshes.size()) + " model_meshes");
     if (auto r = checkTransform(node.transform, i); !r)
       return r;
     for (const std::size_t child : node.children) {
@@ -263,25 +265,41 @@ terreate::Result<void> checkTexcoord(const ModelData &model, std::size_t primiti
   return {};
 }
 
+terreate::Result<void> checkPrimitiveTexcoords(const ModelData &model, std::size_t i) {
+  const ModelPrimitive &p = model.primitives[i];
+  if (!p.material)
+    return {};
+  const std::size_t material = *p.material;
+  const MaterialData &m = model.materials[material];
+  if (auto r = checkTexcoord(model, i, material, m.base_color_texture, "base_color_texture"); !r)
+    return r;
+  if (auto r = checkTexcoord(model, i, material, m.metallic_roughness_texture,
+                             "metallic_roughness_texture");
+      !r)
+    return r;
+  if (auto r = checkTexcoord(model, i, material, m.normal_texture, "normal_texture"); !r)
+    return r;
+  if (auto r = checkTexcoord(model, i, material, m.emissive_texture, "emissive_texture"); !r)
+    return r;
+  return checkTexcoord(model, i, material, m.occlusion_texture, "occlusion_texture");
+}
+
+// Only the primitives that a node's mesh reaches are checked; each model mesh and each primitive
+// is checked once however many nodes or meshes share it.
 terreate::Result<void> checkTexcoords(const ModelData &model) {
-  for (std::size_t i = 0; i < model.primitives.size(); ++i) {
-    const ModelPrimitive &p = model.primitives[i];
-    if (!p.material)
+  std::vector<std::uint8_t> meshDone(model.model_meshes.size(), 0);
+  std::vector<std::uint8_t> primitiveDone(model.primitives.size(), 0);
+  for (const ModelNode &node : model.nodes) {
+    if (!node.mesh || meshDone[*node.mesh] != 0)
       continue;
-    const std::size_t material = *p.material;
-    const MaterialData &m = model.materials[material];
-    if (auto r = checkTexcoord(model, i, material, m.base_color_texture, "base_color_texture"); !r)
-      return r;
-    if (auto r = checkTexcoord(model, i, material, m.metallic_roughness_texture,
-                               "metallic_roughness_texture");
-        !r)
-      return r;
-    if (auto r = checkTexcoord(model, i, material, m.normal_texture, "normal_texture"); !r)
-      return r;
-    if (auto r = checkTexcoord(model, i, material, m.emissive_texture, "emissive_texture"); !r)
-      return r;
-    if (auto r = checkTexcoord(model, i, material, m.occlusion_texture, "occlusion_texture"); !r)
-      return r;
+    meshDone[*node.mesh] = 1;
+    for (const std::size_t primitive : model.model_meshes[*node.mesh].primitives) {
+      if (primitiveDone[primitive] != 0)
+        continue;
+      primitiveDone[primitive] = 1;
+      if (auto r = checkPrimitiveTexcoords(model, primitive); !r)
+        return r;
+    }
   }
   return {};
 }
@@ -336,6 +354,16 @@ auto validate(const ModelData &model) -> terreate::Result<void> {
       return fail(ModelDataError::index_out_of_range,
                   at("primitives", i) + ".material " + std::to_string(*p.material) +
                       " is not below " + std::to_string(model.materials.size()) + " materials");
+  }
+  for (std::size_t i = 0; i < model.model_meshes.size(); ++i) {
+    const ModelMesh &mesh = model.model_meshes[i];
+    if (mesh.primitives.empty())
+      return fail(ModelDataError::empty_model_mesh, at("model_meshes", i) + " lists no primitive");
+    for (const std::size_t primitive : mesh.primitives)
+      if (primitive >= model.primitives.size())
+        return fail(ModelDataError::index_out_of_range,
+                    at("model_meshes", i) + ".primitives has " + std::to_string(primitive) +
+                        ", not below " + std::to_string(model.primitives.size()) + " primitives");
   }
 
   std::vector<std::uint8_t> parents;

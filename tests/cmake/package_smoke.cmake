@@ -1624,9 +1624,10 @@ int main() {
   model.meshes.push_back(std::move(*box));
   model.materials.emplace_back();
   model.primitives.push_back({0, 0});
+  model.model_meshes.push_back({"mesh", {0}});
   model.nodes.resize(2);
   model.nodes[0].children = {1};
-  model.nodes[1].primitive = 0;
+  model.nodes[1].mesh = 0;
   model.scenes.push_back({"main", {0}});
   model.default_scene = 0;
   if (!asset::validate(model)) return 13;
