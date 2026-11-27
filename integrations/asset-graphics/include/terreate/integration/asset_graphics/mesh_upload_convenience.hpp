@@ -108,7 +108,8 @@ struct MeshUploadSubmission {
 /// No barrier is recorded: the buffers are written by a transfer, so the
 /// application makes that write visible to the later use (the vertex input
 /// stage) with a barrier, a semaphore, or a host wait on `fence` followed by a
-/// later submission on the same device.
+/// later submission on the same device. If the later use is on another queue
+/// family, the buffers need the application's ownership transfer as for any exclusive buffer.
 ///
 /// Errors are those of the explicit steps, unchanged (`asset::MeshDataError`,
 /// `MeshUploadError`, `graphics::BufferError`, `graphics::UploadError`,
@@ -135,7 +136,8 @@ struct MeshUploadResult {
 
 /// BLOCKING upload of `mesh`: creates its own command pool (on `queue`'s family),
 /// command buffer and fence, performs `submitMeshUpload`, then waits on the
-/// fence for at most `timeout_ns` (`UINT64_MAX` waits without limit; there is no
+/// fence for at most `timeout_ns` ((`UINT64_MAX` waits without limit, 0 only polls and so
+/// abandons the resources unless the copy already finished; there is no
 /// default), then destroys the helper objects, the staging included. It returns
 /// only when the copies have completed, so the buffers hold the mesh and any
 /// later submission on `device` may read them (the fence wait makes the

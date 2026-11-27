@@ -246,7 +246,7 @@ the device as hung or lost. `integration.asset_graphics.convenience` checks the 
 
 ### The lower-level equivalent, step by step
 
-`submitMeshUpload` is exactly this (the same code the `integration.asset_graphics.convenience` test uses
+`submitMeshUpload` is this, after you have begun the command buffer yourself (the same code the `integration.asset_graphics.convenience` test uses
 for its comparison):
 
 ```cpp
