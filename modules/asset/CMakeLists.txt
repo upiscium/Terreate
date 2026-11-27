@@ -9,7 +9,9 @@ endif()
 # nothing but Core (#345).
 add_library(terreate_asset STATIC
   src/mesh_data.cpp
-  include/terreate/asset/mesh_data.hpp)
+  src/primitives.cpp
+  include/terreate/asset/mesh_data.hpp
+  include/terreate/asset/primitives.hpp)
 target_include_directories(terreate_asset
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
