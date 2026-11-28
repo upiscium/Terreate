@@ -347,6 +347,7 @@ elseif(_component STREQUAL "IntegrationAssetGraphics")
 #include <terreate/integration/asset_graphics/image_upload.hpp>
 #include <terreate/integration/asset_graphics/mesh_upload.hpp>
 #include <terreate/integration/asset_graphics/mesh_upload_convenience.hpp>
+#include <terreate/integration/asset_graphics/image_upload_convenience.hpp>
 
 #include <type_traits>
 #include <utility>

@@ -30,6 +30,8 @@ public:
       return "the plan, the image data or the image are not consistent with each other";
     case ImageUploadError::no_transition:
       return "the plan states no layout transition";
+    case ImageUploadError::wait_timeout:
+      return "the fence did not signal within the timeout";
     }
     return "unknown image upload error";
   }

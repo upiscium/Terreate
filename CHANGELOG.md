@@ -133,8 +133,20 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   the staging owner and the `SubmissionReceipt` for a `RetirementQueue` (it never waits); `uploadMeshBlocking`
   creates its own command pool, command buffer and fence, waits on the fence for the given timeout and returns the
   buffers and the plan. `MeshUploadError::wait_timeout` is appended (on a timeout the GPU may still use the
-  resources, which are then deliberately not destroyed). The image convenience waits for the layout-transition
-  opt-in (#468). The lower-level equivalent is documented step by step.
+  resources, which are then deliberately not destroyed).
+  The image upload is the next entry. The lower-level equivalent is documented step by step.
+- **Asset-Graphics Integration: beginner image upload** (`<terreate/integration/asset_graphics/image_upload_convenience.hpp>`,
+  #463; additive): `submitImageUpload` is non-blocking: given a recording command buffer, a queue and an unsignaled
+  fence it plans, creates the image, records a barrier from `eUndefined` to the copy layout, the upload batch and
+  (by default) the opt-in transition to `eShaderReadOnlyOptimal`, ends the command buffer and calls `submitFenced`,
+  and returns the plan, the image, the staging owner and the `SubmissionReceipt` for a `RetirementQueue` (it never
+  waits); `uploadImageBlocking` creates its own command pool, command buffer and fence, waits for the given timeout
+  and returns the plan and the image, ready to be sampled. `ImageUploadConvenienceDescription` has the fields of
+  `ImageUploadDescription` except that `layout_transition` defaults to `shader_read_only` (the explicit steps keep
+  `none`); `none` leaves the image in `eTransferDstOptimal`. `planImageUploadWithDefaults` and
+  `toImageUploadDescription` are the CPU parts. `ImageUploadError::wait_timeout` is appended (on a timeout the GPU may
+  still use the resources, which are then deliberately not destroyed). No `ImageView` or `Sampler` is created and no
+  mips are generated. The lower-level equivalent is documented step by step.
 - **Graphics upload batch: more Image formats** (#279): the Image upload of `prepareUploadBatch` and
   `recordUploadBatch`, until now `R8G8B8A8_UNORM` only, accepts the uncompressed single-plane color formats R8, R8G8
   and R8G8B8A8 (UNORM and SRGB), R16, R16G16 and R16G16B16A16 (UNORM) and R32, R32G32 and R32G32B32A32 (SFLOAT). The

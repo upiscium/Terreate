@@ -12,9 +12,11 @@ add_library(terreate_integration_asset_graphics STATIC
   src/mesh_upload.cpp
   src/image_upload.cpp
   src/mesh_upload_convenience.cpp
+  src/image_upload_convenience.cpp
   include/terreate/integration/asset_graphics/mesh_upload.hpp
   include/terreate/integration/asset_graphics/image_upload.hpp
-  include/terreate/integration/asset_graphics/mesh_upload_convenience.hpp)
+  include/terreate/integration/asset_graphics/mesh_upload_convenience.hpp
+  include/terreate/integration/asset_graphics/image_upload_convenience.hpp)
 target_include_directories(terreate_integration_asset_graphics
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
