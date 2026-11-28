@@ -158,8 +158,6 @@ std::vector<std::byte> tightBytes(const asset::ImageData &data, const ag::ImageU
       const auto *from = source->data() + static_cast<std::size_t>(row) * entry.row_pitch;
       out.insert(out.end(), from, from + width_bytes);
     }
-    while (out.size() % 16U != 0)
-      out.push_back(std::byte{0});
   }
   return out;
 }
@@ -185,7 +183,9 @@ void mustWait(const graphics::Fence &fence, const char *what) {
 
 // Reads every (mip, layer) of `image`, which is in `layout` and whose upload is complete, back
 // with the explicit Graphics API, in a command buffer and fence of its own. The output is the
-// tight rows of each subresource padded to 16 bytes, like `tightBytes`.
+// tight rows of each subresource, like `tightBytes`. The readback buffer pads each subresource
+// to 16 bytes, but the copies never write those padding bytes and a new buffer is not zeroed
+// (a driver may hand out recycled memory), so the padding is dropped and never compared.
 bool readBack(Gpu &gpu, const graphics::Image &image, const ag::ImageUploadPlan &plan,
               vk::ImageLayout layout, std::size_t texel_size, std::vector<std::byte> &out,
               const std::string &label) {
@@ -284,7 +284,15 @@ bool readBack(Gpu &gpu, const graphics::Image &image, const ag::ImageUploadPlan 
   if (!check(bool(copied), label + ": the completed readback is copied"))
     return false;
   const auto back = copied->dataFor(0);
-  out.assign(back.begin(), back.end());
+  if (!check(back.size() >= total, label + ": the readback holds every subresource"))
+    return false;
+  out.clear();
+  for (std::size_t i = 0; i < offsets.size(); ++i) {
+    const auto &extent = plan.subresources[i].region.imageExtent;
+    const std::size_t tight = static_cast<std::size_t>(extent.width) * extent.height * texel;
+    out.insert(out.end(), back.begin() + static_cast<std::ptrdiff_t>(offsets[i]),
+               back.begin() + static_cast<std::ptrdiff_t>(offsets[i] + tight));
+  }
   graphics::RetirementQueue retirement;
   const bool retired = static_cast<bool>(retirement.retire(*readback, uses));
   const auto collected = retirement.collect();

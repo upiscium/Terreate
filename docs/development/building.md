@@ -1,5 +1,8 @@
 # Building, testing and documenting
 
+Without Nix, see [building without Nix](non-nix-build.md): the dependency inventory, how each one is obtained,
+the commands, and what is promised there (configure, build and CTest; the gate below is the Nix shell's).
+
 Enter the pinned environment with `nix develop`. It provides GCC/g++, CMake, Ninja,
 Just, the Vulkan loader, the validation layers, a Mesa software device, GLFW, Doxygen,
 Sphinx and ccache. Generic editor tooling (`clangd`, `clang-tidy`, `clang-format`) is expected

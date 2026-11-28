@@ -25,12 +25,14 @@ Errors are values: functions return `terreate::Result<T>` instead of throwing ([
 | You need | Notes |
 | --- | --- |
 | Linux, GCC/g++ (C++23), CMake 3.28+, Ninja | Other platforms and compilers are not verified for 0.1 |
-| The Vulkan 1.3 headers and loader, a Vulkan 1.3 driver | A software driver (Mesa lavapipe) is enough to run the headless example |
+| The Vulkan loader and headers (Vulkan-Hpp from Vulkan-Headers 1.4.321 or newer), a Vulkan 1.3 driver | A software driver (Mesa lavapipe) is enough to run the headless example |
 | GLFW 3.4+ | Only for the Platform component and the windowed examples |
 | VulkanMemoryAllocator | For Graphics |
 
 The repository ships a pinned [Nix](https://nixos.org/) development shell with all of this:
-`nix develop`. Without Nix, install the same packages and see [building](development/building.md).
+`nix develop`. Without Nix, see [building without Nix](development/non-nix-build.md): every dependency
+with its minimum version and where to get it (Debian 13 package names, and a helper script for the two
+that Debian lacks), and what is promised there.
 
 ## 1. Get and build the library
 

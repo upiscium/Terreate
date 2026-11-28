@@ -39,8 +39,21 @@ as `VK_LAYER_PATH`, with the pinned layer directory prepended to any existing
 path.  `VULKAN_HEADERS_INCLUDE` is the canonical header interface; `nix
 develop` supplies its pinned Vulkan Headers `include` directory value.  The
 other `TERREATE_VULKAN_*` variables expose pinned Vulkan inputs for
-diagnostics.  CMake requires this explicit variable when Graphics is enabled
+diagnostics.  CMake requires this explicit variable (or, outside Nix, the cache variable
+`TERREATE_VULKAN_HEADERS_INCLUDE_DIR`, which wins when both are set) when Graphics is enabled
 for Vulkan-Hpp and does not silently search inherited SDK or host defaults.
+
+**Without Nix**: Nix is the reference environment, not a requirement.  Every
+dependency can be obtained without it, and configure, build and CTest are
+verified on Debian 13 in a container with no Nix.  The dependency inventory
+(with minimum versions, how CMake finds each one, Debian package names), the
+commands, the helper scripts `tools/fetch-deps.sh` (pinned, hash-checked
+downloads for cgltf and Vulkan-Headers) and `tools/verify-non-nix.sh`, and the
+promise outside Nix are in
+[docs/development/non-nix-build.md](docs/development/non-nix-build.md).  Outside
+Nix, pass the Vulkan-Hpp directory as `-DTERREATE_VULKAN_HEADERS_INCLUDE_DIR=...`
+instead of exporting `VULKAN_HEADERS_INCLUDE`.  The full gate stays the Nix
+shell's.
 
 Generic GCC/g++, `clangd`, `clang-tidy`, and `clang-format` are editor/build
 tooling rather than project-owned dependencies and are expected from the
@@ -85,7 +98,7 @@ sets `gcc`/`g++`, C++23, Ninja, and `CMAKE_CXX_SCAN_FOR_MODULES=OFF`.
 invocation enters the pinned `nix develop` shell itself and dispatches the
 private check there, so it receives the pinned `VULKAN_HEADERS_INCLUDE` value.
 For a top-level Terreate configure, Graphics is fail-closed when
-`VULKAN_HEADERS_INCLUDE` is absent; Core-only and Graphics-OFF source trees do
+`VULKAN_HEADERS_INCLUDE` and `TERREATE_VULKAN_HEADERS_INCLUDE_DIR` are both absent; Core-only and Graphics-OFF source trees do
 not discover Vulkan.  When Terreate is added with `add_subdirectory`, it does
 not impose that top-level environment contract on the parent project: Graphics
 uses the surrounding project's Vulkan package discovery, with
