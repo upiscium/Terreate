@@ -24,6 +24,29 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   sets, or a standard search); asking for it without Asset or without the header is a configure error. A
   path-based convenience is composed from the application's own file reading, and the function can be
   wrapped as the decode callable of the glTF adapter (#278).
+- **cgltf Adapter** (`Terreate::AdapterAssetGltfCgltf`, `terreate::adapter::asset_gltf_cgltf`, header
+  `<terreate/adapter/asset_gltf_cgltf/decoder.hpp>`, option `TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF`,
+  `find_package` component `AdapterAssetGltfCgltf`; #278): the second decoder, from the bytes of one glTF 2.0
+  (`.gltf` or `.glb`) to an Asset `ModelData` (`decodeGltf(input, resolver, image_decoder, options)`). It
+  maps scenes, nodes (TRS or matrix) and the hierarchy, meshes and primitives (POSITION, NORMAL, TANGENT,
+  TEXCOORD_n, COLOR_n, indices; points, lines, triangles and strips), core metallic-roughness materials,
+  textures, samplers and images 1:1, without inventing nodes and without generating normals. External
+  buffers and images are requested through the Asset `ResourceResolverView` (the decoder never reads a file
+  or a URL; `data:` base64 URIs are decoded by the Adapter under the resource limits), images become
+  `ImageData` through an application-provided `ImageDecoderView` (the stb_image Adapter's `decodeImage` can
+  be wrapped as it; the Adapter does not depend on it) with the color interpretation taken from how the
+  materials use each image, and the source and every external request are in the result's provenance.
+  Animations, skins, morph targets, cameras, lights, extensions, extras, other attributes and the line loop,
+  line strip and triangle fan modes are listed in `ModelData::unsupported` and as diagnostics, never dropped
+  silently; a file whose `extensionsRequired` is not empty is refused. The decode checks every bound itself
+  (accessors, buffer views, sparse accessors, indices, JSON nesting, node cycles and depth, a parser memory
+  budget, decoded size) and names every failure (`GltfDecodeError`; the shared `asset::DecodeError`,
+  `ResolveError` and `ImageDataError` are returned unchanged). The backend is cgltf, a private build input
+  that nixpkgs does not provide: it is a pinned flake input (`flake.lock`), exposed to CMake like stb as the
+  environment variable `CGLTF_INCLUDE` (or `TERREATE_CGLTF_INCLUDE_DIR`, or a standard search), never
+  vendored or downloaded by CMake, and no cgltf header is public or installed. The option is on by default
+  only when Asset is built and `cgltf.h` is found; asking for it without Asset or without the header is a
+  configure error.
 - **Asset** (`Terreate::Asset`, `terreate::asset`, option `TERREATE_BUILD_ASSET`, `find_package` component `Asset`):
   a new CPU-only component that depends on Core alone, so a consumer of it needs neither Vulkan nor GLFW.
   Its first type is `MeshData` (#345), a backend-independent geometry value: topology, deinterleaved

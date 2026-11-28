@@ -54,7 +54,7 @@ cmake_minimum_required(VERSION 3.28)
 project(app CXX)
 set(CMAKE_CXX_STANDARD 23)
 
-find_package(Terreate REQUIRED COMPONENTS Graphics)   # also: Core, Asset, Platform, IntegrationPlatformGraphics, IntegrationAssetGraphics, AdapterAssetImageStb
+find_package(Terreate REQUIRED COMPONENTS Graphics)   # also: Core, Asset, Platform, IntegrationPlatformGraphics, IntegrationAssetGraphics, AdapterAssetImageStb, AdapterAssetGltfCgltf
 add_executable(app main.cpp)
 target_link_libraries(app PRIVATE Terreate::Graphics)
 ```
@@ -125,6 +125,7 @@ yet (it waits for the layout-transition option, #468).
 | upload a `MeshData` in one call (beginner path: `uploadMeshBlocking`, or non-blocking `submitMeshUpload`) | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | upload an `ImageData` to a GPU image, explicitly | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | decode a PNG, JPEG, BMP, TGA or HDR from memory into an `ImageData` (no file or GPU involved) | [stb_image Adapter](architecture/asset_image_stb.md) | [stb_image Adapter](api/asset_image_stb.md) |
+| decode a glTF or GLB from memory into a `ModelData` (no file or GPU involved; external files through a resolver, images through your decoder) | [cgltf Adapter](architecture/asset_gltf_cgltf.md) | [cgltf Adapter](api/asset_gltf_cgltf.md) |
 | open a window and poll events | [Platform runtime](architecture/platform_runtime.md) | [Platform](api/platform.md) |
 | pick a GPU and create a Device | [Physical device](architecture/physical-device.md), [Logical device](architecture/logical-device.md) | [Graphics](api/graphics.md) |
 | create buffers and images | [Allocator](architecture/allocator.md), [Buffer](architecture/buffer.md), [Image](architecture/image.md) | [Graphics](api/graphics.md) |

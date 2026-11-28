@@ -90,6 +90,47 @@ endif()
 option(TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB
   "Build the optional Terreate stb_image Adapter (decodes PNG/JPEG/BMP/TGA/HDR to Asset ImageData)"
   ${_terreate_adapter_asset_image_stb_default})
+# The cgltf Adapter (#278) decodes glTF 2.0 and GLB from memory into an Asset
+# ModelData. cgltf is a single header compiled into the Adapter's static library
+# only: a build-time input, never a package dependency, never vendored and never
+# downloaded by CMake. Where the header comes from, in order: the cache variable
+# TERREATE_CGLTF_INCLUDE_DIR, the environment variable CGLTF_INCLUDE (the project
+# devShell sets it to the pinned source tree, like STB_INCLUDE), then a standard
+# search for cgltf.h (also below a `cgltf` directory). The first one that is set
+# decides: a set but wrong value is an error, never a fall-through to another cgltf.
+set(TERREATE_CGLTF_INCLUDE_DIR "" CACHE PATH
+  "Directory that contains cgltf.h (AdapterAssetGltfCgltf build input)")
+set(_terreate_cgltf_include_dir "")
+if(NOT "${TERREATE_CGLTF_INCLUDE_DIR}" STREQUAL "")
+  set(_terreate_cgltf_include_source "TERREATE_CGLTF_INCLUDE_DIR")
+  set(_terreate_cgltf_include_dir "${TERREATE_CGLTF_INCLUDE_DIR}")
+elseif(DEFINED ENV{CGLTF_INCLUDE} AND NOT "$ENV{CGLTF_INCLUDE}" STREQUAL "")
+  set(_terreate_cgltf_include_source "CGLTF_INCLUDE")
+  set(_terreate_cgltf_include_dir "$ENV{CGLTF_INCLUDE}")
+endif()
+if(NOT "${_terreate_cgltf_include_dir}" STREQUAL "")
+  if(NOT EXISTS "${_terreate_cgltf_include_dir}/cgltf.h")
+    set(_terreate_cgltf_include_dir "")
+    set(_terreate_cgltf_invalid_source "${_terreate_cgltf_include_source}")
+  endif()
+else()
+  unset(_terreate_cgltf_include_dir)
+  find_path(_terreate_cgltf_include_dir NAMES cgltf.h PATH_SUFFIXES cgltf NO_CACHE)
+  if(NOT _terreate_cgltf_include_dir)
+    set(_terreate_cgltf_include_dir "")
+  endif()
+endif()
+# On by default only when Asset is on and a cgltf.h was found. Asking for it
+# without Asset, or without cgltf, is a configure error below, never a silent
+# correction.
+if(TERREATE_BUILD_ASSET AND NOT "${_terreate_cgltf_include_dir}" STREQUAL "")
+  set(_terreate_adapter_asset_gltf_cgltf_default ON)
+else()
+  set(_terreate_adapter_asset_gltf_cgltf_default OFF)
+endif()
+option(TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF
+  "Build the optional Terreate cgltf Adapter (decodes glTF 2.0 and GLB to Asset ModelData)"
+  ${_terreate_adapter_asset_gltf_cgltf_default})
 # The examples use the Integration and follow its actual setting by default (so
 # the gate compiles them, and turning the Integration off turns them off); they
 # are not installed. Asking for them without the
@@ -482,6 +523,29 @@ if(TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB)
   message(STATUS "stb_image include directory: ${_terreate_stb_include_dir}")
 endif()
 
+if(TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF)
+  if(NOT TERREATE_BUILD_ASSET)
+    message(FATAL_ERROR
+      "TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF=ON requires "
+      "TERREATE_BUILD_ASSET=ON; Terreate does not enable a component implicitly. "
+      "Enable it, or set TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF=OFF")
+  endif()
+  if(DEFINED _terreate_cgltf_invalid_source)
+    message(FATAL_ERROR
+      "TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF=ON needs cgltf.h, but "
+      "${_terreate_cgltf_invalid_source} does not name a directory that contains it. "
+      "Fix it, or set TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF=OFF")
+  endif()
+  if("${_terreate_cgltf_include_dir}" STREQUAL "")
+    message(FATAL_ERROR
+      "TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF=ON needs cgltf.h, which was not "
+      "found. Set TERREATE_CGLTF_INCLUDE_DIR (or the environment variable CGLTF_INCLUDE) "
+      "to the directory that contains it, or set "
+      "TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF=OFF")
+  endif()
+  message(STATUS "cgltf include directory: ${_terreate_cgltf_include_dir}")
+endif()
+
 # Keep C++ policy on every component target, including when Terreate is added
 # as a subdirectory by a consumer.  The private compiler context is applied as
 # compile options rather than a link dependency, so it can never leak into an
@@ -520,6 +584,9 @@ if(TERREATE_BUILD_INTEGRATION_ASSET_GRAPHICS)
 endif()
 if(TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB)
   add_subdirectory(adapters/asset-image-stb)
+endif()
+if(TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF)
+  add_subdirectory(adapters/asset-gltf-cgltf)
 endif()
 
 if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
@@ -1263,6 +1330,34 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       FAIL_REGULAR_EXPRESSION "adapter\\.asset_image_stb: (assertion=FAIL|.*BLOCKED)")
   endif()
 
+  # #278: the cgltf Adapter decodes in-memory glTF and GLB bytes into a ModelData. The tests are
+  # CPU-only: the first links the Adapter (and so Asset) alone; the second links both Adapters
+  # and decodes a GLB with an embedded PNG through the stb Adapter wrapped as the image
+  # decoder. No Vulkan, no Graphics, no Platform, no display, no file system and no OS-,
+  # compiler- or linker-specific mechanism.
+  if(TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF)
+    add_executable(terreate_adapter_asset_gltf_cgltf_tests
+      tests/test_adapter_asset_gltf_cgltf.cpp)
+    target_link_libraries(terreate_adapter_asset_gltf_cgltf_tests PRIVATE
+      Terreate::AdapterAssetGltfCgltf)
+    terreate_configure_target(terreate_adapter_asset_gltf_cgltf_tests)
+    add_test(NAME adapter.asset_gltf_cgltf COMMAND terreate_adapter_asset_gltf_cgltf_tests)
+    set_tests_properties(adapter.asset_gltf_cgltf PROPERTIES
+      PASS_REGULAR_EXPRESSION "adapter\\.asset_gltf_cgltf: gltf-cgltf=PASS"
+      FAIL_REGULAR_EXPRESSION "adapter\\.asset_gltf_cgltf: (assertion=FAIL|.*BLOCKED)")
+    if(TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB)
+      add_executable(terreate_adapter_asset_gltf_cgltf_stb_tests
+        tests/test_adapter_asset_gltf_cgltf_stb.cpp)
+      target_link_libraries(terreate_adapter_asset_gltf_cgltf_stb_tests PRIVATE
+        Terreate::AdapterAssetGltfCgltf Terreate::AdapterAssetImageStb)
+      terreate_configure_target(terreate_adapter_asset_gltf_cgltf_stb_tests)
+      add_test(NAME adapter.asset_gltf_cgltf_stb COMMAND terreate_adapter_asset_gltf_cgltf_stb_tests)
+      set_tests_properties(adapter.asset_gltf_cgltf_stb PROPERTIES
+        PASS_REGULAR_EXPRESSION "adapter\\.asset_gltf_cgltf_stb: gltf-stb=PASS"
+        FAIL_REGULAR_EXPRESSION "adapter\\.asset_gltf_cgltf_stb: (assertion=FAIL|.*BLOCKED)")
+    endif()
+  endif()
+
   # #279 part 1: a MeshData becomes Graphics buffers and upload items. `plan` is
   # CPU only; the GPU test needs the validation layer and a device, and fails
   # (never passes) without the layer. No linker or platform mechanism is used.
@@ -1435,6 +1530,11 @@ if(_terreate_has_components)
       FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateAdapterAssetImageStbTargets.cmake"
       NAMESPACE Terreate::)
   endif()
+  if(TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF)
+    export(TARGETS terreate_adapter_asset_gltf_cgltf
+      FILE "${CMAKE_CURRENT_BINARY_DIR}/TerreateAdapterAssetGltfCgltfTargets.cmake"
+      NAMESPACE Terreate::)
+  endif()
 
   set(_terreate_build_config "${CMAKE_CURRENT_BINARY_DIR}/TerreateConfig.cmake")
   set(_terreate_install_config
@@ -1514,6 +1614,12 @@ if(_terreate_has_components)
   if(TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB)
     install(EXPORT TerreateAdapterAssetImageStbTargets
       FILE TerreateAdapterAssetImageStbTargets.cmake
+      NAMESPACE Terreate::
+      DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
+  endif()
+  if(TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF)
+    install(EXPORT TerreateAdapterAssetGltfCgltfTargets
+      FILE TerreateAdapterAssetGltfCgltfTargets.cmake
       NAMESPACE Terreate::
       DESTINATION "${TERREATE_INSTALL_CMAKEDIR}")
   endif()

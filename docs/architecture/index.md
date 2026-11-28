@@ -28,7 +28,7 @@ target that gathers every optional dependency.
 | --- | --- | --- |
 | Core | The minimum contract every component needs: `Result`/`Error`, diagnostics, configuration pattern. Depends on nothing above it. | `Terreate::Core` |
 | Module | A domain capability. It need not be backend-neutral: Graphics states Vulkan as its backend. | `Terreate::Asset` (CPU-only), `Terreate::Platform` (GLFW), `Terreate::Graphics` (Vulkan) |
-| Adapter | Connects an external backend to an existing Module contract. A Module never depends on an Adapter. | `Terreate::AdapterAssetImageStb` |
+| Adapter | Connects an external backend to an existing Module contract. A Module never depends on an Adapter. | `Terreate::AdapterAssetImageStb`, `Terreate::AdapterAssetGltfCgltf` |
 | Integration | Optional glue that connects the public APIs of several components. | `Terreate::IntegrationPlatformGraphics`, `Terreate::IntegrationAssetGraphics` |
 | Extension | An optional abstraction or development utility on top of existing components. The lower Modules stay fully usable without it. | none yet |
 
@@ -70,7 +70,8 @@ The API reference is generated from the `include/` trees only.
 
 - Targets are per component: `Terreate::Core`, `Terreate::Asset`, `Terreate::Platform`,
   `Terreate::Graphics`, `Terreate::IntegrationPlatformGraphics`,
-  `Terreate::IntegrationAssetGraphics`, `Terreate::AdapterAssetImageStb`. A consumer writes
+  `Terreate::IntegrationAssetGraphics`, `Terreate::AdapterAssetImageStb`,
+  `Terreate::AdapterAssetGltfCgltf`. A consumer writes
   `find_package(Terreate REQUIRED COMPONENTS Graphics)` and links the targets it needs.
 - The source tree and the install tree expose the same public target names.
 - Options select components (`TERREATE_BUILD_*`). Contradictory options are a configure
@@ -89,7 +90,8 @@ The API reference is generated from the `include/` trees only.
 
 The pages below fix the contract of each part that exists. The Asset-Graphics Integration's contract is in
 [Asset-Graphics Integration](asset_graphics.md) and the stb_image Adapter's in
-[stb_image Adapter](asset_image_stb.md). The Platform-Graphics
+[stb_image Adapter](asset_image_stb.md) and the cgltf Adapter's in
+[cgltf Adapter](asset_gltf_cgltf.md). The Platform-Graphics
 Integration's contract is in [Surface ownership and the Window Integration](surface.md);
 the other pages follow the topic they name and predate the
 [component template](../development/component-template.md), which new components follow. Start with the cross-cutting
