@@ -3,10 +3,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <system_error>
 #include <vector>
 
 #include <terreate/asset/image_data.hpp>
+#include <terreate/asset/mip_chain.hpp>
 #include <terreate/core/result.hpp>
 #include <terreate/graphics/allocator.hpp>
 #include <terreate/graphics/barriers.hpp>
@@ -21,7 +23,8 @@
 ///
 /// Getting an `asset::ImageData` onto the GPU takes three explicit steps, and
 /// nothing in these steps records a command, submits work, waits, creates an
-/// `ImageView` or a `Sampler`, generates mips or transitions a layout:
+/// `ImageView` or a `Sampler`, generates mips (unless `MipGeneration::cpu_box` is
+/// named, #467) or transitions a layout (unless `LayoutTransition` is named):
 ///
 /// 1. `planImageUpload` describes the conversion on the CPU. The result,
 ///    `ImageUploadPlan`, is the observable effective state: the Vulkan format,
@@ -45,12 +48,21 @@
 /// `graphics::imageBarrier` code.
 namespace terreate::integration::asset_graphics {
 
-/// How mips are produced. The only value, `none`, uploads exactly the mip levels
-/// present in the `ImageData`. Reserved for an explicit opt-in follow-up (#467);
-/// nothing is generated implicitly.
+/// How mips are produced. Nothing is generated unless the application names a value
+/// other than `none` (#467); never a default, and never done by `createImage` or
+/// `imageUploadItems`.
 enum class MipGeneration : std::uint8_t {
   /// Upload the mip levels of the `ImageData` as they are.
   none,
+  /// Generate the mip chain on the CPU with a 2x2 box filter, in `planImageUpload`,
+  /// by calling `asset::generateMipChain(image, description.mip_options)`. The
+  /// `ImageData` must have the base level only (`mip_levels == 1`; otherwise
+  /// `asset::MipChainError::already_has_mips`). The plan owns the generated
+  /// `ImageData` (`ImageUploadPlan::generated`) and describes its levels. Works for
+  /// the formats the upload supports (every format except `rgb8`; the image must
+  /// be 2D). The filter and its rounding are defined at `asset::generateMipChain`.
+  /// A GPU blit value may be added later.
+  cpu_box,
 };
 
 /// Whether the plan states a layout transition after the upload, and to which
@@ -75,8 +87,14 @@ struct ImageUploadDescription {
   /// Memory of the image. The default (VMA automatic selection of an optimally
   /// tiled image) is device local where the device has such memory.
   graphics::ImageAllocationDescription allocation{};
-  /// Reserved: mips are not generated (#467).
+  /// How mips are produced (#467). `none` (the default) uploads the levels of the
+  /// `ImageData` as they are; `cpu_box` generates the chain on the CPU in
+  /// `planImageUpload` and uploads that.
   MipGeneration mip_generation = MipGeneration::none;
+  /// Only with `MipGeneration::cpu_box`: the options handed to
+  /// `asset::generateMipChain` (level count, normal renormalization). Ignored with
+  /// `none`.
+  asset::MipChainOptions mip_options{};
   /// The layout transition the plan states after the upload (#468). `none` (the
   /// default) states no transition; `shader_read_only` states a barrier to
   /// `eShaderReadOnlyOptimal`.
@@ -118,9 +136,11 @@ struct ImageUploadSubresource {
 /// uploaded, as plain values the application can inspect, copy and edit before
 /// the next step. No Vulkan object exists yet.
 ///
-/// The plan holds no pixels. The upload items borrow the pixels from the
-/// `ImageData` the plan was made from (see `imageUploadItems`), so the plan
-/// stays small and the pixels are copied only once, into staging.
+/// With `MipGeneration::none` the plan holds no pixels: the upload items borrow the
+/// pixels from the `ImageData` the plan was made from (see `imageUploadItems`), so
+/// the plan stays small and the pixels are copied only once, into staging. With
+/// `MipGeneration::cpu_box` the plan owns the generated image (`generated`) and the
+/// items borrow from that, so the plan must outlive `graphics::prepareUploadBatch`.
 struct ImageUploadPlan {
   /// The Vulkan format (see `planImageUpload` for the mapping).
   vk::Format format = vk::Format::eUndefined;
@@ -134,12 +154,18 @@ struct ImageUploadPlan {
   /// must move every subresource from `eUndefined` to this layout with
   /// `graphics::imageBarrier`, and after the upload to the layout it needs next.
   vk::ImageLayout copy_layout = vk::ImageLayout::eTransferDstOptimal;
-  /// One entry per (mip, layer) of the `ImageData`, layer-major: layer 0 with
-  /// mips 0..n-1, then layer 1, and so on. Every subresource is uploaded as it
-  /// is.
+  /// One entry per (mip, layer) of the uploaded image (the `ImageData` itself, or
+  /// `generated` with `cpu_box`), layer-major: layer 0 with mips 0..n-1, then layer
+  /// 1, and so on. Every subresource is uploaded as it is. `image.mip_levels` is
+  /// the number of levels, so the application sees what will be uploaded.
   std::vector<ImageUploadSubresource> subresources;
-  /// Always `none` (reserved, #467).
+  /// The choice the description named (#467); `none` by default.
   MipGeneration mip_generation = MipGeneration::none;
+  /// Only with `MipGeneration::cpu_box`: the generated, validated, tightly packed
+  /// chain (the levels listed in `subresources`); empty with `none`. It is the data
+  /// the upload items borrow from. Plain data: the application may inspect it, but
+  /// editing it (or `subresources`) so that they disagree is `plan_mismatch`.
+  std::optional<asset::ImageData> generated;
   /// The transition the description named (#468); `none` by default.
   LayoutTransition layout_transition = LayoutTransition::none;
   /// The layout every subresource is in once the upload batch and, if requested,
@@ -185,7 +211,8 @@ enum class ImageUploadError : std::uint8_t {
   unaligned_row_pitch,
   /// A size does not fit its Vulkan field (a row longer than 2^31 - 1 bytes).
   size_overflow,
-  /// A reserved choice holds a value that is not defined (only `none` is).
+  /// A choice holds a value that is not defined (`mip_generation`: `none` and
+  /// `cpu_box` are; `layout_transition`: `none` and `shader_read_only`).
   unsupported_option,
   /// A plan is not self-consistent, or the `ImageData` or the `Image` is not the
   /// one the plan was made for.
@@ -211,8 +238,12 @@ enum class ImageUploadError : std::uint8_t {
 /// Checks run in this order: `asset::validate(image)` (its error is returned
 /// unchanged), the choices (`unsupported_option`: an undefined `mip_generation` or
 /// `layout_transition`, or empty `consumer_stages` with a transition), the format
-/// (`unsupported_format`), the dimensionality (`unsupported_image`), then each
-/// subresource (`unaligned_row_pitch`, `size_overflow`). Nothing is repaired.
+/// (`unsupported_format`), the dimensionality (`unsupported_image`), then, with
+/// `MipGeneration::cpu_box`, `asset::generateMipChain` (its `asset::MipChainError` and
+/// `asset::ImageDataError` are returned unchanged), then each subresource of the image to upload
+/// (`unaligned_row_pitch`, `size_overflow`). Nothing is repaired. With `cpu_box` the plan describes
+/// the GENERATED levels (`image.mip_levels`, `subresources`) and owns the generated image in
+/// `generated`; the `image` argument is only read during this call.
 ///
 /// Format mapping, by pixel format and color interpretation:
 ///
@@ -243,14 +274,19 @@ enum class ImageUploadError : std::uint8_t {
 /// Step 3: the upload items for `graphics::prepareUploadBatch`, one per entry of
 /// `plan.subresources`, each with `plan.copy_layout`.
 ///
-/// The items borrow from the arguments: `bytes` points into `image.data` and
-/// `destination` is `&destination`. Keep `image` alive and unchanged until
+/// The items borrow from the arguments: `bytes` points into the data to upload and
+/// `destination` is `&destination`. That data is `image.data` for a plan made with
+/// `MipGeneration::none`, and `plan.generated->data` with `cpu_box` (then `image`
+/// must still be the source image the plan was made from: same format mapping,
+/// extent and layers, one mip level; its bytes are not read). Keep `image` (with
+/// `none`) or `plan` (with `cpu_box`) alive and unchanged until
 /// `graphics::prepareUploadBatch` has returned (it copies the bytes into staging
 /// and keeps no span), and keep `destination` alive and in place through every
 /// GPU use. `ImageUploadError::plan_mismatch` when `image` is not the one the
 /// plan was made from (format mapping, extent, mips, layers or any subresource
-/// range differs) or `destination` is invalid or not the image created from the
-/// plan.
+/// range differs), the plan is not self-consistent (for example `generated` is
+/// missing with `cpu_box`) or `destination` is invalid or not the image created
+/// from the plan.
 [[nodiscard]] auto imageUploadItems(const ImageUploadPlan &plan, const asset::ImageData &image,
                                     const graphics::Image &destination)
     -> terreate::Result<std::vector<graphics::ImageUploadItem>>;

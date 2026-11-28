@@ -680,6 +680,14 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION "asset\\.image_data: image-data=PASS"
       FAIL_REGULAR_EXPRESSION "asset\\.image_data: (assertion=FAIL|.*BLOCKED)")
 
+    add_executable(terreate_asset_mip_chain_tests tests/test_asset_mip_chain.cpp)
+    target_link_libraries(terreate_asset_mip_chain_tests PRIVATE Terreate::Asset)
+    terreate_configure_target(terreate_asset_mip_chain_tests)
+    add_test(NAME asset.mip_chain COMMAND terreate_asset_mip_chain_tests)
+    set_tests_properties(asset.mip_chain PROPERTIES
+      PASS_REGULAR_EXPRESSION "asset\\.mip_chain: mip-chain=PASS"
+      FAIL_REGULAR_EXPRESSION "asset\\.mip_chain: (assertion=FAIL|.*BLOCKED)")
+
     add_executable(terreate_asset_primitives_tests tests/test_asset_primitives.cpp)
     target_link_libraries(terreate_asset_primitives_tests PRIVATE Terreate::Asset)
     terreate_configure_target(terreate_asset_primitives_tests)
@@ -1535,6 +1543,33 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       PASS_REGULAR_EXPRESSION
         "integration\\.asset_graphics\\.image_transition: transition=PASS validation-layer=PASS"
       SKIP_REGULAR_EXPRESSION "integration\\.asset_graphics\\.image_transition: transition=SKIP"
+      FAIL_REGULAR_EXPRESSION
+        "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+
+    # #467: the explicit, opt-in CPU mip generation of the image upload. The plan test is
+    # CPU only; the GPU test follows the conventions of the image convenience test above.
+    add_executable(terreate_integration_asset_graphics_mip_plan_tests
+      tests/test_integration_asset_graphics_mip_plan.cpp)
+    target_link_libraries(terreate_integration_asset_graphics_mip_plan_tests PRIVATE
+      Terreate::IntegrationAssetGraphics)
+    terreate_configure_target(terreate_integration_asset_graphics_mip_plan_tests)
+    add_test(NAME integration.asset_graphics.mip_plan
+      COMMAND terreate_integration_asset_graphics_mip_plan_tests)
+    set_tests_properties(integration.asset_graphics.mip_plan PROPERTIES
+      PASS_REGULAR_EXPRESSION "integration\\.asset_graphics\\.mip_plan: plan=PASS"
+      FAIL_REGULAR_EXPRESSION "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED)")
+
+    add_executable(terreate_integration_asset_graphics_mip_tests
+      tests/test_integration_asset_graphics_mip.cpp)
+    target_link_libraries(terreate_integration_asset_graphics_mip_tests PRIVATE
+      Terreate::IntegrationAssetGraphics)
+    terreate_configure_target(terreate_integration_asset_graphics_mip_tests)
+    add_test(NAME integration.asset_graphics.mip
+      COMMAND terreate_integration_asset_graphics_mip_tests)
+    set_tests_properties(integration.asset_graphics.mip PROPERTIES
+      PASS_REGULAR_EXPRESSION
+        "integration\\.asset_graphics\\.mip: mip=PASS validation-layer=PASS"
+      SKIP_REGULAR_EXPRESSION "integration\\.asset_graphics\\.mip: mip=SKIP"
       FAIL_REGULAR_EXPRESSION
         "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
   endif()
