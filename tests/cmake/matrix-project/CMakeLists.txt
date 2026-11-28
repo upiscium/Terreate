@@ -97,6 +97,48 @@ elseif(TARGET Terreate::AdapterAssetImageStb)
   message(FATAL_ERROR
     "disabled component unexpectedly created Terreate::AdapterAssetImageStb")
 endif()
+
+# The cgltf Adapter (#278): present exactly when expected. Like the stb_image Adapter its only
+# public dependency is Asset (Core comes through it), not the stb_image Adapter; cgltf is a
+# private build input, so it appears in neither its link interface nor its public include
+# directories, and it never links Graphics, Platform, an Integration or another Adapter. No
+# module links it.
+if(TERREATE_EXPECT_ADAPTER_ASSET_GLTF_CGLTF)
+  if(NOT TARGET Terreate::AdapterAssetGltfCgltf)
+    message(FATAL_ERROR "expected enabled target Terreate::AdapterAssetGltfCgltf")
+  endif()
+  foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+    get_target_property(_gltf_links terreate_adapter_asset_gltf_cgltf ${_link_property})
+    if(NOT "${_gltf_links}" STREQUAL "Terreate::Asset")
+      message(FATAL_ERROR
+        "the cgltf Adapter must publicly link exactly Asset in ${_link_property}: "
+        "${_gltf_links}")
+    endif()
+  endforeach()
+  foreach(_interface_property IN ITEMS
+      INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
+      INTERFACE_COMPILE_DEFINITIONS INTERFACE_COMPILE_OPTIONS)
+    get_target_property(_gltf_interface terreate_adapter_asset_gltf_cgltf ${_interface_property})
+    if("${_gltf_interface}" MATCHES "cgltf\\.h|CGLTF_")
+      message(FATAL_ERROR
+        "cgltf leaked into the public ${_interface_property} of the Adapter: "
+        "${_gltf_interface}")
+    endif()
+  endforeach()
+  if(TARGET terreate_adapter_asset_image_stb)
+    foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+      get_target_property(_stb_links terreate_adapter_asset_image_stb ${_link_property})
+      if("${_stb_links}" MATCHES "[Gg]ltf")
+        message(FATAL_ERROR
+          "the stb_image Adapter must not link the cgltf Adapter in ${_link_property}: "
+          "${_stb_links}")
+      endif()
+    endforeach()
+  endif()
+elseif(TARGET Terreate::AdapterAssetGltfCgltf)
+  message(FATAL_ERROR
+    "disabled component unexpectedly created Terreate::AdapterAssetGltfCgltf")
+endif()
 foreach(_module IN ITEMS core asset platform graphics)
   if(TARGET terreate_${_module})
     foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
@@ -189,7 +231,7 @@ foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
   endif()
 endforeach()
 
-if(NOT _component MATCHES "^(Core|Asset|Platform|Graphics|IntegrationPlatformGraphics|IntegrationAssetGraphics|AdapterAssetImageStb)$")
+if(NOT _component MATCHES "^(Core|Asset|Platform|Graphics|IntegrationPlatformGraphics|IntegrationAssetGraphics|AdapterAssetImageStb|AdapterAssetGltfCgltf)$")
   message(FATAL_ERROR "unknown matrix component ${_component}")
 endif()
 
@@ -271,6 +313,30 @@ static_assert(std::is_same_v<
 int main() {
   // The header needs no stb: an empty input is refused by name.
   const auto result = terreate::adapter::asset_image_stb::decodeImage({});
+  return result.has_value() ? 1 : 0;
+}
+]=])
+elseif(_component STREQUAL "AdapterAssetGltfCgltf")
+  # One include proves the Adapter's and Asset's usage requirements reach a consumer, and that
+  # the consumer sees neither cgltf, stb_image, Vulkan nor GLFW through them.
+  set(_consumer_source [=[
+#include <terreate/adapter/asset_gltf_cgltf/decoder.hpp>
+
+#include <type_traits>
+
+#if defined(VK_VERSION_1_0) || defined(VULKAN_HPP_H) || defined(GLFW_VERSION_MAJOR) || \
+    defined(CGLTF_H_INCLUDED__) || defined(STBI_INCLUDE_STB_IMAGE_H)
+#error "the cgltf Adapter must not expose cgltf, stb_image, Vulkan or GLFW"
+#endif
+
+static_assert(std::is_same_v<
+    decltype(terreate::adapter::asset_gltf_cgltf::decodeGltf(
+        std::declval<const terreate::asset::DecodeInput &>())),
+    terreate::Result<terreate::adapter::asset_gltf_cgltf::GltfDecodeResult>>);
+
+int main() {
+  // The header needs no cgltf: an empty input is refused by name.
+  const auto result = terreate::adapter::asset_gltf_cgltf::decodeGltf({});
   return result.has_value() ? 1 : 0;
 }
 ]=])

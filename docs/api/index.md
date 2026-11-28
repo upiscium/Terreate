@@ -14,6 +14,7 @@ graphics
 integration
 asset_graphics
 asset_image_stb
+asset_gltf_cgltf
 ```
 
 ## Components
@@ -27,6 +28,7 @@ asset_image_stb
 | Platform-Graphics Integration | `Terreate::IntegrationPlatformGraphics` | `terreate::integration` | [Integration](integration.md) |
 | Asset-Graphics Integration | `Terreate::IntegrationAssetGraphics` | `terreate::integration::asset_graphics` | [Asset-Graphics Integration](asset_graphics.md) |
 | stb_image Adapter | `Terreate::AdapterAssetImageStb` | `terreate::adapter::asset_image_stb` | [stb_image Adapter](asset_image_stb.md) |
+| cgltf Adapter | `Terreate::AdapterAssetGltfCgltf` | `terreate::adapter::asset_gltf_cgltf` | [cgltf Adapter](asset_gltf_cgltf.md) |
 
 ## Graphics headers by topic
 

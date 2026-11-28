@@ -4,7 +4,7 @@ set(Terreate_FOUND TRUE)
 unset(Terreate_NOT_FOUND_MESSAGE)
 set(Terreate_VERSION "@PROJECT_VERSION@")
 set(_Terreate_supported_components Core Asset Platform Graphics IntegrationPlatformGraphics IntegrationAssetGraphics
-  AdapterAssetImageStb)
+  AdapterAssetImageStb AdapterAssetGltfCgltf)
 set(_Terreate_core_built "@TERREATE_BUILD_CORE@")
 set(_Terreate_asset_built "@TERREATE_BUILD_ASSET@")
 set(_Terreate_platform_built "@TERREATE_BUILD_PLATFORM@")
@@ -15,6 +15,8 @@ set(_Terreate_integration_platform_graphics_built
   "@TERREATE_BUILD_INTEGRATION_PLATFORM_GRAPHICS@")
 set(_Terreate_adapter_asset_image_stb_built
   "@TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB@")
+set(_Terreate_adapter_asset_gltf_cgltf_built
+  "@TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF@")
 set(_Terreate_minimum_vulkan_api_version "1.3")
 # CMake 3.28/3.29 let a dependency package overwrite PACKAGE_PREFIX_DIR in
 # this scope.  Preserve Terreate's prefix before any dependency is loaded so
@@ -376,6 +378,13 @@ if(_Terreate_adapter_asset_image_stb_built AND _Terreate_asset_built)
   set(_Terreate_adapter_asset_image_stb_available TRUE)
 endif()
 
+# The AdapterAssetGltfCgltf component (#278) is the same: cgltf is compiled into its static library, no
+# usage requirement names it, and it depends on Asset only (not on the stb Adapter).
+set(_Terreate_adapter_asset_gltf_cgltf_available FALSE)
+if(_Terreate_adapter_asset_gltf_cgltf_built AND _Terreate_asset_built)
+  set(_Terreate_adapter_asset_gltf_cgltf_available TRUE)
+endif()
+
 # Import exactly the requested component dependency closure.  Core is a
 # dependency of Platform and Graphics, but an explicit Core request must not
 # import either optional component merely because those targets were built.
@@ -388,6 +397,7 @@ set(_Terreate_import_Graphics FALSE)
 set(_Terreate_import_IntegrationPlatformGraphics FALSE)
 set(_Terreate_import_IntegrationAssetGraphics FALSE)
 set(_Terreate_import_AdapterAssetImageStb FALSE)
+set(_Terreate_import_AdapterAssetGltfCgltf FALSE)
 if(NOT Terreate_FIND_COMPONENTS)
   if(_Terreate_core_built)
     set(_Terreate_import_Core TRUE)
@@ -411,6 +421,9 @@ if(NOT Terreate_FIND_COMPONENTS)
   endif()
   if(_Terreate_adapter_asset_image_stb_available)
     set(_Terreate_import_AdapterAssetImageStb TRUE)
+  endif()
+  if(_Terreate_adapter_asset_gltf_cgltf_available)
+    set(_Terreate_import_AdapterAssetGltfCgltf TRUE)
   endif()
   if(_Terreate_integration_platform_graphics_available)
     set(_Terreate_import_IntegrationPlatformGraphics TRUE)
@@ -453,6 +466,13 @@ else()
       set(_Terreate_import_AdapterAssetImageStb TRUE)
       set(_Terreate_import_Asset TRUE)
       set(_Terreate_import_Core TRUE)
+    elseif(_Terreate_requested_component STREQUAL "AdapterAssetGltfCgltf" AND
+           _Terreate_adapter_asset_gltf_cgltf_available)
+      # It decodes into Asset's ModelData, so Asset and Core come with it. It does not
+      # import the stb Adapter: images are decoded by an application-provided callable.
+      set(_Terreate_import_AdapterAssetGltfCgltf TRUE)
+      set(_Terreate_import_Asset TRUE)
+      set(_Terreate_import_Core TRUE)
     endif()
   endforeach()
 endif()
@@ -461,7 +481,7 @@ endif()
 # Terreate::Platform, Terreate::Asset and Terreate::Graphics, which the earlier
 # iterations have just imported.
 foreach(_Terreate_component IN ITEMS Core Asset Platform Graphics IntegrationPlatformGraphics
-                                  IntegrationAssetGraphics AdapterAssetImageStb)
+                                  IntegrationAssetGraphics AdapterAssetImageStb AdapterAssetGltfCgltf)
   set(Terreate_${_Terreate_component}_FOUND FALSE)
   if(_Terreate_import_${_Terreate_component})
     set(_Terreate_component_file
@@ -492,6 +512,8 @@ foreach(_Terreate_component IN LISTS Terreate_FIND_COMPONENTS)
     set(_Terreate_component_upper INTEGRATION_PLATFORM_GRAPHICS)
   elseif(_Terreate_component STREQUAL "IntegrationAssetGraphics")
     set(_Terreate_component_upper INTEGRATION_ASSET_GRAPHICS)
+  elseif(_Terreate_component STREQUAL "AdapterAssetGltfCgltf")
+    set(_Terreate_component_upper ADAPTER_ASSET_GLTF_CGLTF)
   elseif(_Terreate_component STREQUAL "AdapterAssetImageStb")
     set(_Terreate_component_upper ADAPTER_ASSET_IMAGE_STB)
   else()
@@ -505,7 +527,8 @@ foreach(_Terreate_component IN LISTS Terreate_FIND_COMPONENTS)
         string(CONCAT Terreate_NOT_FOUND_MESSAGE
           "Terreate does not provide requested component '${_Terreate_component}'; "
           "supported components are Core, Asset, Platform, Graphics, "
-          "IntegrationPlatformGraphics, IntegrationAssetGraphics, and AdapterAssetImageStb")
+          "IntegrationPlatformGraphics, IntegrationAssetGraphics, AdapterAssetImageStb, and "
+          "AdapterAssetGltfCgltf")
       endif()
   elseif(NOT Terreate_${_Terreate_component}_FOUND)
     if(_Terreate_component STREQUAL "Graphics" AND

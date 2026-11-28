@@ -49,7 +49,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|asset/(decode|image_data|mesh_data|model_data|primitives|resource_resolver)|adapter/asset_image_stb/decoder|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/(mesh_upload|mesh_upload_convenience|image_upload))|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|asset/(decode|image_data|mesh_data|model_data|primitives|resource_resolver)|adapter/(asset_image_stb|asset_gltf_cgltf)/decoder|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/(mesh_upload|mesh_upload_convenience|image_upload))|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -120,6 +120,12 @@ function(terreate_package_configure_and_install name platform graphics)
     list(APPEND _configure_command -DTERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=ON)
   else()
     list(APPEND _configure_command -DTERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=OFF)
+  endif()
+  # The cgltf Adapter (#278) too; its cgltf.h comes from the project devShell (CGLTF_INCLUDE).
+  if(_asset)
+    list(APPEND _configure_command -DTERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF=ON)
+  else()
+    list(APPEND _configure_command -DTERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF=OFF)
   endif()
 
   execute_process(
@@ -196,6 +202,9 @@ function(terreate_package_configure_and_install name platform graphics)
     if(NOT EXISTS "${_prefix}/include/terreate/adapter/asset_image_stb/decoder.hpp")
       message(FATAL_ERROR "${name} install is missing the public stb_image Adapter decoder header")
     endif()
+    if(NOT EXISTS "${_prefix}/include/terreate/adapter/asset_gltf_cgltf/decoder.hpp")
+      message(FATAL_ERROR "${name} install is missing the public cgltf Adapter decoder header")
+    endif()
   elseif(EXISTS "${_prefix}/include/terreate/adapter")
     message(FATAL_ERROR "${name} install has Adapter headers without Asset")
   endif()
@@ -206,12 +215,23 @@ function(terreate_package_configure_and_install name platform graphics)
   if(_installed_stb)
     message(FATAL_ERROR "${name} install contains stb_image files: ${_installed_stb}")
   endif()
+  # The same for cgltf (#278): its header is a build input of the Adapter's static library, never
+  # installed and never named by the package. (The Adapter's own names contain `cgltf`, so the
+  # check is for the header and the build variables.)
+  file(GLOB_RECURSE _installed_cgltf "${_prefix}/*/cgltf.h" "${_prefix}/*/cgltf_write.h")
+  if(_installed_cgltf)
+    message(FATAL_ERROR "${name} install contains cgltf files: ${_installed_cgltf}")
+  endif()
   file(GLOB_RECURSE _installed_cmake_files "${_prefix}/*.cmake")
   foreach(_installed_cmake_file IN LISTS _installed_cmake_files)
     file(READ "${_installed_cmake_file}" _installed_cmake_contents)
     if("${_installed_cmake_contents}" MATCHES "stb_image|STB_INCLUDE|TERREATE_STB|stb-[0-9]")
       message(FATAL_ERROR
         "${name} package file refers to stb_image: ${_installed_cmake_file}")
+    endif()
+    if("${_installed_cmake_contents}" MATCHES "cgltf\\.h|CGLTF_INCLUDE|TERREATE_CGLTF")
+      message(FATAL_ERROR
+        "${name} package file refers to the cgltf header: ${_installed_cmake_file}")
     endif()
   endforeach()
   if(graphics)
@@ -1887,6 +1907,103 @@ foreach(_image_stb_prefix_name IN ITEMS asset_only all_components)
     "package\\.adapter_asset_image_stb: decode=PASS")
 endforeach()
 
+# The installed cgltf Adapter (#278): a consumer that links only the Adapter decodes a tiny
+# embedded GLB, then a glTF with an external buffer through a memory resolver and an image
+# through a stub image decoder (the stb_image Adapter is not involved), and sees the named
+# errors. No Vulkan, no GLFW, no cgltf on the consumer side: the Adapter's static library
+# carries cgltf.
+set(_gltf_cgltf_source [=[
+#include <terreate/adapter/asset_gltf_cgltf/decoder.hpp>
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <span>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#if defined(CGLTF_H_INCLUDED__)
+#error "the Adapter's header must not expose cgltf"
+#endif
+
+namespace {
+constexpr std::uint8_t triangle_glb[] = { 0x67,0x6c,0x54,0x46,0x02,0x00,0x00,0x00,0xbc,0x01,0x00,0x00,0x7c,0x01,0x00,0x00,0x4a,0x53,0x4f,0x4e,0x7b,0x22,0x61,0x73,0x73,0x65,0x74,0x22,0x3a,0x7b,0x22,0x76,0x65,0x72,0x73,0x69,0x6f,0x6e,0x22,0x3a,0x22,0x32,0x2e,0x30,0x22,0x2c,0x22,0x67,0x65,0x6e,0x65,0x72,0x61,0x74,0x6f,0x72,0x22,0x3a,0x22,0x74,0x65,0x72,0x72,0x65,0x61,0x74,0x65,0x2d,0x66,0x69,0x78,0x74,0x75,0x72,0x65,0x22,0x7d,0x2c,0x22,0x73,0x63,0x65,0x6e,0x65,0x22,0x3a,0x30,0x2c,0x22,0x73,0x63,0x65,0x6e,0x65,0x73,0x22,0x3a,0x5b,0x7b,0x22,0x6e,0x6f,0x64,0x65,0x73,0x22,0x3a,0x5b,0x30,0x5d,0x7d,0x5d,0x2c,0x22,0x6e,0x6f,0x64,0x65,0x73,0x22,0x3a,0x5b,0x7b,0x22,0x6d,0x65,0x73,0x68,0x22,0x3a,0x30,0x2c,0x22,0x6e,0x61,0x6d,0x65,0x22,0x3a,0x22,0x74,0x72,0x69,0x22,0x7d,0x5d,0x2c,0x22,0x6d,0x65,0x73,0x68,0x65,0x73,0x22,0x3a,0x5b,0x7b,0x22,0x70,0x72,0x69,0x6d,0x69,0x74,0x69,0x76,0x65,0x73,0x22,0x3a,0x5b,0x7b,0x22,0x61,0x74,0x74,0x72,0x69,0x62,0x75,0x74,0x65,0x73,0x22,0x3a,0x7b,0x22,0x50,0x4f,0x53,0x49,0x54,0x49,0x4f,0x4e,0x22,0x3a,0x30,0x7d,0x7d,0x5d,0x7d,0x5d,0x2c,0x22,0x61,0x63,0x63,0x65,0x73,0x73,0x6f,0x72,0x73,0x22,0x3a,0x5b,0x7b,0x22,0x62,0x75,0x66,0x66,0x65,0x72,0x56,0x69,0x65,0x77,0x22,0x3a,0x30,0x2c,0x22,0x63,0x6f,0x6d,0x70,0x6f,0x6e,0x65,0x6e,0x74,0x54,0x79,0x70,0x65,0x22,0x3a,0x35,0x31,0x32,0x36,0x2c,0x22,0x63,0x6f,0x75,0x6e,0x74,0x22,0x3a,0x33,0x2c,0x22,0x74,0x79,0x70,0x65,0x22,0x3a,0x22,0x56,0x45,0x43,0x33,0x22,0x2c,0x22,0x6d,0x69,0x6e,0x22,0x3a,0x5b,0x30,0x2c,0x30,0x2c,0x30,0x5d,0x2c,0x22,0x6d,0x61,0x78,0x22,0x3a,0x5b,0x31,0x2c,0x31,0x2c,0x30,0x5d,0x7d,0x5d,0x2c,0x22,0x62,0x75,0x66,0x66,0x65,0x72,0x56,0x69,0x65,0x77,0x73,0x22,0x3a,0x5b,0x7b,0x22,0x62,0x75,0x66,0x66,0x65,0x72,0x22,0x3a,0x30,0x2c,0x22,0x62,0x79,0x74,0x65,0x4f,0x66,0x66,0x73,0x65,0x74,0x22,0x3a,0x30,0x2c,0x22,0x62,0x79,0x74,0x65,0x4c,0x65,0x6e,0x67,0x74,0x68,0x22,0x3a,0x33,0x36,0x7d,0x5d,0x2c,0x22,0x62,0x75,0x66,0x66,0x65,0x72,0x73,0x22,0x3a,0x5b,0x7b,0x22,0x62,0x79,0x74,0x65,0x4c,0x65,0x6e,0x67,0x74,0x68,0x22,0x3a,0x33,0x36,0x7d,0x5d,0x7d,0x20,0x24,0x00,0x00,0x00,0x42,0x49,0x4e,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x80,0x3f,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x80,0x3f,0x00,0x00,0x00,0x00 };
+constexpr std::string_view textured_gltf = R"json({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1},"material":0}]}],"materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}],"textures":[{"source":0}],"images":[{"uri":"data:image/png;base64,YWJj"}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":1,"componentType":5126,"count":3,"type":"VEC2"}],"bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":24}],"buffers":[{"byteLength":60,"uri":"tri.bin"}]})json";
+}
+
+int main() {
+  namespace asset = terreate::asset;
+  namespace gltf = terreate::adapter::asset_gltf_cgltf;
+
+  // A GLB: no resolver, no image decoder.
+  const asset::DecodeInput glb{std::as_bytes(std::span{triangle_glb}), asset::makeSourceIdentity("tri.glb")};
+  const auto from_glb = gltf::decodeGltf(glb);
+  if (!from_glb) return 1;
+  if (from_glb->model.meshes.size() != 1 || from_glb->model.nodes.size() != 1 ||
+      from_glb->model.meshes[0].vertexCount() != 3 || from_glb->native.container != gltf::GltfContainer::glb ||
+      !asset::validate(from_glb->model).has_value() || from_glb->provenance.source.name != "tri.glb")
+    return 2;
+
+  // A glTF with an external buffer (memory resolver) and an image (stub image decoder).
+  const float geometry[15] = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1};
+  std::vector<std::byte> bin(sizeof geometry);
+  std::memcpy(bin.data(), geometry, sizeof geometry);
+  asset::MemoryResolver memory;
+  if (!memory.add("models/tri.bin", std::move(bin))) return 3;
+  auto resolver = asset::ResourceResolverView::bind(memory);
+  int decoded_images = 0;
+  auto stub = [&decoded_images](const gltf::ImageDecodeRequest &request) -> terreate::Result<asset::ImageData> {
+    ++decoded_images;
+    asset::ImageData image;
+    image.format = asset::PixelFormat::rgba8;
+    image.interpretation = request.interpretation;
+    image.extent = {1, 1, 1};
+    image.data.assign(4, std::byte{255});
+    image.subresources = asset::packedLayout(image.format, image.extent, 1, 1)->subresources;
+    return image;
+  };
+  auto images = gltf::ImageDecoderView::bind(stub);
+  const std::string_view text = textured_gltf;
+  const asset::DecodeInput gltf_input{std::as_bytes(std::span{text.data(), text.size()}),
+                                      asset::makeSourceIdentity("models/tri.gltf")};
+  const auto textured = gltf::decodeGltf(gltf_input, resolver, images);
+  if (!textured) return 4;
+  const asset::ModelData &model = textured->model;
+  if (model.images.size() != 1 || decoded_images != 1 || model.textures.size() != 1 ||
+      model.materials.size() != 1 || !model.materials[0].base_color_texture ||
+      model.images[0].interpretation != asset::ColorInterpretation::srgb ||
+      textured->provenance.resources.size() != 1 ||
+      textured->provenance.resources[0].request.normalized != "models/tri.bin" ||
+      !asset::validate(model).has_value())
+    return 5;
+
+  // Named errors.
+  const auto refused = gltf::decodeGltf({});
+  if (refused || refused.error().code() != gltf::make_error_code(gltf::GltfDecodeError::malformed_gltf))
+    return 6;
+  const auto no_resolver = gltf::decodeGltf(gltf_input, {}, images);
+  if (no_resolver || no_resolver.error().code() != gltf::make_error_code(gltf::GltfDecodeError::missing_resolver))
+    return 7;
+  const auto no_decoder = gltf::decodeGltf(gltf_input, resolver);
+  if (no_decoder || no_decoder.error().code() != gltf::make_error_code(gltf::GltfDecodeError::missing_image_decoder))
+    return 8;
+  gltf::GltfDecodeOptions options;
+  options.limits.max_input_bytes = 8;
+  const auto too_large = gltf::decodeGltf(glb, {}, {}, options);
+  if (too_large || too_large.error().code() != asset::make_error_code(asset::DecodeError::input_too_large))
+    return 9;
+  std::puts("package.adapter_asset_gltf_cgltf: decode=PASS");
+  return 0;
+}
+]=])
+foreach(_gltf_cgltf_prefix_name IN ITEMS asset_only all_components)
+  terreate_build_consumer(gltf_cgltf_${_gltf_cgltf_prefix_name}_runtime
+    "${${_gltf_cgltf_prefix_name}_PREFIX}" AdapterAssetGltfCgltf "${_gltf_cgltf_source}"
+    "package\\.adapter_asset_gltf_cgltf: decode=PASS")
+endforeach()
+
 terreate_package_configure_and_install(graphics_only OFF ON)
 terreate_build_consumer(graphics_only_runtime "${graphics_only_PREFIX}" Graphics
   "${_graphics_consumer_source}")
@@ -2119,7 +2236,10 @@ foreach(_disabled_case IN ITEMS "core_only;Graphics;GRAPHICS" "core_only;Platfor
                                 "graphics_only;IntegrationAssetGraphics;INTEGRATION_ASSET_GRAPHICS"
                                 "core_only;AdapterAssetImageStb;ADAPTER_ASSET_IMAGE_STB"
                                 "platform_only;AdapterAssetImageStb;ADAPTER_ASSET_IMAGE_STB"
-                                "graphics_only;AdapterAssetImageStb;ADAPTER_ASSET_IMAGE_STB")
+                                "graphics_only;AdapterAssetImageStb;ADAPTER_ASSET_IMAGE_STB"
+                                "core_only;AdapterAssetGltfCgltf;ADAPTER_ASSET_GLTF_CGLTF"
+                                "platform_only;AdapterAssetGltfCgltf;ADAPTER_ASSET_GLTF_CGLTF"
+                                "graphics_only;AdapterAssetGltfCgltf;ADAPTER_ASSET_GLTF_CGLTF")
   list(GET _disabled_case 0 _disabled_prefix_name)
   list(GET _disabled_case 1 _disabled_component)
   list(GET _disabled_case 2 _disabled_option)
@@ -2175,7 +2295,7 @@ foreach(_prefix_name IN ITEMS all_components core_only asset_only platform_only 
 endforeach()
 terreate_configure_consumer(source-independence "${_all_prefix}" [=[
 find_package(Terreate REQUIRED COMPONENTS Core Asset Platform Graphics IntegrationPlatformGraphics
-                                          IntegrationAssetGraphics AdapterAssetImageStb)
+                                          IntegrationAssetGraphics AdapterAssetImageStb AdapterAssetGltfCgltf)
 foreach(_target IN ITEMS Terreate::Core Terreate::Asset Terreate::Platform Terreate::Graphics
                          Terreate::IntegrationPlatformGraphics Terreate::IntegrationAssetGraphics
                          Terreate::AdapterAssetImageStb)
@@ -2446,10 +2566,68 @@ set_target_properties(image_stb_isolation PROPERTIES
       "${_image_stb_isolation_build_output}\n${_image_stb_isolation_build_error}")
   endif()
 endforeach()
+
+# 8. The cgltf Adapter (#278) receives exactly Asset (and Core through it): no Vulkan, no GLFW,
+#    no Graphics, no Platform, no Integration, no cgltf, and not the stb_image Adapter (the
+#    glTF Adapter takes an application-provided image decoder). The Adapters do not link each
+#    other.
+foreach(_gltf_prefix_name IN ITEMS asset_only all_components)
+  terreate_configure_consumer("gltf-cgltf-isolation-${_gltf_prefix_name}"
+    "${${_gltf_prefix_name}_PREFIX}" [=[
+set(CMAKE_DISABLE_FIND_PACKAGE_Vulkan TRUE)
+set(CMAKE_DISABLE_FIND_PACKAGE_glfw3 TRUE)
+find_package(Terreate REQUIRED COMPONENTS AdapterAssetGltfCgltf)
+foreach(_needed IN ITEMS Terreate::Core Terreate::Asset Terreate::AdapterAssetGltfCgltf)
+  if(NOT TARGET ${_needed})
+    message(FATAL_ERROR "an Adapter request did not import ${_needed}")
+  endif()
+endforeach()
+foreach(_unexpected IN ITEMS Terreate::Graphics Terreate::Platform
+                             Terreate::IntegrationPlatformGraphics Terreate::IntegrationAssetGraphics
+                             Terreate::AdapterAssetImageStb glfw Vulkan::Vulkan stb cgltf)
+  if(TARGET ${_unexpected})
+    message(FATAL_ERROR "an Adapter request imported ${_unexpected}")
+  endif()
+endforeach()
+get_target_property(_links Terreate::AdapterAssetGltfCgltf INTERFACE_LINK_LIBRARIES)
+if(NOT "${_links}" STREQUAL "Terreate::Asset")
+  message(FATAL_ERROR "the Adapter must link exactly Asset: ${_links}")
+endif()
+foreach(_property IN ITEMS INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
+                           INTERFACE_COMPILE_DEFINITIONS INTERFACE_COMPILE_OPTIONS
+                           INTERFACE_LINK_LIBRARIES)
+  get_target_property(_value Terreate::AdapterAssetGltfCgltf ${_property})
+  if("${_value}" MATCHES "cgltf\\.h|CGLTF_|stb_image|STB_|AdapterAssetImageStb")
+    message(FATAL_ERROR "cgltf leaked into the Adapter's ${_property}: ${_value}")
+  endif()
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/main.cpp"
+  "#include <terreate/adapter/asset_gltf_cgltf/decoder.hpp>\nint main() { return terreate::adapter::asset_gltf_cgltf::decodeGltf({}) ? 1 : 0; }\n")
+add_executable(gltf_cgltf_isolation "${CMAKE_CURRENT_BINARY_DIR}/main.cpp")
+target_link_libraries(gltf_cgltf_isolation PRIVATE Terreate::AdapterAssetGltfCgltf)
+set_target_properties(gltf_cgltf_isolation PROPERTIES
+  CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+]=] _gltf_isolation_result _gltf_isolation_output)
+  if(NOT _gltf_isolation_result EQUAL 0)
+    message(FATAL_ERROR
+      "${_gltf_prefix_name} Adapter consumer needed more than Asset\n${_gltf_isolation_output}")
+  endif()
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build
+      "${_terreate_package_root}/external/gltf-cgltf-isolation-${_gltf_prefix_name}-build"
+    RESULT_VARIABLE _gltf_isolation_build_result
+    OUTPUT_VARIABLE _gltf_isolation_build_output
+    ERROR_VARIABLE _gltf_isolation_build_error)
+  if(NOT _gltf_isolation_build_result EQUAL 0)
+    message(FATAL_ERROR
+      "${_gltf_prefix_name} Adapter consumer failed to build without Vulkan, GLFW, cgltf or stb\n"
+      "${_gltf_isolation_build_output}\n${_gltf_isolation_build_error}")
+  endif()
+endforeach()
 # The components other than the Adapter never link it, in the full install.
 terreate_configure_consumer(no-link-to-adapter "${_all_prefix}" [=[
 find_package(Terreate REQUIRED COMPONENTS Core Asset Platform Graphics IntegrationPlatformGraphics
-                                          IntegrationAssetGraphics AdapterAssetImageStb)
+                                          IntegrationAssetGraphics AdapterAssetImageStb AdapterAssetGltfCgltf)
 foreach(_target IN ITEMS Terreate::Core Terreate::Asset Terreate::Platform Terreate::Graphics
                          Terreate::IntegrationPlatformGraphics Terreate::IntegrationAssetGraphics)
   get_target_property(_links ${_target} INTERFACE_LINK_LIBRARIES)
@@ -2457,9 +2635,15 @@ foreach(_target IN ITEMS Terreate::Core Terreate::Asset Terreate::Platform Terre
     message(FATAL_ERROR "${_target} links the Adapter: ${_links}")
   endif()
 endforeach()
+foreach(_target IN ITEMS Terreate::AdapterAssetImageStb Terreate::AdapterAssetGltfCgltf)
+  get_target_property(_links ${_target} INTERFACE_LINK_LIBRARIES)
+  if(NOT "${_links}" STREQUAL "Terreate::Asset")
+    message(FATAL_ERROR "${_target} must link exactly Asset (the Adapters do not link each other): ${_links}")
+  endif()
+endforeach()
 ]=] _no_link_adapter_result _no_link_adapter_output)
 if(NOT _no_link_adapter_result EQUAL 0)
-  message(FATAL_ERROR "a component links the stb_image Adapter\n${_no_link_adapter_output}")
+  message(FATAL_ERROR "a component links an Adapter\n${_no_link_adapter_output}")
 endif()
 
 # Printed last: any failure above stops the script before this line.

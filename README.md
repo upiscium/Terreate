@@ -143,6 +143,20 @@ option, `TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB`, is on by default only when `TE
 standard search); turning it on without Asset or without the header is a configure error. Request it with
 `find_package(Terreate REQUIRED COMPONENTS AdapterAssetImageStb)`, which imports Asset and Core only.
 
+The cgltf Adapter (#278), `Terreate::AdapterAssetGltfCgltf`, decodes a glTF 2.0 or GLB in memory into an Asset
+`ModelData` (`terreate::adapter::asset_gltf_cgltf::decodeGltf`): meshes and primitives, node transforms and
+hierarchy, core metallic-roughness materials, textures, samplers and images, with decode limits, named
+errors and diagnostics (see [cgltf Adapter](docs/architecture/asset_gltf_cgltf.md)). External buffers and
+images go through the application's resolver, glTF images are decoded by a callable the application passes
+(the stb_image Adapter's `decodeImage` can be wrapped as it), and animations, skins, morph targets, cameras,
+lights and extensions are listed as unsupported, never dropped silently; a file that requires an extension
+is refused. It reads no file and creates no GPU resource; cgltf is a private build input (a pinned flake
+input, `CGLTF_INCLUDE` in the devShell), so a consumer needs nothing but Asset. Its option,
+`TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF`, is on by default only when `TERREATE_BUILD_ASSET` is on and
+`cgltf.h` is found (`TERREATE_CGLTF_INCLUDE_DIR`, the environment variable `CGLTF_INCLUDE`, or a standard
+search); turning it on without Asset or without the header is a configure error. Request it with
+`find_package(Terreate REQUIRED COMPONENTS AdapterAssetGltfCgltf)`, which imports Asset and Core only.
+
 Graphics can also tell, before a Device exists, what a physical device can present
 to a Surface: `<terreate/graphics/presentation.hpp>` (#364) observes it and
 resolves the present queue, format, present mode and `VK_KHR_swapchain` into a

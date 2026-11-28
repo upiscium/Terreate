@@ -26,7 +26,9 @@ file(MAKE_DIRECTORY "${_terreate_matrix_root}")
 # (default: present when Asset and Graphics are both built). `ARGV9` overrides the
 # expected presence of the stb_image Adapter (default: present when Asset is built; the
 # case passes the option explicitly), and `ARGV10` = DEFAULT_OPTION leaves the Adapter's
-# option unset so that its own default decides.
+# option unset so that its own default decides. `ARGV11` and `ARGV12` do the same for the cgltf
+# Adapter (#278): its expected presence (default: present when Asset is built) and
+# DEFAULT_OPTION.
 function(terreate_matrix_case name component core platform graphics)
   if("${core}" STREQUAL "ON")
     set(_asset ON)
@@ -60,6 +62,14 @@ function(terreate_matrix_case name component core platform graphics)
   if(NOT "${ARGV9}" STREQUAL "")
     set(_expect_adapter "${ARGV9}")
   endif()
+  if("${_asset}" STREQUAL "ON")
+    set(_expect_gltf ON)
+  else()
+    set(_expect_gltf OFF)
+  endif()
+  if(NOT "${ARGV11}" STREQUAL "")
+    set(_expect_gltf "${ARGV11}")
+  endif()
   set(_binary_dir "${_terreate_matrix_root}/${name}")
   set(_configure_command
     "${CMAKE_COMMAND}"
@@ -84,12 +94,16 @@ function(terreate_matrix_case name component core platform graphics)
     "-DTERREATE_EXPECT_INTEGRATION_PLATFORM_GRAPHICS=${_expect_integration}"
     "-DTERREATE_EXPECT_INTEGRATION_ASSET_GRAPHICS=${_expect_asset_graphics}"
     "-DTERREATE_EXPECT_ADAPTER_ASSET_IMAGE_STB=${_expect_adapter}"
+    "-DTERREATE_EXPECT_ADAPTER_ASSET_GLTF_CGLTF=${_expect_gltf}"
     "-DTERREATE_BUILD_CORE=${core}"
     "-DTERREATE_BUILD_ASSET=${_asset}"
     "-DTERREATE_BUILD_PLATFORM=${platform}"
     "-DTERREATE_BUILD_GRAPHICS=${graphics}")
   if(NOT "${ARGV10}" STREQUAL "DEFAULT_OPTION")
     list(APPEND _configure_command "-DTERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=${_expect_adapter}")
+  endif()
+  if(NOT "${ARGV12}" STREQUAL "DEFAULT_OPTION")
+    list(APPEND _configure_command "-DTERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF=${_expect_gltf}")
   endif()
   if(NOT "${ARGV6}" STREQUAL "")
     list(APPEND _configure_command "${ARGV6}")
@@ -206,6 +220,30 @@ terreate_matrix_case(adapter_default_on AdapterAssetImageStb ON OFF OFF "" "" ""
 terreate_matrix_case(adapter_default_without_stb Asset ON OFF OFF ""
   "-DTERREATE_STB_INCLUDE_DIR=${_terreate_matrix_root}/no-such-stb" "" "" OFF DEFAULT_OPTION)
 terreate_matrix_case(adapter_default_without_asset Core ON OFF OFF "" "" OFF "" OFF DEFAULT_OPTION)
+
+# The cgltf Adapter (#278): the build input is the pinned cgltf of the project devShell
+# (CGLTF_INCLUDE, a flake input; the matrix never fetches anything).
+if(NOT DEFINED ENV{CGLTF_INCLUDE} OR "$ENV{CGLTF_INCLUDE}" STREQUAL "" OR
+   NOT EXISTS "$ENV{CGLTF_INCLUDE}/cgltf.h")
+  message(FATAL_ERROR
+    "the cgltf Adapter cases require the pinned cgltf header (CGLTF_INCLUDE)")
+endif()
+# The same rules as for the stb_image Adapter, and the two Adapters are independent of each
+# other: either one builds with the other off, and neither is linked by the other.
+terreate_matrix_case(adapter_asset_gltf_cgltf AdapterAssetGltfCgltf ON OFF OFF)
+terreate_matrix_case(adapter_asset_gltf_cgltf_with_graphics AdapterAssetGltfCgltf ON ON ON)
+terreate_matrix_case(gltf_adapter_off Asset ON OFF OFF "" "" "" "" "" "" OFF)
+terreate_matrix_case(gltf_adapter_without_stb_adapter AdapterAssetGltfCgltf ON OFF OFF ""
+  "" "" "" OFF "" ON)
+terreate_matrix_case(stb_adapter_without_gltf_adapter AdapterAssetImageStb ON OFF OFF ""
+  "" "" "" "" "" OFF)
+terreate_matrix_case(gltf_adapter_default_on AdapterAssetGltfCgltf ON OFF OFF "" "" "" "" "" ""
+  ON DEFAULT_OPTION)
+terreate_matrix_case(gltf_adapter_default_without_cgltf Asset ON OFF OFF ""
+  "-DTERREATE_CGLTF_INCLUDE_DIR=${_terreate_matrix_root}/no-such-cgltf" "" "" "" "" OFF
+  DEFAULT_OPTION)
+terreate_matrix_case(gltf_adapter_default_without_asset Core ON OFF OFF "" "" OFF "" "" "" OFF
+  DEFAULT_OPTION)
 
 # Top-level Core + Asset with neither Vulkan nor GLFW discoverable: the Asset
 # boundary needs no native dependency.
@@ -608,3 +646,56 @@ terreate_matrix_expect_adapter_error(adapter_without_stb ON
 terreate_matrix_expect_adapter_error(adapter_bad_environment ON ""
   "needs stb_image.h, but STB_INCLUDE does not name a directory that contains it"
   "STB_INCLUDE=${_terreate_matrix_root}/no-such-stb")
+
+# The same for the cgltf Adapter (#278): the options and the diagnostics name cgltf.
+function(terreate_matrix_expect_gltf_adapter_error name asset cgltf_dir expected_message)
+  set(_binary "${_terreate_matrix_root}/${name}")
+  set(_command "${CMAKE_COMMAND}" -E env ${ARGN}
+    "${CMAKE_COMMAND}"
+    -S "${_terreate_source_dir}/tests/cmake/matrix-project"
+    -B "${_binary}")
+  if(DEFINED TERREATE_CMAKE_GENERATOR AND
+     NOT "${TERREATE_CMAKE_GENERATOR}" STREQUAL "")
+    list(APPEND _command -G "${TERREATE_CMAKE_GENERATOR}")
+  endif()
+  if(DEFINED TERREATE_CXX_COMPILER AND
+     NOT "${TERREATE_CXX_COMPILER}" STREQUAL "")
+    list(APPEND _command "-DCMAKE_CXX_COMPILER=${TERREATE_CXX_COMPILER}")
+  endif()
+  list(APPEND _command
+    "-DTERREATE_SOURCE_DIR:PATH=${_terreate_source_dir}"
+    -DTERREATE_MATRIX_COMPONENT=Core
+    -DTERREATE_BUILD_CORE=ON
+    -DTERREATE_BUILD_ASSET=${asset}
+    -DTERREATE_BUILD_PLATFORM=OFF
+    -DTERREATE_BUILD_GRAPHICS=OFF
+    -DTERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB=OFF
+    -DTERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF=ON)
+  if(NOT "${cgltf_dir}" STREQUAL "")
+    list(APPEND _command "-DTERREATE_CGLTF_INCLUDE_DIR=${cgltf_dir}")
+  endif()
+  execute_process(
+    COMMAND ${_command}
+    RESULT_VARIABLE _result
+    OUTPUT_VARIABLE _output
+    ERROR_VARIABLE _error)
+  if(_result EQUAL 0)
+    message(FATAL_ERROR "${name}: the unsatisfiable cgltf Adapter request unexpectedly configured")
+  endif()
+  string(REGEX REPLACE "[ \n]+" " " _diagnostics "${_output} ${_error}")
+  if(NOT _diagnostics MATCHES "${expected_message}")
+    message(FATAL_ERROR
+      "${name}: the diagnostic did not match '${expected_message}':\n${_output}\n${_error}")
+  endif()
+endfunction()
+
+terreate_matrix_expect_gltf_adapter_error(gltf_adapter_without_asset OFF ""
+  "TERREATE_BUILD_ADAPTER_ASSET_GLTF_CGLTF=ON requires TERREATE_BUILD_ASSET=ON")
+terreate_matrix_expect_gltf_adapter_error(gltf_adapter_without_cgltf ON
+  "${_terreate_matrix_root}/no-such-cgltf"
+  "needs cgltf.h, but TERREATE_CGLTF_INCLUDE_DIR does not name a directory that contains it")
+terreate_matrix_expect_gltf_adapter_error(gltf_adapter_bad_environment ON ""
+  "needs cgltf.h, but CGLTF_INCLUDE does not name a directory that contains it"
+  "CGLTF_INCLUDE=${_terreate_matrix_root}/no-such-cgltf")
+terreate_matrix_expect_gltf_adapter_error(gltf_adapter_cgltf_not_found ON ""
+  "needs cgltf.h, which was not found" --unset=CGLTF_INCLUDE)

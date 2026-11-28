@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "cgltf": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1770064369,
+        "narHash": "sha256-MZmf5IUDo+TxoA8SifLJotMN1bzGQpFMSryGXvcIIEc=",
+        "owner": "jkuhlmann",
+        "repo": "cgltf",
+        "rev": "85cd62382dfea638278962690cf515023f33ed00",
+        "type": "github"
+      },
+      "original": {
+        "owner": "jkuhlmann",
+        "repo": "cgltf",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -36,6 +52,7 @@
     },
     "root": {
       "inputs": {
+        "cgltf": "cgltf",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs"
       }
