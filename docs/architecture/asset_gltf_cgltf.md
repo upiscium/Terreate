@@ -48,7 +48,7 @@ component links the Adapter. Asset never depends on the Adapter.
 | meshes, primitives | one `ModelMesh` per mesh and one `ModelPrimitive` plus one `MeshData` per primitive |
 | attributes `POSITION`, `NORMAL`, `TANGENT`, `TEXCOORD_n`, `COLOR_n` | float32 streams of `MeshData` (`float32x3`, `x3`, `x4`, `x2`, `x3` or `x4`) |
 | `indices` (unsigned byte, short, int) | `uint16` (byte and short) or `uint32`; none stays non-indexed |
-| modes points, lines, triangles, triangle strip | `point_list`, `line_list`, `triangle_list`, `triangle_strip` |
+| modes points, lines, line strip, line loop, triangles, triangle strip, triangle fan | `point_list`, `line_list`, `line_strip`, `line_strip` (loop, closed, see below), `triangle_list`, `triangle_strip`, `triangle_fan` |
 | sparse accessors, normalized 8/16-bit integer attributes, accessors without a buffer view | read by the Adapter (see below) |
 | materials: `pbrMetallicRoughness` factors and textures, normal, occlusion and emissive textures and factors, `alphaMode`, `alphaCutoff`, `doubleSided` | `MaterialData` with `TextureRef` (texture index and `texCoord`) |
 | textures, samplers, images | `TextureData`, `SamplerData`, `ImageData` (through the image decoder), all in file order |
@@ -62,7 +62,7 @@ the code `gltf.unsupported.<kind>` (never silently dropped):
 | `animation`, `skin`, `camera`, `light` | each animation, skin, camera and `KHR_lights_punctual` light (name, or the index in the detail) | the nodes and meshes are kept |
 | `morph-target` | each primitive with targets, each mesh or node with morph weights | the primitive's base geometry is kept |
 | `attribute` | `JOINTS_n`, `WEIGHTS_n` and custom (`_NAME`) attributes of a primitive | the other streams are kept. (`MeshData` could hold them as `custom` float streams, but integer joints would be converted without a defined rule, so they are reported instead.) |
-| `primitive-mode` | `LINE_LOOP`, `LINE_STRIP`, `TRIANGLE_FAN` | **the primitive is skipped**, as `MeshData` has no such topology |
+| `primitive-mode` | a primitive whose mode is not one of the seven glTF modes (`unknown mode`) | **the primitive is skipped** |
 | `primitive` (`no-position`) | a primitive without `POSITION` | the primitive is skipped |
 | `mesh` | a mesh none of whose primitives could be kept | no `ModelMesh` is made; the nodes that placed it have no mesh |
 | `compression` | `KHR_draco_mesh_compression` (the primitive is skipped), `EXT_meshopt_compression` (the fallback data is read) | |
@@ -103,6 +103,14 @@ and a hostile file cannot make the report unbounded.
    be below the vertex count (checked by the Adapter, not left to the later validation). Whether the index
    or vertex count suits the topology is checked by `asset::validate` (an invalid count is reported as the
    `MeshDataError`).
+   **Line loops and fans.** Modes 3 (line strip) and 6 (triangle fan) map 1:1 to `line_strip` and
+   `triangle_fan`. A line loop (mode 2) has no Vulkan topology, so it becomes a `line_strip` whose last index
+   repeats the first; a primitive without indices gets an index buffer `0..n-1, 0` (`uint16`, or `uint32`
+   above 65535 vertices). The info diagnostic `gltf.line_loop.closed` states the conversion. The added index
+   is counted against `max_decoded_bytes`. A loop of fewer than two elements is not closed and, like a strip
+   with one element or a fan with fewer than three, fails the final `asset::validate` of the model: the error is
+   `asset::ModelDataError::invalid_mesh`, whose detail names the `invalid_index_count` of the mesh. Nothing else is converted: use `asset::convertTopology` for a
+   platform without fans.
 5. **Node transforms.** `matrix` becomes a `MatrixTransform` (column-major, as in glTF), translation,
    rotation and scale a `TrsTransform`; a node with neither is the identity TRS. A node with both a matrix and
    TRS values is `malformed_gltf`.

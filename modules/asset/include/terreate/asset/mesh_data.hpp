@@ -38,6 +38,18 @@ enum class PrimitiveTopology : std::uint8_t {
   line_list,
   /// Every element is one point.
   point_list,
+  /// Every element after the first forms a line segment with the previous
+  /// one. A glTF line loop is stored as a line strip whose last element repeats
+  /// the first (the decoder closes it, see the glTF Adapter).
+  ///
+  /// Appended after `point_list` so that the numeric values of the earlier
+  /// enumerators stay stable.
+  line_strip,
+  /// Every element after the first two forms a triangle with the first element
+  /// and the previous one. Vulkan has this topology, but not every
+  /// implementation exposes it (for example Vulkan portability subsets do not);
+  /// convertTopology() produces a triangle list. Appended like `line_strip`.
+  triangle_fan,
 };
 
 /// The meaning of an attribute stream.
@@ -262,6 +274,10 @@ enum class MeshDataError : std::uint8_t {
   non_finite_position,
   /// interleave() was asked for an attribute the mesh does not have.
   attribute_not_found,
+  /// convertTopology() was asked for a conversion that does not exist (see
+  /// convertTopology for the supported ones), or for a value that is not a
+  /// PrimitiveTopology.
+  unsupported_conversion,
 };
 
 /// The category of MeshDataError codes (name "terreate.asset.mesh_data").
@@ -278,6 +294,41 @@ enum class MeshDataError : std::uint8_t {
 /// or vertices when not indexed) suits the topology, every index is below the
 /// vertex count, and present bounds enclose every position.
 [[nodiscard]] auto validate(const MeshData &mesh) -> terreate::Result<void>;
+
+/// Converts `mesh` to another topology, explicitly; nothing in the library does
+/// it implicitly. Vertex streams and bounds are copied unchanged, only the
+/// index buffer (and the topology) change.
+///
+/// The conversions: `triangle_strip` and `triangle_fan` to `triangle_list`,
+/// and `line_strip` to `line_list`. A request for the topology the mesh already
+/// has returns a copy. Every other request (a list to a strip, triangles to
+/// lines, anything to a fan, points, a value that is no PrimitiveTopology) fails
+/// with MeshDataError::unsupported_conversion, because no lossless or defined
+/// rule exists. The mesh is validated first; its error is returned unchanged.
+///
+/// The rules, with the input elements `e[0..n-1]` (the index at position k, or
+/// the vertex k when not indexed):
+///
+/// - triangle strip: the triangle at k (0 <= k <= n-3) is `(e[k], e[k+1], e[k+2])`
+///   for even k and `(e[k+1], e[k], e[k+2])` for odd k, so every triangle keeps
+///   the facing a strip draws it with (the winding alternation is undone).
+/// - triangle fan: the triangle at k is `(e[0], e[k+1], e[k+2])`, winding kept.
+/// - line strip: the segment at k (0 <= k <= n-2) is `(e[k], e[k+1])`.
+///
+/// Degenerate primitives are dropped: a triangle in which two of the three
+/// indices are equal (in a strip these are the usual way to join pieces; they
+/// cover no area), and a line segment whose two indices are equal. Only equal
+/// index values are detected, not equal positions. Dropping never changes the
+/// parity used for the strip winding, which counts input positions. A mesh
+/// that has only degenerate primitives yields an indexed mesh with zero
+/// indices. Primitive restart is not defined for MeshData and is not handled.
+///
+/// The result is always indexed. It keeps the index type of an indexed input;
+/// a non-indexed input gets `uint16` when its vertices fit (at most 65535) and
+/// `uint32` otherwise. The conversion is deterministic and the result passes
+/// validate(). Allocation failure throws std::bad_alloc.
+[[nodiscard]] auto convertTopology(const MeshData &mesh, PrimitiveTopology target)
+    -> terreate::Result<MeshData>;
 
 /// The tight axis-aligned bounds of the position stream.
 ///

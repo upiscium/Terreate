@@ -247,6 +247,8 @@ void formatsAndTopologies() {
       {4, vk::PrimitiveTopology::eTriangleStrip, asset::PrimitiveTopology::triangle_strip},
       {2, vk::PrimitiveTopology::eLineList, asset::PrimitiveTopology::line_list},
       {1, vk::PrimitiveTopology::ePointList, asset::PrimitiveTopology::point_list},
+      {2, vk::PrimitiveTopology::eLineStrip, asset::PrimitiveTopology::line_strip},
+      {3, vk::PrimitiveTopology::eTriangleFan, asset::PrimitiveTopology::triangle_fan},
   };
   for (const auto &entry : topologies) {
     const auto point =

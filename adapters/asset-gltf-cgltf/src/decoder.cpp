@@ -640,21 +640,13 @@ auto topologyOf(cgltf_primitive_type type) -> std::optional<asset::PrimitiveTopo
     return asset::PrimitiveTopology::triangle_list;
   case cgltf_primitive_type_triangle_strip:
     return asset::PrimitiveTopology::triangle_strip;
+  case cgltf_primitive_type_triangle_fan:
+    return asset::PrimitiveTopology::triangle_fan;
+  case cgltf_primitive_type_line_strip:
+  case cgltf_primitive_type_line_loop: // closed by closeLineLoop
+    return asset::PrimitiveTopology::line_strip;
   default:
     return std::nullopt;
-  }
-}
-
-auto modeName(cgltf_primitive_type type) -> std::string {
-  switch (type) {
-  case cgltf_primitive_type_line_loop:
-    return "LINE_LOOP";
-  case cgltf_primitive_type_line_strip:
-    return "LINE_STRIP";
-  case cgltf_primitive_type_triangle_fan:
-    return "TRIANGLE_FAN";
-  default:
-    return "unknown mode";
   }
 }
 
@@ -748,6 +740,8 @@ private:
                   const std::string &path) -> terreate::Result<std::optional<asset::TextureRef>>;
 
   // Meshes and accessors.
+  auto closeLineLoop(asset::MeshData &mesh, std::size_t vertex_count, const std::string &path,
+                     const std::string &pointer) -> terreate::Result<void>;
   auto buildPrimitive(std::size_t mesh_index, std::size_t primitive_index,
                       const cgltf_primitive &primitive)
       -> terreate::Result<std::optional<asset::ModelPrimitive>>;
@@ -1463,6 +1457,51 @@ auto Decoder::planAttributes(const cgltf_primitive &primitive, const std::string
   return has_position;
 }
 
+// A glTF line loop has no Vulkan topology: it is stored as a line strip whose last element repeats
+// the first. A mesh that was not indexed gets an index buffer 0..n-1, 0 for it. A loop of fewer
+// than two elements is left as it is (the later validation rejects the strip as
+// invalid_index_count). The extra index is charged to the decoded size budget.
+auto Decoder::closeLineLoop(asset::MeshData &mesh, std::size_t vertex_count,
+                            const std::string &path, const std::string &pointer)
+    -> terreate::Result<void> {
+  const std::size_t elements =
+      mesh.indexType() == asset::IndexType::none ? vertex_count : mesh.indexCount();
+  if (elements < 2)
+    return {};
+  if (mesh.indexType() == asset::IndexType::none) {
+    const bool wide = vertex_count > 65535;
+    if (auto charged =
+            charge((static_cast<std::uint64_t>(vertex_count) + 1) * (wide ? 4U : 2U), path);
+        !charged)
+      return std::unexpected(std::move(charged.error()));
+    if (wide) {
+      std::vector<std::uint32_t> values(vertex_count + 1);
+      for (std::size_t i = 0; i < vertex_count; ++i)
+        values[i] = static_cast<std::uint32_t>(i);
+      mesh.indices = std::move(values);
+    } else {
+      std::vector<std::uint16_t> values(vertex_count + 1);
+      for (std::size_t i = 0; i < vertex_count; ++i)
+        values[i] = static_cast<std::uint16_t>(i);
+      mesh.indices = std::move(values);
+    }
+  } else {
+    if (auto charged = charge(mesh.indexType() == asset::IndexType::uint32 ? 4U : 2U, path);
+        !charged)
+      return std::unexpected(std::move(charged.error()));
+    const std::uint32_t first = mesh.index(0).value_or(0);
+    if (auto *narrow = std::get_if<std::vector<std::uint16_t>>(&mesh.indices))
+      narrow->push_back(static_cast<std::uint16_t>(first));
+    else if (auto *wide = std::get_if<std::vector<std::uint32_t>>(&mesh.indices))
+      wide->push_back(first);
+  }
+  reporter_.note(Note{asset::DecodeSeverity::info, "gltf.line_loop.closed",
+                      path + " is a LINE_LOOP; it is stored as a line strip whose last index "
+                             "repeats the first (Vulkan has no line loop topology)",
+                      pointer});
+  return {};
+}
+
 auto Decoder::buildPrimitive(std::size_t mesh_index, std::size_t primitive_index,
                              const cgltf_primitive &primitive)
     -> terreate::Result<std::optional<asset::ModelPrimitive>> {
@@ -1473,10 +1512,9 @@ auto Decoder::buildPrimitive(std::size_t mesh_index, std::size_t primitive_index
 
   const auto topology = topologyOf(primitive.type);
   if (!topology) {
-    reporter_.unsupported(Finding{"primitive-mode", modeName(primitive.type),
-                                  path + " uses " + modeName(primitive.type) +
-                                      "; MeshData has no such topology, the primitive is skipped",
-                                  pointer});
+    reporter_.unsupported(
+        Finding{"primitive-mode", "unknown mode",
+                path + " has a mode that is not a glTF mode, the primitive is skipped", pointer});
     return std::optional<asset::ModelPrimitive>{};
   }
   if (primitive.has_draco_mesh_compression) {
@@ -1535,6 +1573,10 @@ auto Decoder::buildPrimitive(std::size_t mesh_index, std::size_t primitive_index
     if (!indices)
       return std::unexpected(std::move(indices.error()));
     mesh.indices = std::move(*indices);
+  }
+  if (primitive.type == cgltf_primitive_type_line_loop) {
+    if (auto closed = closeLineLoop(mesh, vertex_count, path, pointer); !closed)
+      return std::unexpected(std::move(closed.error()));
   }
   if (auto bounds = asset::computeBounds(mesh); bounds)
     mesh.bounds = *bounds;

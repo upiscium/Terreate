@@ -8,6 +8,16 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
 
 ### Added
 
+- **glTF line strip, line loop and triangle fan modes** (#475, part 1): Asset `PrimitiveTopology` gains
+  `line_strip` and `triangle_fan` (appended, earlier values unchanged; `validate` accepts a fan with 0 or at least
+  3 elements and a line strip with 0 or at least 2). The glTF Adapter decodes modes 3 and 6 1:1 and no longer
+  skips them; a line loop (mode 2) becomes a `line_strip` closed by repeating the first index (non-indexed
+  primitives get indices `0..n-1, 0`), with the info diagnostic `gltf.line_loop.closed`. The Integration maps the
+  new topologies to `eLineStrip` and `eTriangleFan` (triangle fans are not available on every implementation,
+  for example portability subsets). New explicit `asset::convertTopology(mesh, target)` (triangle strip and fan to
+  triangle list, line strip to line list; degenerate primitives dropped, strip winding kept;
+  `MeshDataError::unsupported_conversion` otherwise); nothing converts implicitly. The Draco part of #475
+  (part 2) is still open.
 - **Explicit mip chain generation, CPU path** (#467): `asset::generateMipChain(image, options)`
   (`<terreate/asset/mip_chain.hpp>`) turns an `ImageData` that has only the base level into a validated,
   tightly packed `ImageData` with the full chain (or `MipChainOptions::levels` levels). The filter is a box
@@ -61,8 +71,7 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   `ImageData` through an application-provided `ImageDecoderView` (the stb_image Adapter's `decodeImage` can
   be wrapped as it; the Adapter does not depend on it) with the color interpretation taken from how the
   materials use each image, and the source and every external request are in the result's provenance.
-  Animations, skins, morph targets, cameras, lights, extensions, extras, other attributes and the line loop,
-  line strip and triangle fan modes are listed in `ModelData::unsupported` and as diagnostics, never dropped
+  Animations, skins, morph targets, cameras, lights, extensions, extras and other attributes are listed in `ModelData::unsupported` and as diagnostics, never dropped
   silently; a file whose `extensionsRequired` is not empty is refused. The decode checks every bound itself
   (accessors, buffer views, sparse accessors, indices, JSON nesting, node cycles and depth, a parser memory
   budget, decoded size) and names every failure (`GltfDecodeError`; the shared `asset::DecodeError`,
