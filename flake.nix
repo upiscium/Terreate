@@ -4,9 +4,16 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # cgltf (single-header glTF parser, MIT) is not in nixpkgs. It is pinned by
+    # flake.lock as a non-flake source tree and is the backend of the optional
+    # AdapterAssetGltfCgltf component (#278).
+    cgltf = {
+      url = "github:jkuhlmann/cgltf";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
+  outputs = { self, nixpkgs, flake-utils, cgltf }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
@@ -30,6 +37,9 @@
           # The directory that contains stb_image.h (nixpkgs installs it in
           # include/stb); read by the AdapterAssetImageStb configure step.
           STB_INCLUDE = "${stbHeaders}/include/stb";
+          # The directory that contains cgltf.h (the root of the pinned flake
+          # input); read by the AdapterAssetGltfCgltf configure step.
+          CGLTF_INCLUDE = "${cgltf}";
 
           packages = with pkgs; [
             # Build and repository tooling.
