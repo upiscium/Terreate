@@ -9,6 +9,9 @@
 #include <terreate/asset/image_data.hpp>
 #include <terreate/core/result.hpp>
 #include <terreate/graphics/allocator.hpp>
+#include <terreate/graphics/barriers.hpp>
+#include <terreate/graphics/command_buffer.hpp>
+#include <terreate/graphics/device.hpp>
 #include <terreate/graphics/image.hpp>
 #include <terreate/graphics/upload_batch.hpp>
 
@@ -17,7 +20,7 @@
 /// stays free of Asset; neither depends on this Integration.
 ///
 /// Getting an `asset::ImageData` onto the GPU takes three explicit steps, and
-/// nothing in this namespace records a command, submits work, waits, creates an
+/// nothing in these steps records a command, submits work, waits, creates an
 /// `ImageView` or a `Sampler`, generates mips or transitions a layout:
 ///
 /// 1. `planImageUpload` describes the conversion on the CPU. The result,
@@ -31,6 +34,15 @@
 /// The application keeps the timing, the queue, the barriers (the plan states
 /// the layout the copy needs; record the transitions with
 /// `graphics::imageBarrier`) and the retirement.
+///
+/// One optional fourth step is an explicit opt-in (#468): naming
+/// `LayoutTransition::shader_read_only` in the description makes the plan state the
+/// barrier that moves the image from the copy layout to the layout it is sampled
+/// in, and `recordImageUploadTransition` records exactly that barrier into the
+/// application's command buffer after the upload batch. It never submits, waits,
+/// transfers queue family ownership or keeps state; see
+/// `recordImageUploadTransition` for the synchronization scope and the equivalent
+/// `graphics::imageBarrier` code.
 namespace terreate::integration::asset_graphics {
 
 /// How mips are produced. The only value, `none`, uploads exactly the mip levels
@@ -41,13 +53,18 @@ enum class MipGeneration : std::uint8_t {
   none,
 };
 
-/// Whether the Integration records a layout transition. The only value, `none`,
-/// records nothing: the application transitions the image with
-/// `graphics::imageBarrier`. Reserved for an explicit opt-in follow-up (#468).
+/// Whether the plan states a layout transition after the upload, and to which
+/// layout. Opt-in by naming the target layout; never implied, and the default is
+/// `none`.
 enum class LayoutTransition : std::uint8_t {
-  /// Record no transition; `ImageUploadPlan::copy_layout` is the layout the
-  /// application must have established.
+  /// State no transition; the image stays in `ImageUploadPlan::copy_layout`
+  /// (`eTransferDstOptimal`) and the application transitions it with
+  /// `graphics::imageBarrier`.
   none,
+  /// The plan states one barrier from `eTransferDstOptimal` to
+  /// `eShaderReadOnlyOptimal` (see `ImageUploadPlan::transition_barriers`) that
+  /// `recordImageUploadTransition` records.
+  shader_read_only,
 };
 
 /// What to create and how. Plain data with documented defaults.
@@ -60,8 +77,17 @@ struct ImageUploadDescription {
   graphics::ImageAllocationDescription allocation{};
   /// Reserved: mips are not generated (#467).
   MipGeneration mip_generation = MipGeneration::none;
-  /// Reserved: no layout transition is recorded (#468).
+  /// The layout transition the plan states after the upload (#468). `none` (the
+  /// default) states no transition; `shader_read_only` states a barrier to
+  /// `eShaderReadOnlyOptimal`.
   LayoutTransition layout_transition = LayoutTransition::none;
+  /// Only with `LayoutTransition::shader_read_only`: the pipeline stages that read
+  /// the image after the transition. They become the destination stage of the
+  /// barrier, so a read in a stage not named here is not synchronized with the
+  /// upload. The default is the fragment shader; add for example
+  /// `eVertexShader` or `eComputeShader` for other consumers. Empty is
+  /// `unsupported_option` when a transition is requested. Ignored with `none`.
+  vk::PipelineStageFlags2 consumer_stages = vk::PipelineStageFlagBits2::eFragmentShader;
 };
 
 /// One (mip, layer) of the image: where its bytes are in `ImageData::data` and
@@ -114,15 +140,39 @@ struct ImageUploadPlan {
   std::vector<ImageUploadSubresource> subresources;
   /// Always `none` (reserved, #467).
   MipGeneration mip_generation = MipGeneration::none;
-  /// Always `none` (reserved, #468).
+  /// The transition the description named (#468); `none` by default.
   LayoutTransition layout_transition = LayoutTransition::none;
+  /// The layout every subresource is in once the upload batch and, if requested,
+  /// the transition have executed: `copy_layout` with `none`,
+  /// `eShaderReadOnlyOptimal` with `shader_read_only`.
+  vk::ImageLayout final_layout = vk::ImageLayout::eTransferDstOptimal;
+  /// The barrier descriptions the transition implies, for `graphics::imageBarrier`
+  /// (empty with `none`). With `shader_read_only` there is exactly one, covering
+  /// every uploaded mip and layer (color aspect, mips 0..`mip_levels`-1, layers
+  /// 0..`array_layers`-1):
+  ///
+  /// - `old_layout` `eTransferDstOptimal`, `new_layout` `eShaderReadOnlyOptimal`;
+  /// - `src_stage` `eTransfer`, `src_access` `eTransferWrite`: the upload copies;
+  /// - `dst_stage` the description's `consumer_stages`, `dst_access`
+  ///   `eShaderSampledRead`;
+  /// - both queue families `VK_QUEUE_FAMILY_IGNORED`: no ownership transfer.
+  ///
+  /// The scope is one queue and one submission order: the barrier makes the
+  /// copies recorded before it available and visible to sampled reads in the
+  /// consumer stages recorded after it, on the same queue. Another queue needs
+  /// the application's own semaphore and ownership transfer. The values are plain
+  /// data: the application may change `dst_stage` before
+  /// `recordImageUploadTransition`; any other edit makes the plan inconsistent
+  /// (`plan_mismatch`).
+  std::vector<graphics::ImageBarrierDescription> transition_barriers;
 };
 
 /// The failures of this part of the Integration. An image that fails
 /// `asset::validate` is not in this list: its `asset::ImageDataError` is returned
 /// unchanged. Errors of `graphics::createImage` (`graphics::ImageError`, native
-/// failures) are also returned unchanged. Values start at 1; new values are
-/// appended.
+/// failures) are also returned unchanged, as are those of `graphics::recordBarriers`
+/// from `recordImageUploadTransition` (for example a command buffer that is not
+/// recording). Values start at 1; new values are appended.
 enum class ImageUploadError : std::uint8_t {
   /// The pixel format has no portable Vulkan format (`rgb8`: three-component
   /// 8-bit formats are not required to support sampling or transfer).
@@ -140,6 +190,9 @@ enum class ImageUploadError : std::uint8_t {
   /// A plan is not self-consistent, or the `ImageData` or the `Image` is not the
   /// one the plan was made for.
   plan_mismatch,
+  /// `recordImageUploadTransition` was given a plan made without a transition
+  /// (`LayoutTransition::none`): there is nothing to record.
+  no_transition,
 };
 
 /// The category of ImageUploadError codes (name
@@ -152,7 +205,8 @@ enum class ImageUploadError : std::uint8_t {
 /// regions. Nothing is created and no Vulkan function is called.
 ///
 /// Checks run in this order: `asset::validate(image)` (its error is returned
-/// unchanged), the reserved choices (`unsupported_option`), the format
+/// unchanged), the choices (`unsupported_option`: an undefined `mip_generation` or
+/// `layout_transition`, or empty `consumer_stages` with a transition), the format
 /// (`unsupported_format`), the dimensionality (`unsupported_image`), then each
 /// subresource (`unaligned_row_pitch`, `size_overflow`). Nothing is repaired.
 ///
@@ -196,6 +250,43 @@ enum class ImageUploadError : std::uint8_t {
 [[nodiscard]] auto imageUploadItems(const ImageUploadPlan &plan, const asset::ImageData &image,
                                     const graphics::Image &destination)
     -> terreate::Result<std::vector<graphics::ImageUploadItem>>;
+
+/// Optional step 4 (#468), recording only: records the barrier of
+/// `plan.transition_barriers` for `image` with `graphics::recordBarriers` (one
+/// `vkCmdPipelineBarrier2`), moving every subresource from the copy layout to
+/// `plan.final_layout`. Record it after `graphics::recordUploadBatch` in the
+/// same command buffer; the image must be in `plan.copy_layout` then.
+///
+/// It does not submit, wait, create or retire anything, does not transfer queue
+/// family ownership and remembers nothing. The synchronization scope is the one
+/// stated in `ImageUploadPlan::transition_barriers`: transfer writes to sampled
+/// reads in `ImageUploadDescription::consumer_stages`, on this queue.
+///
+/// The equivalent lower-level code, with `plan` from `planImageUpload` with
+/// `layout_transition = shader_read_only` and `range` covering every mip and layer:
+///
+/// ```
+/// graphics::ImageBarrierDescription barrier;
+/// barrier.src_stage = vk::PipelineStageFlagBits2::eTransfer;
+/// barrier.src_access = vk::AccessFlagBits2::eTransferWrite;
+/// barrier.dst_stage = vk::PipelineStageFlagBits2::eFragmentShader;
+/// barrier.dst_access = vk::AccessFlagBits2::eShaderSampledRead;
+/// barrier.old_layout = vk::ImageLayout::eTransferDstOptimal;
+/// barrier.new_layout = vk::ImageLayout::eShaderReadOnlyOptimal;
+/// barrier.subresource_range = range;
+/// graphics::recordImageBarrier(device, command, image, barrier);
+/// ```
+///
+/// Errors: `ImageUploadError::no_transition` when the plan states none (nothing
+/// is recorded); `ImageUploadError::plan_mismatch` when the plan is not
+/// self-consistent (its barrier is not the one `shader_read_only` implies, other
+/// than the destination stage) or `image` is invalid or not the image created from
+/// the plan; the errors of `graphics::recordBarriers` otherwise (for example a
+/// command buffer that is not recording, or a device without synchronization2).
+[[nodiscard]] auto
+recordImageUploadTransition(const graphics::Device &device, const graphics::CommandBuffer &command,
+                            const ImageUploadPlan &plan, const graphics::Image &image)
+    -> terreate::Result<void>;
 
 } // namespace terreate::integration::asset_graphics
 

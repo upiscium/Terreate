@@ -256,7 +256,7 @@ void errors() {
         "an undefined mip_generation value is unsupported_option");
   forged = {};
   // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-  forged.layout_transition = static_cast<ag::LayoutTransition>(1);
+  forged.layout_transition = static_cast<ag::LayoutTransition>(2);
   check(hasError(ag::planImageUpload(image, forged), ag::ImageUploadError::unsupported_option),
         "an undefined layout_transition value is unsupported_option");
 
@@ -264,13 +264,84 @@ void errors() {
   check(std::string{ag::image_upload_error_category().name()} ==
             "terreate.integration.asset_graphics.image_upload",
         "the category name");
-  for (int value = 1; value <= 6; ++value)
+  for (int value = 1; value <= 7; ++value)
     check(!ag::image_upload_error_category().message(value).empty() &&
               ag::image_upload_error_category().message(value) != "unknown image upload error",
           "every ImageUploadError has a message");
   check(ag::make_error_code(ag::ImageUploadError::plan_mismatch).category() ==
             ag::image_upload_error_category(),
         "make_error_code uses the category");
+}
+
+// #468: the transition is opt-in, named by the target layout. The plan states the layout the
+// image ends in and the barrier (layouts, stages, access, the whole subresource range).
+void transitionPlan() {
+  struct Shape {
+    std::uint32_t mips;
+    std::uint32_t layers;
+  };
+  const std::array shapes{Shape{1, 1}, Shape{3, 1}, Shape{1, 4}, Shape{3, 2}};
+  for (const auto shape : shapes) {
+    const auto image = makeImage(asset::PixelFormat::rgba8, asset::ColorInterpretation::srgb, 8, 8,
+                                 shape.mips, shape.layers);
+    // Off by default: no final layout change, no barrier.
+    const auto off = terreate::unwrap(ag::planImageUpload(image));
+    check(off.layout_transition == ag::LayoutTransition::none &&
+              off.final_layout == vk::ImageLayout::eTransferDstOptimal &&
+              off.transition_barriers.empty(),
+          "the default plan states no transition and stays in the copy layout");
+
+    ag::ImageUploadDescription description;
+    description.layout_transition = ag::LayoutTransition::shader_read_only;
+    const auto plan = terreate::unwrap(ag::planImageUpload(image, description));
+    check(plan.layout_transition == ag::LayoutTransition::shader_read_only &&
+              plan.final_layout == vk::ImageLayout::eShaderReadOnlyOptimal &&
+              plan.copy_layout == vk::ImageLayout::eTransferDstOptimal,
+          "shader_read_only ends in ShaderReadOnlyOptimal after the TransferDst copy layout");
+    if (!check(plan.transition_barriers.size() == 1, "one barrier covers the whole image"))
+      continue;
+    const auto &barrier = plan.transition_barriers.front();
+    check(barrier.old_layout == vk::ImageLayout::eTransferDstOptimal &&
+              barrier.new_layout == vk::ImageLayout::eShaderReadOnlyOptimal,
+          "the barrier moves TransferDstOptimal to ShaderReadOnlyOptimal");
+    check(barrier.src_stage == vk::PipelineStageFlagBits2::eTransfer &&
+              barrier.src_access == vk::AccessFlagBits2::eTransferWrite,
+          "the source scope is the transfer write of the upload");
+    check(barrier.dst_stage == vk::PipelineStageFlagBits2::eFragmentShader &&
+              barrier.dst_access == vk::AccessFlagBits2::eShaderSampledRead,
+          "the default consumer is a fragment shader sampled read");
+    const auto &range = barrier.subresource_range;
+    check(range.aspectMask == vk::ImageAspectFlagBits::eColor && range.baseMipLevel == 0 &&
+              range.levelCount == shape.mips && range.baseArrayLayer == 0 &&
+              range.layerCount == shape.layers,
+          "the range covers every uploaded mip and layer");
+    check(barrier.src_queue_family == VK_QUEUE_FAMILY_IGNORED &&
+              barrier.dst_queue_family == VK_QUEUE_FAMILY_IGNORED,
+          "no queue family ownership transfer");
+    check(plan.subresources.size() == static_cast<std::size_t>(shape.mips) * shape.layers &&
+              plan.image.mip_levels == shape.mips && plan.image.array_layers == shape.layers,
+          "the upload part of the plan is unchanged by the transition");
+  }
+
+  // The consumer stages are the application's and land in the destination stage.
+  const auto image = makeImage(asset::PixelFormat::r8, asset::ColorInterpretation::linear, 4, 4);
+  ag::ImageUploadDescription description;
+  description.layout_transition = ag::LayoutTransition::shader_read_only;
+  description.consumer_stages =
+      vk::PipelineStageFlagBits2::eVertexShader | vk::PipelineStageFlagBits2::eComputeShader;
+  const auto plan = terreate::unwrap(ag::planImageUpload(image, description));
+  check(plan.transition_barriers.size() == 1 && plan.transition_barriers.front().dst_stage ==
+                                                    (vk::PipelineStageFlagBits2::eVertexShader |
+                                                     vk::PipelineStageFlagBits2::eComputeShader),
+        "consumer_stages is the destination stage");
+
+  // Empty consumer stages are refused with a transition and ignored without one.
+  description.consumer_stages = {};
+  check(hasError(ag::planImageUpload(image, description), ag::ImageUploadError::unsupported_option),
+        "a transition without consumer stages is unsupported_option");
+  description.layout_transition = ag::LayoutTransition::none;
+  check(bool(ag::planImageUpload(image, description)),
+        "consumer_stages is ignored without a transition");
 }
 
 } // namespace
@@ -281,6 +352,7 @@ int main() {
   mipAndLayerTable();
   paddedRows();
   errors();
+  transitionPlan();
   if (failures != 0)
     return EXIT_FAILURE;
   std::puts("integration.asset_graphics.image_plan: plan=PASS");

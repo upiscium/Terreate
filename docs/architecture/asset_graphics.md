@@ -289,7 +289,7 @@ pipeline is created, not here.
 ## Part 2: uploading an ImageData (#279)
 
 Header: `<terreate/integration/asset_graphics/image_upload.hpp>`. It follows the mesh shape exactly: three
-explicit steps, nothing records, submits or waits, and the application keeps the timing.
+explicit steps, nothing records, submits or waits, and the application keeps the timing (one optional recording function, `recordImageUploadTransition`, is an opt-in; see below).
 
 1. `planImageUpload(image, description)` describes the conversion on the CPU and creates nothing.
 2. `createImage(allocator, plan)` creates the `graphics::Image` the plan describes (no data, no layout
@@ -305,7 +305,8 @@ explicit steps, nothing records, submits or waits, and the application keeps the
 | `image` | the `graphics::ImageDescription`: extent, `mip_levels`, `array_layers`, 2D, one sample, optimal tiling, usage, `eUndefined` initial layout, allocation |
 | `copy_layout` | `eTransferDstOptimal`: the layout each subresource must be in when `recordUploadBatch` runs |
 | `subresources` | one entry per (mip, layer), layer-major: mip, layer, byte offset and count inside `ImageData::data`, the row pitch in bytes, and the `VkBufferImageCopy2` region (color aspect, that mip and layer, the mip extent, `bufferRowLength` = the pitch in texels, `bufferImageHeight` 0, `bufferOffset` 0) |
-| `mip_generation`, `layout_transition` | reserved choices, see below |
+| `layout_transition`, `final_layout`, `transition_barriers` | the opt-in transition after the upload (`none` by default), the layout the image ends in and the barrier descriptions it implies; see "The layout transition" |
+| `mip_generation` | reserved (#467), `none` |
 
 - **Mapping** (pixel format and `ColorInterpretation`): `srgb` maps to the sRGB format where one exists
   (`r8`, `rg8`, `rgba8` give `R8_SRGB`, `R8G8_SRGB`, `R8G8B8A8_SRGB`); `linear` and `normal_map` map to
@@ -322,14 +323,70 @@ explicit steps, nothing records, submits or waits, and the application keeps the
   which is exactly the footprint `prepareUploadBatch` requires. A row pitch that is not a multiple of the
   texel size cannot be expressed in texels: `unaligned_row_pitch` (repack with `asset::packedLayout`).
   A 3D image (depth above 1) is `unsupported_image`.
-- **Reserved opt-in choices.** `ImageUploadDescription` has `mip_generation` and `layout_transition`, each
-  an `enum class` whose only value is `none`. They exist so that the follow-ups can add an explicit opt-in
-  without changing this API: mip generation is #467 and a recorded layout transition is #468. Until
-  then nothing is generated and nothing is transitioned; any other value is `unsupported_option`.
-- **Layouts are the application's.** The plan states `copy_layout`; before `recordUploadBatch` the
+- **Reserved opt-in choice.** `ImageUploadDescription::mip_generation` is an `enum class` whose only value is `none`; mip generation is #467. Until then nothing is generated and any other value is `unsupported_option`.
+- **Layouts are the application's unless it opts in.** The plan states `copy_layout`; before `recordUploadBatch` the
   application moves every subresource from `eUndefined` to it with `graphics::imageBarrier` (through
-  `recordBarriers` or `recordImageBarrier`), and after the upload to whatever it needs next
-  (`eShaderReadOnlyOptimal`, `eTransferSrcOptimal`).
+  `recordBarriers` or `recordImageBarrier`), and after the upload to whatever it needs next, or it names
+  `LayoutTransition::shader_read_only` (below).
+
+### The layout transition (opt-in, #468)
+
+By default the uploaded image stays in `copy_layout` (`eTransferDstOptimal`) and the plan states no
+transition (`layout_transition == none`, `final_layout == copy_layout`, `transition_barriers` empty). The
+application opts in by **naming the target layout** in the description:
+
+```cpp
+ag::ImageUploadDescription description;
+description.layout_transition = ag::LayoutTransition::shader_read_only;
+description.consumer_stages = vk::PipelineStageFlagBits2::eFragmentShader;  // the default
+auto plan = terreate::unwrap(ag::planImageUpload(image, description));
+// plan.final_layout == eShaderReadOnlyOptimal; plan.transition_barriers has one entry.
+// ... recordImageBarrier(undefined -> copy_layout); recordUploadBatch(device, cmd, batch);
+ag::recordImageUploadTransition(device, cmd, plan, texture);   // records the barrier, nothing else
+```
+
+- **The barriers are observable before anything is recorded.** `plan.transition_barriers` holds one
+  `graphics::ImageBarrierDescription` (the value you would give `imageBarrier`) covering every uploaded
+  mip and layer (color aspect, mips `0..mip_levels-1`, layers `0..array_layers-1`): `old_layout`
+  `eTransferDstOptimal`, `new_layout` `eShaderReadOnlyOptimal`, `src_stage` `eTransfer`, `src_access`
+  `eTransferWrite`, `dst_stage` = `consumer_stages`, `dst_access` `eShaderSampledRead`, both queue
+  families `VK_QUEUE_FAMILY_IGNORED`.
+- **Synchronization scope.** One queue, one submission order: the copies recorded before the barrier
+  (the upload batch) are made available and visible to sampled reads in the consumer stages recorded after
+  it. The source scope is the transfer stage because the upload batch copies; the destination scope is what
+  the application names in `consumer_stages` (default `eFragmentShader`) because only the application knows
+  which stages sample the image (add `eVertexShader`, `eComputeShader`, ...). A read in a stage not named is
+  not synchronized with the upload. The barrier is **not** an ownership transfer and gives no cross-queue
+  visibility: using the image on another queue needs the application's own semaphore (and queue family
+  release and acquire).
+- **`recordImageUploadTransition(device, command, plan, image)`** records exactly one
+  `vkCmdPipelineBarrier2` with `graphics::recordBarriers` for the plan's barriers. It must run after
+  `recordUploadBatch` in the same command buffer (the image is in `copy_layout` then). It never submits,
+  waits, retires or remembers anything, and queue selection, fences and `ImageView`/`Sampler` stay the
+  application's. Errors: `no_transition` (the plan was made with `none`; nothing is recorded),
+  `plan_mismatch` (the plan's transition fields are not what `shader_read_only` implies, other than the
+  destination stage, or `image` is not the image created from the plan), and the `graphics::recordBarriers`
+  errors unchanged (for example a command buffer that is not recording). `planImageUpload` returns
+  `unsupported_option` for empty `consumer_stages` with a transition (the field is ignored with `none`).
+- **The lower-level equivalent** is exactly what the plan lists, recorded yourself:
+
+```cpp
+graphics::ImageBarrierDescription barrier;
+barrier.src_stage = vk::PipelineStageFlagBits2::eTransfer;
+barrier.src_access = vk::AccessFlagBits2::eTransferWrite;
+barrier.dst_stage = vk::PipelineStageFlagBits2::eFragmentShader;
+barrier.dst_access = vk::AccessFlagBits2::eShaderSampledRead;
+barrier.old_layout = vk::ImageLayout::eTransferDstOptimal;
+barrier.new_layout = vk::ImageLayout::eShaderReadOnlyOptimal;
+barrier.subresource_range = {vk::ImageAspectFlagBits::eColor, 0, mip_levels, 0, array_layers};
+graphics::recordImageBarrier(device, cmd, texture, barrier);
+```
+
+`integration.asset_graphics.image_transition` is the GPU proof: it records the copy-layout barrier, the upload
+batch and `recordImageUploadTransition` into one command buffer, submits with a fence and waits for it, then
+(in the same submission) leaves `eShaderReadOnlyOptimal` for `eTransferSrcOptimal` (the validation layer
+reports an old layout that is not the image's), copies every (mip, layer) out and compares with the
+`ImageData`, with the validation layer required and silent. It proves the layout and that the data stays intact through the transition; the sampled-read access and the consumer stage are checked on the plan by the CPU test, not by sampling in a shader.
 
 ### Lifetime rule
 
@@ -354,10 +411,11 @@ are returned unchanged.
 | `unsupported_image` | a 3D image |
 | `unaligned_row_pitch` | a row pitch is not a multiple of the texel size |
 | `size_overflow` | a row exceeds 2^31 - 1 bytes |
-| `unsupported_option` | a reserved choice holds a value other than `none` |
+| `unsupported_option` | an undefined `mip_generation` or `layout_transition`, or empty `consumer_stages` with a transition |
 | `plan_mismatch` | the plan is not self-consistent, or the `ImageData` or `Image` is not the plan's |
+| `no_transition` | `recordImageUploadTransition` was given a plan made with `LayoutTransition::none` |
 
-`planImageUpload` checks in this order: `asset::validate`, the reserved choices, the format, the
+`planImageUpload` checks in this order: `asset::validate`, the choices, the format, the
 dimensionality, then each subresource.
 
 ### Example
@@ -405,4 +463,4 @@ Without this Integration: `asset::packedLayout` or your own table gives the rows
 creates the image with the format you pick, and you build one `graphics::ImageUploadItem` per (mip, layer)
 with a `VkBufferImageCopy2` (zero `bufferOffset`, the row length in texels) and `image.bytes(mip, layer)`.
 The plan is that code made observable. Beyond the Integration, `graphics::prepareUploadBatch` accepts the
-twelve formats listed in [the upload batch](upload_batch.md); the one-call convenience for meshes (#463) is described above; the image convenience waits for #468 (the layout-transition opt-in), because without it the uploaded image stays in the copy layout.
+twelve formats listed in [the upload batch](upload_batch.md); the one-call convenience for meshes (#463) is described above; the image convenience builds on the layout-transition opt-in above.
