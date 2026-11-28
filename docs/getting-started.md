@@ -111,8 +111,37 @@ auto uploaded = terreate::unwrap(ag::uploadMeshBlocking(device, allocator, queue
 When you cannot stall, `submitMeshUpload` does the same without waiting: you pass your own command buffer,
 fence and queue, and it returns the buffers, the staging owner and the receipt for your
 `RetirementQueue`. Both are written on the three explicit steps, which
-[the page on the Integration](architecture/asset_graphics.md) lists one by one. Images have no convenience
-yet (the layout-transition option it needs exists, #468; the convenience itself is not written).
+[the page on the Integration](architecture/asset_graphics.md) lists one by one.
+
+### Your first texture on the GPU
+
+The same Integration puts an `asset::ImageData` (for example from the stb_image Adapter) on the GPU, ready to
+be sampled. `uploadImageBlocking` **blocks** until the copy is done, and by default leaves the image in
+`ShaderReadOnlyOptimal` (set `layout_transition = LayoutTransition::none` to keep it in the copy layout).
+Creating the `ImageView` and the `Sampler` stays your job, with the existing Graphics calls:
+
+```cpp
+#include <terreate/graphics/image_view.hpp>
+#include <terreate/graphics/sampler.hpp>
+#include <terreate/integration/asset_graphics/image_upload_convenience.hpp>
+
+namespace ag = terreate::integration::asset_graphics;
+
+auto uploaded = terreate::unwrap(ag::uploadImageBlocking(device, allocator, queue, image_data, 10'000'000'000));
+
+graphics::ImageViewDescription view_description;
+view_description.format = uploaded.plan.format;
+view_description.subresource_range = vk::ImageSubresourceRange{
+    vk::ImageAspectFlagBits::eColor, 0, uploaded.plan.image.mip_levels, 0, uploaded.plan.image.array_layers};
+auto view = terreate::unwrap(graphics::createImageView(device, uploaded.image, view_description));
+graphics::SamplerDescription sampler_description;
+sampler_description.max_lod = static_cast<float>(uploaded.plan.image.mip_levels);   // the default 0 samples mip 0 only
+auto sampler = terreate::unwrap(graphics::createSampler(device, sampler_description));
+// Bind view + sampler in a descriptor set with the layout vk::ImageLayout::eShaderReadOnlyOptimal.
+```
+
+(Mind `view_type` for images with several layers.) `submitImageUpload` is the non-blocking version, with your
+own command buffer, fence and queue, and a receipt for your `RetirementQueue`.
 
 ## 4. Where to look next
 
@@ -123,6 +152,7 @@ yet (the layout-transition option it needs exists, #468; the convenience itself 
 | describe geometry on the CPU (`MeshData`, primitive generators) | [Asset](architecture/asset.md) | [Asset](api/asset.md) |
 | upload a `MeshData` to GPU buffers, explicitly | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | upload a `MeshData` in one call (beginner path: `uploadMeshBlocking`, or non-blocking `submitMeshUpload`) | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
+| upload an `ImageData` in one call, ready to sample (`uploadImageBlocking`, or non-blocking `submitImageUpload`; you create the view and sampler) | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | upload an `ImageData` to a GPU image, explicitly | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | move the uploaded image to `eShaderReadOnlyOptimal` (opt-in `LayoutTransition::shader_read_only` and `recordImageUploadTransition`) | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | decode a PNG, JPEG, BMP, TGA or HDR from memory into an `ImageData` (no file or GPU involved) | [stb_image Adapter](architecture/asset_image_stb.md) | [stb_image Adapter](api/asset_image_stb.md) |

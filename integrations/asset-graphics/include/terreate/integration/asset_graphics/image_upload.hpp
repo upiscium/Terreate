@@ -193,6 +193,10 @@ enum class ImageUploadError : std::uint8_t {
   /// `recordImageUploadTransition` was given a plan made without a transition
   /// (`LayoutTransition::none`): there is nothing to record.
   no_transition,
+  /// `uploadImageBlocking` (image_upload_convenience.hpp): the fence did not signal
+  /// within the timeout. The GPU may still use the resources, so they were
+  /// deliberately not destroyed.
+  wait_timeout,
 };
 
 /// The category of ImageUploadError codes (name

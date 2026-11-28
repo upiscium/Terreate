@@ -185,8 +185,8 @@ checks the plan fields and the errors reachable without a device on the CPU (`pl
 Header: `<terreate/integration/asset_graphics/mesh_upload_convenience.hpp>`. The explicit three steps above
 remain the base layer and do not change (`planMeshUpload` still rejects an empty `attributes` list). The
 convenience is written only with them and the Graphics upload batch, for someone who wants a mesh on
-the GPU without wiring the steps. **Meshes only.** The image convenience waits for the layout-transition
-opt-in (#468): without it the uploaded image stays in the copy layout and a beginner could not sample it.
+the GPU without wiring the steps. **Meshes only here;** the image convenience is its own section at the end of this page. It
+builds on the layout-transition opt-in (#468), without which an uploaded image stays in the copy layout.
 Out of scope: pipelines, materials, a draw helper and uploading a whole `ModelData`.
 
 | Function | What it does | Waits? |
@@ -463,4 +463,116 @@ Without this Integration: `asset::packedLayout` or your own table gives the rows
 creates the image with the format you pick, and you build one `graphics::ImageUploadItem` per (mip, layer)
 with a `VkBufferImageCopy2` (zero `bufferOffset`, the row length in texels) and `image.bytes(mip, layer)`.
 The plan is that code made observable. Beyond the Integration, `graphics::prepareUploadBatch` accepts the
-twelve formats listed in [the upload batch](upload_batch.md); the one-call convenience for meshes (#463) is described above; the image convenience builds on the layout-transition opt-in above.
+twelve formats listed in [the upload batch](upload_batch.md); the one-call convenience for meshes (#463) is described above; the one-call convenience for images is the last section of this page.
+
+## Image convenience and its lower-level equivalent (#463, images)
+
+Header: `<terreate/integration/asset_graphics/image_upload_convenience.hpp>` (a separate header, so that code that
+only wants the explicit image steps does not see it). The explicit steps of Part 2 above, including the opt-in
+transition (#468), stay the base layer and do not change (their `layout_transition` still defaults to `none`).
+The convenience is written only with them, `graphics::recordImageBarrier`, the upload batch and
+`graphics::submitFenced`. It does **not** create an `ImageView` or a `Sampler`: that stays with the application
+(two calls, shown in [getting started](../getting-started.md)).
+
+| Function | What it does | Waits? |
+| --- | --- | --- |
+| `toImageUploadDescription(description)` | the `ImageUploadDescription` the convenience description means | no, CPU |
+| `planImageUploadWithDefaults(image, description)` | `planImageUpload(image, toImageUploadDescription(description))` | no, CPU |
+| `submitImageUpload(device, allocator, queue, command, fence, identity, image, description)` | plan, create the image, prepare staging, record the barriers and the upload, end the command buffer, `submitFenced` | **never** |
+| `uploadImageBlocking(device, allocator, queue, image, timeout_ns, description)` | does the same on its own command pool, command buffer and fence, then waits on the fence | **yes, the name says so** |
+
+### The one default that differs: the layout transition
+
+`ImageUploadConvenienceDescription` has the fields of `ImageUploadDescription` (`extra_usage`, `allocation`,
+`layout_transition`, `consumer_stages`) with one different default: `layout_transition` is
+`LayoutTransition::shader_read_only`, because the convenience exists so that a first program can sample the
+image. After the upload the image is in `ShaderReadOnlyOptimal`, visible to sampled reads in
+`consumer_stages` (default: the fragment shader). The choice is visible: it is `plan.layout_transition`,
+`plan.final_layout` and `plan.transition_barriers`. Set `layout_transition = LayoutTransition::none` to
+leave the image in `TransferDstOptimal` (the plan then states no barrier). Mips are not generated.
+
+### What `submitImageUpload` records
+
+The application passes a `graphics::CommandBuffer` in the **recording** state (from a pool of `queue`'s family;
+the family must support transfer, and the stages of `consumer_stages`, graphics by default, unless the transition is `none`), the queue, an unsignaled fence and a `CompletionIdentity`. In this order:
+
+1. a barrier from `eUndefined` to `plan.copy_layout` for every mip and layer (top of pipe to transfer write;
+   `createImage` leaves the image in `eUndefined` and the upload batch records no transition),
+2. `graphics::recordUploadBatch`,
+3. unless `none`, `recordImageUploadTransition` (transfer write to sampled reads in `consumer_stages`),
+
+then it **ends** the command buffer and calls `graphics::submitFenced` once. It never waits, resets or reuses
+anything. It returns `ImageUploadSubmission`:
+
+| Member | Contract |
+| --- | --- |
+| `plan` | the effective state (format, subresources, transition, `final_layout`) |
+| `image` | the `graphics::Image`; contents valid and in `plan.final_layout` once the fence has signaled |
+| `staging` | the `graphics::PreparedUploadBatch`, move-only, ready for `RetirementQueue::retire` with `receipt` |
+| `receipt` | the `SubmissionReceipt` of the one submission (evidence of submit, not of completion) |
+
+Lifetimes, errors and the error path are those of `submitMeshUpload` above: `image` and `description` only live
+during the call (the pixels are copied into staging), the command buffer and fence stay untouched until the
+fence signals and the staging is retired, errors of the explicit steps are returned unchanged, and on an error
+everything the call created is destroyed before it returns. Visibility for another queue (semaphore, family
+ownership transfer) is the application's, as stated for `ImageUploadPlan::transition_barriers`.
+
+### `uploadImageBlocking`: blocking
+
+Creates its own command pool (on the family of `queue`), command buffer and fence, performs `submitImageUpload`,
+then waits on the fence for at most `timeout_ns` (`UINT64_MAX` is no limit; there is no default), destroys the
+helper objects and the staging and returns `ImageUploadResult` (`plan`, `image`). The image is complete and in
+`plan.final_layout`. On a timeout (`ImageUploadError::wait_timeout`) or a native wait error (returned
+unchanged) the GPU may still use the staging, the image and the helpers, so none of them is destroyed: they are
+deliberately leaked and the application should treat the device as hung or lost.
+
+### The lower-level equivalent, step by step
+
+`submitImageUpload` with the default description is this, after you have begun the command buffer yourself
+(the same code the `integration.asset_graphics.image_convenience` test uses as its reference):
+
+```cpp
+ag::ImageUploadDescription description;
+description.layout_transition = ag::LayoutTransition::shader_read_only;   // the convenience default
+auto plan    = terreate::unwrap(ag::planImageUpload(image_data, description));
+auto image   = terreate::unwrap(ag::createImage(allocator, plan));
+auto items   = terreate::unwrap(ag::imageUploadItems(plan, image_data, image));
+auto staging = terreate::unwrap(graphics::prepareUploadBatch(
+    allocator, graphics::UploadBatchDescription{.images = items}));
+command.begin(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);            // your command buffer
+graphics::ImageBarrierDescription to_copy;                                // 1. Undefined -> copy layout
+to_copy.src_stage = vk::PipelineStageFlagBits2::eTopOfPipe;
+to_copy.dst_stage = vk::PipelineStageFlagBits2::eTransfer;
+to_copy.dst_access = vk::AccessFlagBits2::eTransferWrite;
+to_copy.old_layout = vk::ImageLayout::eUndefined;
+to_copy.new_layout = plan.copy_layout;
+to_copy.subresource_range = {vk::ImageAspectFlagBits::eColor, 0, plan.image.mip_levels,
+                             0, plan.image.array_layers};
+graphics::recordImageBarrier(device, command, image, to_copy);
+graphics::recordUploadBatch(device, command, staging);                    // 2. the copies
+ag::recordImageUploadTransition(device, command, plan, image);            // 3. -> ShaderReadOnlyOptimal
+command.end();
+const std::array<const graphics::CommandBuffer *, 1> commands{&command};
+auto receipt = terreate::unwrap(graphics::submitFenced(
+    device, queue, fence, identity, {.command_buffers = commands}));
+// later, after fence.wait(...) or a polled signal:
+//   retirement.retire(staging, std::array{receipt}); retirement.collect();
+```
+
+`uploadImageBlocking` adds a command pool, `allocatePrimary`, a `createFence` and `fence.wait(timeout_ns)`.
+The beginner path:
+
+```cpp
+auto uploaded = terreate::unwrap(ag::uploadImageBlocking(device, allocator, queue, image_data, 10'000'000'000));
+// uploaded.image is in ShaderReadOnlyOptimal; create an ImageView and a Sampler with graphics::createImageView
+// and graphics::createSampler (see getting started).
+```
+
+`integration.asset_graphics.image_convenience_plan` checks the defaults and the plan flag on the CPU.
+`integration.asset_graphics.image_convenience` runs on a real device with the validation layer required and
+silent, for `R8G8B8A8_SRGB` and `R32G32B32A32_SFLOAT` (a format the device cannot use is reported as
+`format=... SKIP`, never as a pass): an image with two mips and two layers (one with padded rows) uploaded by
+the explicit steps, by `submitImageUpload` (own wait, retirement through a `RetirementQueue`, staging collected
+only after the fence signaled) and by `uploadImageBlocking`, each with and without the transition, is read back
+from the layout the plan states and must equal the `ImageData` and the explicit result byte for byte. The
+timeout path is not exercised (it needs a hung GPU).
