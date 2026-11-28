@@ -85,7 +85,9 @@ struct MeshUploadPlan {
   vk::VertexInputBindingDescription binding{};
   /// One description per bound attribute: location, binding, format and offset.
   std::vector<vk::VertexInputAttributeDescription> attributes;
-  /// The Vulkan topology of the mesh.
+  /// The Vulkan topology of the mesh (one to one; `eTriangleFan` is not available on every
+  /// implementation, for example portability subsets: the application may call
+  /// `asset::convertTopology` first).
   vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList;
   /// The index type; `vk::IndexType::eNoneKHR` when the mesh is not indexed.
   vk::IndexType index_type = vk::IndexType::eNoneKHR;

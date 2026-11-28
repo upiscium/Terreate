@@ -30,13 +30,13 @@
 /// callable), no GPU resource is created, no thread is started and no global state is kept.
 ///
 /// Supported: scenes, nodes (TRS or matrix) and the hierarchy, meshes and primitives
-/// (POSITION, NORMAL, TANGENT, TEXCOORD_n, COLOR_n, indices, topologies point, line, triangle and
-/// triangle strip), materials (core metallic-roughness, alpha mode and cutoff, double sided,
-/// normal, occlusion and emissive textures with texcoord sets), textures, samplers and images.
-/// Everything else the file contains (animations, skins, morph targets, cameras, lights,
-/// extensions, extras, other attributes and topologies) is listed in
-/// `asset::ModelData::unsupported` and in the diagnostics, never dropped silently, and a file
-/// that *requires* an extension is refused.
+/// (POSITION, NORMAL, TANGENT, TEXCOORD_n, COLOR_n, indices, every glTF mode: points, lines,
+/// line strip, line loop (closed into a line strip), triangles, triangle strip and triangle fan),
+/// materials (core metallic-roughness, alpha mode and cutoff, double sided, normal, occlusion and
+/// emissive textures with texcoord sets), textures, samplers and images. Everything else the file
+/// contains (animations, skins, morph targets, cameras, lights, extensions, extras, other
+/// attributes, a primitive with an unknown mode) is listed in `asset::ModelData::unsupported` and
+/// in the diagnostics, never dropped silently, and a file that *requires* an extension is refused.
 namespace terreate::adapter::asset_gltf_cgltf {
 
 /// The container the input was in.

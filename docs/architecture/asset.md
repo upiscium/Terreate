@@ -16,6 +16,8 @@ checks that it is consistent.
   colors, named custom streams), an optional index buffer and optional bounds.
 - `validate`, `computeBounds`, `layoutOf` and `interleave` are the operations
   on it.
+- `convertTopology(mesh, target)` is the explicit, never implicit conversion to a topology a platform
+  can draw (see below).
 - Non-goals: no GPU handle, no `Buffer`, no Vulkan type, no file or image
   decoding, no materials, nodes or submesh ranges (those belong to the
   `ModelData` of #276), no GPU upload or
@@ -69,11 +71,36 @@ is the operation and its detail names the offending stream or index.
 | `invalid_attribute_key` | a set index above 0 on position, normal or tangent, a custom attribute without a name, or a name on another semantic |
 | `non_finite_position` | `computeBounds` met NaN or infinity |
 | `attribute_not_found` | `interleave` was asked for an attribute the mesh lacks |
+| `unsupported_conversion` | `convertTopology` was asked for a conversion that does not exist, or for a value that is no `PrimitiveTopology` |
 
 `validate` reports the first violation in the order: stream keys, duplicates,
 formats and sizes, position presence, counts, element count for the topology,
 indices, bounds. It never repairs anything. Allocation failure throws
 `std::bad_alloc`, as for any standard container.
+
+## Topology conversion
+
+`convertTopology(const MeshData&, PrimitiveTopology target) -> Result<MeshData>` changes only the index
+buffer and the topology; streams and bounds are copied unchanged. Nothing converts implicitly: a fan is
+drawn as a fan, and the application calls this when its platform lacks one (for example Vulkan portability
+subsets do not offer triangle fans).
+
+| From | To | Rule |
+| --- | --- | --- |
+| `triangle_strip` | `triangle_list` | triangle k is `(e[k], e[k+1], e[k+2])` for even k and `(e[k+1], e[k], e[k+2])` for odd k, so the winding alternation is undone and every triangle faces as the strip draws it |
+| `triangle_fan` | `triangle_list` | triangle k is `(e[0], e[k+1], e[k+2])`, winding kept |
+| `line_strip` | `line_list` | segment k is `(e[k], e[k+1])` |
+| a topology | itself | a copy |
+
+Any other pair (a list to a strip, triangles to lines, anything to a fan, points) is
+`MeshDataError::unsupported_conversion`. The mesh is validated first and its error is returned unchanged.
+
+**Degenerate primitives are dropped**: a triangle in which two indices are equal (strips use them to join
+pieces; they cover no area) and a segment with two equal indices. Only equal index values are detected, not
+equal positions. The strip parity counts input positions, so dropping a triangle does not flip the winding of
+the next ones. A mesh with only degenerate primitives gives an indexed mesh with zero indices. The result is
+always indexed: it keeps the index type of an indexed input, and a non-indexed input gets `uint16` when it has
+at most 65535 vertices and `uint32` otherwise. The conversion is deterministic and its result validates.
 
 ## Optional and required dependencies
 
@@ -103,8 +130,20 @@ convert into them.
 - **Formats**: float32 with 1 to 4 components for now; indices are `uint16` or
   `uint32`. Further formats (for example normalized 8/16-bit) are added as enum
   values later.
-- **Topologies**: triangle list, triangle strip, line list, point list. A strip is
-  valid with 0 or at least 3 elements; no primitive restart value is defined.
+- **Topologies** (`PrimitiveTopology`, new values are appended so the earlier numbers stay stable):
+
+  | Topology | Elements | Valid element count |
+  | --- | --- | --- |
+  | `triangle_list` | every 3 form a triangle | a multiple of 3 |
+  | `triangle_strip` | each element after the first two forms a triangle with the previous two | 0 or at least 3 |
+  | `triangle_fan` | each element after the first two forms a triangle with the first and the previous one | 0 or at least 3 |
+  | `line_list` | every 2 form a segment | a multiple of 2 |
+  | `line_strip` | each element after the first forms a segment with the previous one | 0 or at least 2 |
+  | `point_list` | each element is a point | any |
+
+  The element count is the index count, or the vertex count when not indexed. No primitive restart value is
+  defined. A glTF line loop has no topology of its own: the decoder stores it as a `line_strip` whose last
+  index repeats the first (the *loop closing rule*; a non-indexed loop gets the indices `0..n-1, 0`).
 
 ## Relation to ModelData (#276) and GPU conversion (#279)
 

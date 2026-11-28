@@ -41,6 +41,8 @@ public:
       return "a position is NaN or infinite";
     case MeshDataError::attribute_not_found:
       return "the mesh has no such attribute";
+    case MeshDataError::unsupported_conversion:
+      return "there is no conversion to the requested topology";
     }
     return "unknown MeshData error";
   }
@@ -124,9 +126,12 @@ bool elementCountValid(PrimitiveTopology topology, std::size_t count) noexcept {
   case PrimitiveTopology::triangle_list:
     return count % 3 == 0;
   case PrimitiveTopology::triangle_strip:
+  case PrimitiveTopology::triangle_fan:
     return count == 0 || count >= 3;
   case PrimitiveTopology::line_list:
     return count % 2 == 0;
+  case PrimitiveTopology::line_strip:
+    return count == 0 || count >= 2;
   case PrimitiveTopology::point_list:
     return true;
   }
@@ -292,6 +297,89 @@ auto validate(const MeshData &mesh) -> terreate::Result<void> {
     }
   }
   return {};
+}
+
+namespace {
+
+// The elements e[0..n-1] of a valid mesh as 32-bit values.
+std::vector<std::uint32_t> elementsOf(const MeshData &mesh) {
+  std::vector<std::uint32_t> elements;
+  if (mesh.indexType() == IndexType::none) {
+    elements.resize(mesh.vertexCount());
+    for (std::size_t i = 0; i < elements.size(); ++i)
+      elements[i] = static_cast<std::uint32_t>(i);
+  } else {
+    elements.resize(mesh.indexCount());
+    for (std::size_t i = 0; i < elements.size(); ++i)
+      elements[i] = mesh.index(i).value_or(0);
+  }
+  return elements;
+}
+
+template <typename Index> IndexBuffer narrowTo(const std::vector<std::uint32_t> &values) {
+  std::vector<Index> out(values.size());
+  for (std::size_t i = 0; i < values.size(); ++i)
+    out[i] = static_cast<Index>(values[i]);
+  return IndexBuffer{std::move(out)};
+}
+
+} // namespace
+
+auto convertTopology(const MeshData &mesh, PrimitiveTopology target) -> terreate::Result<MeshData> {
+  constexpr const char *op = "asset::convertTopology";
+  if (auto valid = validate(mesh); !valid)
+    return std::unexpected(std::move(valid.error()));
+  if (mesh.topology == target)
+    return mesh;
+
+  const bool triangles = target == PrimitiveTopology::triangle_list &&
+                         (mesh.topology == PrimitiveTopology::triangle_strip ||
+                          mesh.topology == PrimitiveTopology::triangle_fan);
+  const bool lines =
+      target == PrimitiveTopology::line_list && mesh.topology == PrimitiveTopology::line_strip;
+  if (!triangles && !lines)
+    return std::unexpected(makeError(MeshDataError::unsupported_conversion, op,
+                                     "from topology " +
+                                         std::to_string(static_cast<unsigned>(mesh.topology)) +
+                                         " to " + std::to_string(static_cast<unsigned>(target))));
+
+  const std::vector<std::uint32_t> e = elementsOf(mesh);
+  std::vector<std::uint32_t> out;
+  const std::size_t n = e.size();
+  if (lines) {
+    for (std::size_t k = 0; k + 1 < n; ++k) {
+      if (e[k] == e[k + 1])
+        continue;
+      out.push_back(e[k]);
+      out.push_back(e[k + 1]);
+    }
+  } else {
+    const bool fan = mesh.topology == PrimitiveTopology::triangle_fan;
+    for (std::size_t k = 0; k + 2 < n; ++k) {
+      std::uint32_t a = e[k];
+      std::uint32_t b = e[k + 1];
+      const std::uint32_t c = e[k + 2];
+      if (fan) {
+        a = e[0];
+      } else if (k % 2 == 1) {
+        std::swap(a, b);
+      }
+      if (a == b || b == c || a == c)
+        continue;
+      out.push_back(a);
+      out.push_back(b);
+      out.push_back(c);
+    }
+  }
+
+  MeshData result;
+  result.topology = target;
+  result.attributes = mesh.attributes;
+  result.bounds = mesh.bounds;
+  const bool wide = mesh.indexType() == IndexType::uint32 ||
+                    (mesh.indexType() == IndexType::none && mesh.vertexCount() > 65535);
+  result.indices = wide ? narrowTo<std::uint32_t>(out) : narrowTo<std::uint16_t>(out);
+  return result;
 }
 
 auto computeBounds(const MeshData &mesh) -> terreate::Result<Bounds> {

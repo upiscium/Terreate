@@ -62,7 +62,7 @@ before anything exists:
 | --- | --- |
 | `attributes`: `{AttributeKey, location}` in order | `attributes` (`vk::VertexInputAttributeDescription`: location, binding, format, offset) |
 | `binding` (default 0) | `binding` (`vk::VertexInputBindingDescription`: number, stride, per-vertex rate) |
-| the mesh's topology | `topology` (`vk::PrimitiveTopology`) |
+| the mesh's topology | `topology` (`vk::PrimitiveTopology`): `triangle_list` to `eTriangleList`, `triangle_strip` to `eTriangleStrip`, `triangle_fan` to `eTriangleFan`, `line_list` to `eLineList`, `line_strip` to `eLineStrip`, `point_list` to `ePointList` |
 | the mesh's indices | `index_type` (`eUint16`, `eUint32`, or `eNoneKHR` when not indexed), `index_count`, `index_bytes` |
 | the mesh's vertices | `vertex_count`, `vertex_bytes` (interleaved and packed, equal to `asset::interleave`) |
 | `extra_vertex_usage`, `vertex_allocation` | `vertex_buffer` (`graphics::BufferDescription`: size, usage, allocation) |
@@ -108,6 +108,11 @@ failure returns the `graphics::BufferError` or native error of `graphics::create
 | `empty_mesh` | no vertices, or an indexed mesh with no indices: a zero-sized buffer cannot be created |
 | `size_overflow` | a count, stride or size does not fit its 32-bit Vulkan field |
 | `plan_mismatch` | the plan is not self-consistent (sizes, required usage, index buffer), or the buffers do not match the plan |
+
+**Triangle fans are not available everywhere.** Vulkan portability subsets (for example MoltenVK) do not
+expose `eTriangleFan`; the plan only reports the topology and never converts. An application that targets such
+an implementation calls `asset::convertTopology(mesh, PrimitiveTopology::triangle_list)` before planning. The
+plan does not check device support, as it knows no device.
 
 `planMeshUpload` checks in this order: the mesh (`asset::validate`), `no_attributes`,
 `unsupported_topology`, then each binding in order (`attribute_not_found`, `duplicate_attribute`,

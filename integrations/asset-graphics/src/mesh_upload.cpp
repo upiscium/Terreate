@@ -101,6 +101,10 @@ std::optional<vk::PrimitiveTopology> toVulkan(asset::PrimitiveTopology topology)
     return vk::PrimitiveTopology::eLineList;
   case asset::PrimitiveTopology::point_list:
     return vk::PrimitiveTopology::ePointList;
+  case asset::PrimitiveTopology::line_strip:
+    return vk::PrimitiveTopology::eLineStrip;
+  case asset::PrimitiveTopology::triangle_fan:
+    return vk::PrimitiveTopology::eTriangleFan;
   }
   return std::nullopt;
 }

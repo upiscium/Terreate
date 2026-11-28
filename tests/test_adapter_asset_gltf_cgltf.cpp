@@ -1022,8 +1022,9 @@ void imageDecoderCases() {
 // One file with many unsupported features (also a fuzzing seed).
 std::string unsupportedDoc() {
   // One file with an animation, a skin with its attributes, a morph target, a camera, a punctual
-  // light, a texture transform, extras, an unknown extension, a clearcoat material, a line loop
-  // primitive (skipped) next to a triangle primitive (kept) and a mesh that has only a fan.
+  // light, a texture transform, extras, an unknown extension, a clearcoat material, a primitive
+  // with a mode that is no glTF mode (skipped) next to a triangle primitive (kept) and a mesh that
+  // has only such a primitive.
   BinBuilder bin;
   const std::array<float, 9> positions{0, 0, 0, 1, 0, 0, 0, 1, 0};
   const std::array<float, 3> times{0, 1, 2};
@@ -1059,8 +1060,8 @@ std::string unsupportedDoc() {
   doc.set("meshes",
           R"([{"name":"m","weights":[0.5],"primitives":[{"attributes":{"POSITION":0,"JOINTS_0":2,)"
           R"("WEIGHTS_0":3,"_CUSTOM":0,"TEXCOORD_0":4},"targets":[{"POSITION":0}],"material":0},)"
-          R"({"attributes":{"POSITION":0},"mode":2}]},)"
-          R"({"name":"fanmesh","primitives":[{"attributes":{"POSITION":0},"mode":6}]}])");
+          R"({"attributes":{"POSITION":0},"mode":9}]},)"
+          R"({"name":"fanmesh","primitives":[{"attributes":{"POSITION":0},"mode":9}]}])");
   doc.set("materials", R"([{"name":"fancy","pbrMetallicRoughness":{"baseColorTexture":{"index":0,)"
                        R"("extensions":{"KHR_texture_transform":{"scale":[2,2]}}}},)"
                        R"("extensions":{"KHR_materials_clearcoat":{"clearcoatFactor":1}}}])");
@@ -1104,10 +1105,11 @@ void unsupportedFeatures() {
             hasUnsupported(model, "extension", "KHR_lights_punctual") &&
             hasUnsupported(model, "extension", "EXT_unknown_thing") &&
             hasUnsupported(model, "material-extension", "KHR_materials_clearcoat") &&
-            hasUnsupported(model, "primitive-mode", "LINE_LOOP"),
+            hasUnsupported(model, "primitive-mode", "unknown mode"),
         "the unsupported entries are named");
-  // Kept: the triangle primitive of the first mesh; the line-strip primitive and the fan mesh
-  // are skipped (the second mesh has no representable primitive, so its node has no mesh).
+  // Kept: the triangle primitive of the first mesh; the primitive with the unknown mode and
+  // the mesh that has only one are skipped (the second mesh has no representable primitive, so its
+  // node has no mesh).
   check(model.meshes.size() == 1 && model.primitives.size() == 1 && model.model_meshes.size() == 1,
         "only the representable primitive is kept");
   check(model.nodes.size() == 4 && model.nodes[0].mesh == 0 && !model.nodes[3].mesh,
@@ -1120,6 +1122,166 @@ void unsupportedFeatures() {
   check(model.primitives[0].material == 0, "the primitive keeps its material");
   check(customValue(model, "gltf.version") == "2.0" && result->native.extensions_used.size() == 4,
         "native info lists the extensions used");
+}
+
+// A document with 4 positions and primitives of every mode the Adapter maps to a topology, with
+// the index accessors the primitives share: 1 is u16 {0,2,1,3}, 2 is u16 {0,1,2}, 3 is u32 {3,2,1}.
+Doc modesDoc(const std::string &primitives) {
+  BinBuilder bin;
+  const std::array<float, 12> positions{0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+  bin.floats(positions);
+  const std::array<std::uint16_t, 4> fan{0, 2, 1, 3};
+  const std::size_t fan_at = bin.u16(fan);
+  const std::array<std::uint16_t, 3> three{0, 1, 2};
+  const std::size_t three_at = bin.u16(three);
+  const std::array<std::uint32_t, 3> wide{3, 2, 1};
+  const std::size_t wide_at = bin.u32(wide);
+  Doc doc;
+  doc.set("asset", R"({"version":"2.0"})");
+  doc.set("scene", "0");
+  doc.set("scenes", R"([{"nodes":[0]}])");
+  doc.set("nodes", R"([{"mesh":0}])");
+  doc.set("meshes", R"([{"primitives":[)" + primitives + R"(]}])");
+  doc.set("accessors", R"([{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3"},)"
+                       R"({"bufferView":1,"componentType":5123,"count":4,"type":"SCALAR"},)"
+                       R"({"bufferView":2,"componentType":5123,"count":3,"type":"SCALAR"},)"
+                       R"({"bufferView":3,"componentType":5125,"count":3,"type":"SCALAR"}])");
+  doc.set("bufferViews",
+          R"([{"buffer":0,"byteLength":48},{"buffer":0,"byteOffset":)" + std::to_string(fan_at) +
+              R"(,"byteLength":8},{"buffer":0,"byteOffset":)" + std::to_string(three_at) +
+              R"(,"byteLength":6},{"buffer":0,"byteOffset":)" + std::to_string(wide_at) +
+              R"(,"byteLength":12}])");
+  doc.set("buffers", R"([{"byteLength":)" + std::to_string(bin.data.size()) + R"(,"uri":")" +
+                         dataUri(bin.data) + R"("}])");
+  return doc;
+}
+
+std::vector<std::uint32_t> indicesOf(const asset::MeshData &mesh) {
+  std::vector<std::uint32_t> out(mesh.indexCount());
+  for (std::size_t i = 0; i < out.size(); ++i)
+    out[i] = mesh.index(i).value_or(0);
+  return out;
+}
+
+// #475: line strip, line loop and triangle fan are mapped, not skipped.
+void lineAndFanModes() {
+  using T = asset::PrimitiveTopology;
+  using I = std::vector<std::uint32_t>;
+  const std::string primitives = R"({"attributes":{"POSITION":0},"mode":6},)"
+                                 R"({"attributes":{"POSITION":0},"mode":6,"indices":1},)"
+                                 R"({"attributes":{"POSITION":0},"mode":3},)"
+                                 R"({"attributes":{"POSITION":0},"mode":2},)"
+                                 R"({"attributes":{"POSITION":0},"mode":2,"indices":2},)"
+                                 R"({"attributes":{"POSITION":0},"mode":2,"indices":3},)"
+                                 R"({"attributes":{"POSITION":0},"mode":5},)"
+                                 R"({"attributes":{"POSITION":0},"mode":1},)"
+                                 R"({"attributes":{"POSITION":0},"mode":0},)"
+                                 R"({"attributes":{"POSITION":0},"mode":3,"indices":1})";
+  const std::string text = modesDoc(primitives).str();
+  const auto result = decodeText(text);
+  if (!decodesValid(result, "line strip, line loop and fan primitives decode"))
+    return;
+  const auto &model = result->model;
+  check(model.meshes.size() == 10 && model.primitives.size() == 10, "every primitive is kept");
+  check(model.unsupported.empty() && !hasUnsupported(model, "primitive-mode") &&
+            !hasDiagnostic(*result, "gltf.unsupported.primitive-mode"),
+        "no mode is reported as unsupported");
+  const auto &m = model.meshes;
+  check(m[0].topology == T::triangle_fan && m[0].indexType() == asset::IndexType::none &&
+            m[0].vertexCount() == 4,
+        "a non-indexed fan stays non-indexed");
+  check(m[1].topology == T::triangle_fan && indicesOf(m[1]) == I{0, 2, 1, 3}, "an indexed fan");
+  check(m[2].topology == T::line_strip && m[2].indexType() == asset::IndexType::none,
+        "a non-indexed line strip");
+  check(m[3].topology == T::line_strip && m[3].indexType() == asset::IndexType::uint16 &&
+            indicesOf(m[3]) == I{0, 1, 2, 3, 0},
+        "a non-indexed loop gets indices 0..n-1, 0");
+  check(m[4].topology == T::line_strip && indicesOf(m[4]) == I{0, 1, 2, 0},
+        "an indexed loop repeats its first index");
+  check(m[5].topology == T::line_strip && m[5].indexType() == asset::IndexType::uint32 &&
+            indicesOf(m[5]) == I{3, 2, 1, 3},
+        "a 32-bit indexed loop stays 32-bit");
+  check(m[6].topology == T::triangle_strip && m[6].indexType() == asset::IndexType::none,
+        "a strip is unchanged");
+  check(m[7].topology == T::line_list && m[8].topology == T::point_list,
+        "lines and points are unchanged");
+  check(m[9].topology == T::line_strip && indicesOf(m[9]) == I{0, 2, 1, 3},
+        "an indexed line strip is not closed");
+  const auto closed =
+      std::ranges::count_if(result->diagnostics, [](const asset::DecodeDiagnostic &d) {
+        return d.code == "gltf.line_loop.closed" && d.severity == asset::DecodeSeverity::info &&
+               d.message.find("LINE_LOOP") != std::string::npos;
+      });
+  check(closed == 3, "one info diagnostic per closed loop");
+
+  // The fan converts explicitly to a list that matches the quad.
+  const auto list = asset::convertTopology(m[0], T::triangle_list);
+  check(list && indicesOf(*list) == I{0, 1, 2, 0, 2, 3} && asset::validate(*list).has_value(),
+        "a decoded fan converts to the triangle list of the quad");
+  const auto segments = asset::convertTopology(m[3], T::line_list);
+  check(segments && indicesOf(*segments) == I{0, 1, 1, 2, 2, 3, 3, 0},
+        "a decoded loop converts to the closed segment list");
+
+  // Deterministic.
+  const auto again = decodeText(text);
+  bool same = again.has_value() && again->model.meshes.size() == m.size();
+  for (std::size_t i = 0; same && i < m.size(); ++i)
+    same = again->model.meshes[i].topology == m[i].topology &&
+           again->model.meshes[i].indices == m[i].indices;
+  check(same, "decoding twice gives the same meshes");
+}
+
+// Short or hostile primitives: a named error, never a crash.
+void lineAndFanShortPrimitives() {
+  const auto one = [](const char *mode, std::size_t count, const char *indices = "") {
+    Doc doc = triangleDoc(dataUri(triangleBin()));
+    doc.set("meshes", std::string{R"([{"primitives":[{"attributes":{"POSITION":0},"mode":)"} +
+                          mode + indices + "}]}]");
+    doc.set("accessors", R"([{"bufferView":0,"componentType":5126,"count":)" +
+                             std::to_string(count) +
+                             R"(,"type":"VEC3"},{"bufferView":1,"componentType":5123,"count":)" +
+                             std::to_string(count) + R"(,"type":"SCALAR"}])");
+    doc.set("bufferViews", R"([{"buffer":0,"byteLength":36},{"buffer":0,"byteLength":4}])");
+    return decodeText(doc.str());
+  };
+  const auto named = [&](const Result &result, const char *message) {
+    check(!result.has_value() &&
+              result.error().code() ==
+                  asset::make_error_code(asset::ModelDataError::invalid_mesh) &&
+              result.error().detail().find("not valid for the topology") != std::string::npos,
+          message);
+  };
+  named(one("2", 1), "a loop of 1 vertex is a named invalid_mesh error");
+  named(one("3", 1), "a line strip of 1 vertex is a named invalid_mesh error");
+  named(one("6", 2), "a fan of 2 vertices is a named invalid_mesh error");
+  named(one("6", 1), "a fan of 1 vertex is a named invalid_mesh error");
+  named(one("2", 1, R"(,"indices":1)"), "a loop with 1 index is a named invalid_mesh error");
+  named(one("6", 2, R"(,"indices":1)"), "a fan with 2 indices is a named invalid_mesh error");
+  const auto pair = one("2", 2);
+  check(pair.has_value() && indicesOf(pair->model.meshes[0]) == std::vector<std::uint32_t>{0, 1, 0},
+        "a loop of 2 vertices closes to 0 1 0");
+  const auto triangle = one("6", 3);
+  check(triangle.has_value(), "a fan of 3 vertices is valid");
+}
+
+// The index added to close a loop counts against max_decoded_bytes.
+void lineLoopLimit() {
+  const std::string loop = modesDoc(R"({"attributes":{"POSITION":0},"mode":2})").str();
+  const std::string strip = modesDoc(R"({"attributes":{"POSITION":0},"mode":3})").str();
+  const auto smallest = [](const std::string &text) {
+    for (std::uint64_t limit = 0; limit < 4096; ++limit) {
+      GltfDecodeOptions options;
+      options.max_decoded_bytes = limit;
+      if (decode(toBytes(text), {}, {}, options).has_value())
+        return limit;
+    }
+    return std::uint64_t{0};
+  };
+  const std::uint64_t loop_limit = smallest(loop);
+  const std::uint64_t strip_limit = smallest(strip);
+  // Four vertices: the loop adds five 16-bit indices that the strip does not have.
+  check(strip_limit != 0 && loop_limit == strip_limit + 5 * sizeof(std::uint16_t),
+        "the closing index buffer is charged to the decoded size limit");
 }
 
 void requiredExtensionsAndVersions() {
@@ -1769,7 +1931,10 @@ void truncationsAndFlips() {
   check(ok, "truncations and flips of the glTF text are a valid model or a named error");
 
   // The feature-rich documents: every truncation, and a byte flip at every position.
-  for (const std::string &seed : {unsupportedDoc(), sparseDoc().str()}) {
+  for (const std::string &seed : {unsupportedDoc(), sparseDoc().str(),
+                                  modesDoc(R"({"attributes":{"POSITION":0},"mode":6,"indices":1},)"
+                                           R"({"attributes":{"POSITION":0},"mode":2,"indices":2})")
+                                      .str()}) {
     const Bytes text = toBytes(seed);
     ok = true;
     for (std::size_t length = 0; length <= text.size(); ++length)
@@ -1813,6 +1978,9 @@ void runAll() {
   embeddedUris();
   imageDecoderCases();
   unsupportedFeatures();
+  lineAndFanModes();
+  lineAndFanShortPrimitives();
+  lineLoopLimit();
   requiredExtensionsAndVersions();
   malformedInputs();
   accessorErrors();
