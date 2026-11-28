@@ -8,6 +8,22 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
 
 ### Added
 
+- **stb_image Adapter** (`Terreate::AdapterAssetImageStb`, `terreate::adapter::asset_image_stb`, header
+  `<terreate/adapter/asset_image_stb/decoder.hpp>`, option `TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB`,
+  `find_package` component `AdapterAssetImageStb`; #277): the first decoder, from the bytes of one image in
+  memory to an Asset `ImageData` (`decodeImage(input, options)`: PNG, JPEG, BMP, TGA and Radiance HDR; the
+  8-bit formats `r8` to `rgba8`, 16-bit PNG as `r16`/`rg16`/`rgba16`, HDR as `r32f`/`rg32f`/`rgba32f`). It
+  takes no path and creates no GPU resource, checks the input size, the header's size and the
+  `DecodeLimits` before any pixel buffer exists, names every failure (`asset::DecodeError` for limits,
+  `ImageDecodeError` for the rest), and reports every feature it does not apply (ICC profile, gamma,
+  chromaticities, EXIF) both in `ImageData::unsupported` and as a diagnostic. Options: limits, color
+  interpretation (default `srgb` for 8-bit, `linear` for 16-bit and float), alpha handling, channel count and
+  flip (off). The backend is stb_image v2.28 (the nixpkgs snapshot), a private build input: no stb header
+  is public or installed, and the package needs no stb. The option is on by default only when Asset is built
+  and `stb_image.h` is found (`TERREATE_STB_INCLUDE_DIR`, the environment variable `STB_INCLUDE` that the devShell
+  sets, or a standard search); asking for it without Asset or without the header is a configure error. A
+  path-based convenience is composed from the application's own file reading, and the function can be
+  wrapped as the decode callable of the glTF adapter (#278).
 - **Asset** (`Terreate::Asset`, `terreate::asset`, option `TERREATE_BUILD_ASSET`, `find_package` component `Asset`):
   a new CPU-only component that depends on Core alone, so a consumer of it needs neither Vulkan nor GLFW.
   Its first type is `MeshData` (#345), a backend-independent geometry value: topology, deinterleaved

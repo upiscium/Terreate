@@ -15,6 +15,10 @@
         vulkanValidationLayers = pkgs.vulkan-validation-layers;
         vulkanTools = pkgs.vulkan-tools;
         vulkanRuntime = pkgs.mesa;
+        # stb_image (single-header, public domain / MIT) is the backend of the
+        # optional AdapterAssetImageStb component (#277). It is a build-time
+        # input of that one static library only, never of the CMake package.
+        stbHeaders = pkgs.stb;
       in {
         devShells.default = pkgs.mkShell {
           # GCC/g++ is the project compiler.  The generic compiler and
@@ -23,6 +27,9 @@
           CC = "gcc";
           CXX = "g++";
           VULKAN_HEADERS_INCLUDE = "${vulkanHeaders}/include";
+          # The directory that contains stb_image.h (nixpkgs installs it in
+          # include/stb); read by the AdapterAssetImageStb configure step.
+          STB_INCLUDE = "${stbHeaders}/include/stb";
 
           packages = with pkgs; [
             # Build and repository tooling.
@@ -61,6 +68,7 @@
             vulkan-memory-allocator
             glm
             spdlog
+            stbHeaders
 
             # Shader and SPIR-V authoring/inspection tools.
             shader-slang

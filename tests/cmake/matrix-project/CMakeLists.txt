@@ -66,13 +66,44 @@ elseif(TARGET Terreate::IntegrationAssetGraphics)
   message(FATAL_ERROR
     "disabled component unexpectedly created Terreate::IntegrationAssetGraphics")
 endif()
+
+# The stb_image Adapter (#277): present exactly when expected. Its only public
+# dependency is Asset (Core comes through it); stb is a private build input, so
+# it appears in neither its link interface nor its public include directories,
+# and it never links Graphics, Platform or an Integration. No module links it.
+if(TERREATE_EXPECT_ADAPTER_ASSET_IMAGE_STB)
+  if(NOT TARGET Terreate::AdapterAssetImageStb)
+    message(FATAL_ERROR "expected enabled target Terreate::AdapterAssetImageStb")
+  endif()
+  foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+    get_target_property(_stb_links terreate_adapter_asset_image_stb ${_link_property})
+    if(NOT "${_stb_links}" STREQUAL "Terreate::Asset")
+      message(FATAL_ERROR
+        "the stb_image Adapter must publicly link exactly Asset in ${_link_property}: "
+        "${_stb_links}")
+    endif()
+  endforeach()
+  foreach(_interface_property IN ITEMS
+      INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
+      INTERFACE_COMPILE_DEFINITIONS INTERFACE_COMPILE_OPTIONS)
+    get_target_property(_stb_interface terreate_adapter_asset_image_stb ${_interface_property})
+    if("${_stb_interface}" MATCHES "stb_image|stb-[0-9]|STB_")
+      message(FATAL_ERROR
+        "stb_image leaked into the public ${_interface_property} of the Adapter: "
+        "${_stb_interface}")
+    endif()
+  endforeach()
+elseif(TARGET Terreate::AdapterAssetImageStb)
+  message(FATAL_ERROR
+    "disabled component unexpectedly created Terreate::AdapterAssetImageStb")
+endif()
 foreach(_module IN ITEMS core asset platform graphics)
   if(TARGET terreate_${_module})
     foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
       get_target_property(_module_links terreate_${_module} ${_link_property})
-      if("${_module_links}" MATCHES "[Ii]ntegration")
+      if("${_module_links}" MATCHES "[Ii]ntegration|[Aa]dapter|[Ss]tb")
         message(FATAL_ERROR
-          "module ${_module} depends upward on an Integration in ${_link_property}: "
+          "module ${_module} depends upward on an Integration or Adapter in ${_link_property}: "
           "${_module_links}")
       endif()
     endforeach()
@@ -158,7 +189,7 @@ foreach(_link_property IN ITEMS LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
   endif()
 endforeach()
 
-if(NOT _component MATCHES "^(Core|Asset|Platform|Graphics|IntegrationPlatformGraphics|IntegrationAssetGraphics)$")
+if(NOT _component MATCHES "^(Core|Asset|Platform|Graphics|IntegrationPlatformGraphics|IntegrationAssetGraphics|AdapterAssetImageStb)$")
   message(FATAL_ERROR "unknown matrix component ${_component}")
 endif()
 
@@ -218,6 +249,30 @@ static_assert(std::is_same_v<
     terreate::Result<terreate::graphics::Surface>>);
 
 int main() { return 0; }
+]=])
+elseif(_component STREQUAL "AdapterAssetImageStb")
+  # One include proves the Adapter's and Asset's usage requirements reach a consumer, and
+  # that the consumer sees neither stb_image, Vulkan nor GLFW through them.
+  set(_consumer_source [=[
+#include <terreate/adapter/asset_image_stb/decoder.hpp>
+
+#include <type_traits>
+
+#if defined(VK_VERSION_1_0) || defined(VULKAN_HPP_H) || defined(GLFW_VERSION_MAJOR) || \
+    defined(STBI_INCLUDE_STB_IMAGE_H)
+#error "the stb_image Adapter must not expose stb_image, Vulkan or GLFW"
+#endif
+
+static_assert(std::is_same_v<
+    decltype(terreate::adapter::asset_image_stb::decodeImage(
+        std::declval<const terreate::asset::DecodeInput &>())),
+    terreate::Result<terreate::adapter::asset_image_stb::ImageDecodeResult>>);
+
+int main() {
+  // The header needs no stb: an empty input is refused by name.
+  const auto result = terreate::adapter::asset_image_stb::decodeImage({});
+  return result.has_value() ? 1 : 0;
+}
 ]=])
 elseif(_component STREQUAL "IntegrationAssetGraphics")
   # The public header of the Integration pulls in Asset and Graphics, so one

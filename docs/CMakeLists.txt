@@ -17,7 +17,8 @@ endif()
 # The public include trees that exist in this checkout; src/ is never an input.
 set(_terreate_doxygen_inputs "")
 foreach(_tree IN ITEMS core/include modules/asset/include modules/platform/include modules/graphics/include
-        integrations/platform-graphics/include integrations/asset-graphics/include)
+        integrations/platform-graphics/include integrations/asset-graphics/include
+        adapters/asset-image-stb/include)
   if(EXISTS "${PROJECT_SOURCE_DIR}/${_tree}")
     list(APPEND _terreate_doxygen_inputs "\"${PROJECT_SOURCE_DIR}/${_tree}\"")
   endif()
