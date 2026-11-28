@@ -8,6 +8,15 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
 
 ### Added
 
+- **Building without Nix** (#473): `docs/development/non-nix-build.md` lists every dependency (minimum
+  version, how CMake finds it, Debian 13 package, notes), what is promised outside Nix (configure, build and
+  CTest; the full gate stays the Nix shell's), the commands, how the GPU tests behave without a driver, and
+  the result of a real run on Debian 13 in a container with no Nix. `tools/fetch-deps.sh` downloads the two
+  inputs Debian does not provide (cgltf, and Vulkan-Headers 1.4.350 because Debian ships 1.4.309, older than the
+  1.4.321 that Terreate's public headers need) from pinned commits and checks their SHA-256 before use.
+  `tools/verify-non-nix.sh` with `tools/non-nix/Dockerfile` builds, tests and summarizes in a Debian 13
+  container. The new cache variable `TERREATE_VULKAN_HEADERS_INCLUDE_DIR` names the Vulkan-Hpp directory like
+  the environment variable `VULKAN_HEADERS_INCLUDE` (it wins when both are set; still explicit, never searched).
 - **stb_image Adapter** (`Terreate::AdapterAssetImageStb`, `terreate::adapter::asset_image_stb`, header
   `<terreate/adapter/asset_image_stb/decoder.hpp>`, option `TERREATE_BUILD_ADAPTER_ASSET_IMAGE_STB`,
   `find_package` component `AdapterAssetImageStb`; #277): the first decoder, from the bytes of one image in
@@ -153,6 +162,18 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   texel size comes from the Vulkan-Hpp format traits and the footprint, the row-length limit and the staging offset
   (a multiple of the texel size and of 4) follow it; 2D, one sample, one layer per operation and every existing error
   are unchanged, and compressed, multi-plane, 3D, depth/stencil, packed and integer formats stay `unsupported_image`.
+
+### Fixed
+
+- A Vulkan-Hpp directory that is also one of the compiler's own system include directories (`/usr/include` or
+  `/usr/local/include`) made the Graphics header probe, in the source build and in the installed package
+  config, fail: the probe put it before the C++ standard library directories, which breaks their
+  `#include_next`. It now stays at the compiler's position.
+- `tests/test_integration_asset_graphics_image_convenience.cpp` compared the padding bytes of its readback
+  buffer, which no copy writes and a new buffer does not zero; it failed on Mesa 25.0 (lavapipe). It now
+  compares the image bytes only.
+- `cmake.component_matrix` treated any `/src/` in an include path as a leaked private directory, which broke
+  when the source tree itself lives below a directory named `src`. It now ignores the source tree's own path.
 
 ## [0.1.0] - 2026-11-26
 

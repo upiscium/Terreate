@@ -6,6 +6,7 @@ How to build, test and document Terreate, and how work is organized.
 :maxdepth: 1
 
 building
+non-nix-build
 issue-lifecycle
 release
 release-verification
