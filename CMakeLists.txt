@@ -1443,6 +1443,22 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
       SKIP_REGULAR_EXPRESSION "integration\\.asset_graphics\\.image: image=SKIP"
       FAIL_REGULAR_EXPRESSION
         "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
+
+    # #468: the explicit, opt-in layout transition after the image upload. Same
+    # conventions as the image test above.
+    add_executable(terreate_integration_asset_graphics_image_transition_tests
+      tests/test_integration_asset_graphics_image_transition.cpp)
+    target_link_libraries(terreate_integration_asset_graphics_image_transition_tests PRIVATE
+      Terreate::IntegrationAssetGraphics)
+    terreate_configure_target(terreate_integration_asset_graphics_image_transition_tests)
+    add_test(NAME integration.asset_graphics.image_transition
+      COMMAND terreate_integration_asset_graphics_image_transition_tests)
+    set_tests_properties(integration.asset_graphics.image_transition PROPERTIES
+      PASS_REGULAR_EXPRESSION
+        "integration\\.asset_graphics\\.image_transition: transition=PASS validation-layer=PASS"
+      SKIP_REGULAR_EXPRESSION "integration\\.asset_graphics\\.image_transition: transition=SKIP"
+      FAIL_REGULAR_EXPRESSION
+        "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
   endif()
 
   add_test(

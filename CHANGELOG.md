@@ -110,10 +110,19 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
   `createImage` (no `ImageView`, no `Sampler`) and `imageUploadItems` (items borrow the pixels from the
   `ImageData`, which must outlive `prepareUploadBatch`). `srgb` maps to the sRGB format where one exists, `linear`
   and `normal_map` to the unorm or float one; `rgb8` has no portable Vulkan format and is `unsupported_format`.
-  Every subresource present is uploaded as it is: there is no mip generation and no layout transition (the
+  Every subresource present is uploaded as it is: there is no mip generation and, by default, no layout transition (the
   application uses `imageBarrier`); `ImageUploadDescription::mip_generation` and `layout_transition` are reserved
   choices whose only value is `none`, for the explicit opt-in follow-ups #467 and #468. The named error category is
   `ImageUploadError` (an invalid image returns its `ImageDataError` unchanged).
+- **Asset-Graphics Integration: explicit layout transition for the image upload** (`image_upload.hpp`, #468;
+  additive, off by default): `ImageUploadDescription::layout_transition` gains `LayoutTransition::shader_read_only`
+  (the default stays `none`, so existing code and plans are unchanged) and `consumer_stages` (the pipeline stages
+  that sample the image, default `eFragmentShader`). `ImageUploadPlan` then states `final_layout`
+  (`ShaderReadOnlyOptimal`) and `transition_barriers`: one `graphics::ImageBarrierDescription` over every
+  uploaded mip and layer (`TransferDstOptimal` to `ShaderReadOnlyOptimal`, transfer write to sampled read in the
+  consumer stages, no queue family transfer). `recordImageUploadTransition(device, command, plan, image)` records
+  that barrier with `graphics::recordBarriers` after the application's upload batch and never submits, waits or
+  keeps state; `ImageUploadError::no_transition` is appended for a plan without a transition.
 - **Asset-Graphics Integration: beginner mesh upload** (`<terreate/integration/asset_graphics/mesh_upload_convenience.hpp>`, #463;
   meshes only, additive): `defaultMeshAttributeBindings(mesh)` returns the default shader locations (position 0,
   normal 1, texcoord set 0 at 2, color set 0 at 3, tangent 4; only what the mesh has, never custom) as an editable

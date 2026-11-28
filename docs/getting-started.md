@@ -112,7 +112,7 @@ When you cannot stall, `submitMeshUpload` does the same without waiting: you pas
 fence and queue, and it returns the buffers, the staging owner and the receipt for your
 `RetirementQueue`. Both are written on the three explicit steps, which
 [the page on the Integration](architecture/asset_graphics.md) lists one by one. Images have no convenience
-yet (it waits for the layout-transition option, #468).
+yet (the layout-transition option it needs exists, #468; the convenience itself is not written).
 
 ## 4. Where to look next
 
@@ -124,6 +124,7 @@ yet (it waits for the layout-transition option, #468).
 | upload a `MeshData` to GPU buffers, explicitly | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | upload a `MeshData` in one call (beginner path: `uploadMeshBlocking`, or non-blocking `submitMeshUpload`) | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | upload an `ImageData` to a GPU image, explicitly | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
+| move the uploaded image to `eShaderReadOnlyOptimal` (opt-in `LayoutTransition::shader_read_only` and `recordImageUploadTransition`) | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | decode a PNG, JPEG, BMP, TGA or HDR from memory into an `ImageData` (no file or GPU involved) | [stb_image Adapter](architecture/asset_image_stb.md) | [stb_image Adapter](api/asset_image_stb.md) |
 | decode a glTF or GLB from memory into a `ModelData` (no file or GPU involved; external files through a resolver, images through your decoder) | [cgltf Adapter](architecture/asset_gltf_cgltf.md) | [cgltf Adapter](api/asset_gltf_cgltf.md) |
 | open a window and poll events | [Platform runtime](architecture/platform_runtime.md) | [Platform](api/platform.md) |
