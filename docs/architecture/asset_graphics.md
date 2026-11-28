@@ -306,7 +306,7 @@ explicit steps, nothing records, submits or waits, and the application keeps the
 | `copy_layout` | `eTransferDstOptimal`: the layout each subresource must be in when `recordUploadBatch` runs |
 | `subresources` | one entry per (mip, layer), layer-major: mip, layer, byte offset and count inside `ImageData::data`, the row pitch in bytes, and the `VkBufferImageCopy2` region (color aspect, that mip and layer, the mip extent, `bufferRowLength` = the pitch in texels, `bufferImageHeight` 0, `bufferOffset` 0) |
 | `layout_transition`, `final_layout`, `transition_barriers` | the opt-in transition after the upload (`none` by default), the layout the image ends in and the barrier descriptions it implies; see "The layout transition" |
-| `mip_generation` | reserved (#467), `none` |
+| `mip_generation`, `generated` | the opt-in mip choice (#467, `none` by default) and, with `cpu_box`, the generated `ImageData` the plan owns; see "Mip generation" |
 
 - **Mapping** (pixel format and `ColorInterpretation`): `srgb` maps to the sRGB format where one exists
   (`r8`, `rg8`, `rgba8` give `R8_SRGB`, `R8G8_SRGB`, `R8G8B8A8_SRGB`); `linear` and `normal_map` map to
@@ -317,17 +317,61 @@ explicit steps, nothing records, submits or waits, and the application keeps the
 - **Usage** always includes `eTransferDst` and `eSampled`, plus `ImageUploadDescription::extra_usage`.
   Whether the device supports the format for them is not checked by the plan: ask
   `graphics::queryFormatProperties`; `createImage` returns the device's refusal unchanged.
-- **Every subresource present is uploaded as it is.** There is no mip generation, no conversion and no
+- **Every subresource present is uploaded as it is.** Unless `cpu_box` is named there is no mip generation, no conversion and no
   re-packing: a padded row pitch becomes an explicit `bufferRowLength`, and the item's bytes are the
   subresource's bytes from its first pixel to the end of its last row (`ImageData::bytes(mip, layer)`),
   which is exactly the footprint `prepareUploadBatch` requires. A row pitch that is not a multiple of the
   texel size cannot be expressed in texels: `unaligned_row_pitch` (repack with `asset::packedLayout`).
   A 3D image (depth above 1) is `unsupported_image`.
-- **Reserved opt-in choice.** `ImageUploadDescription::mip_generation` is an `enum class` whose only value is `none`; mip generation is #467. Until then nothing is generated and any other value is `unsupported_option`.
+- **Opt-in mip choice.** `ImageUploadDescription::mip_generation` is an `enum class` with the values `none` (the default) and `cpu_box` (#467, below). Nothing is generated unless `cpu_box` is named; any other value is `unsupported_option`.
 - **Layouts are the application's unless it opts in.** The plan states `copy_layout`; before `recordUploadBatch` the
   application moves every subresource from `eUndefined` to it with `graphics::imageBarrier` (through
   `recordBarriers` or `recordImageBarrier`), and after the upload to whatever it needs next, or it names
   `LayoutTransition::shader_read_only` (below).
+
+### Mip generation (opt-in, #467)
+
+`MipGeneration::cpu_box` makes `planImageUpload` call `asset::generateMipChain(image, description.mip_options)`
+(a 2x2 box filter on the CPU; the exact filter, the sRGB and alpha handling, the rounding and the options are
+defined in [Asset](asset.md#mip-chain-generation-467)) and describe the **generated** levels. It is never the
+default, and neither `createImage` nor the upload does it behind your back; the work happens in the plan step,
+on the CPU, where you can see it.
+
+- **Which images work.** The `ImageData` must have the base level only (`mip_levels == 1`); an image that already
+  has mips is `asset::MipChainError::already_has_mips`, never overwritten. The formats are those the upload supports
+  (everything except `rgb8`, which is `unsupported_format` as without generation) and the image must be 2D (a 3D
+  image is `unsupported_image`, checked before anything is generated). The Asset filter itself also handles 3D data
+  and `rgb8` if you call it yourself.
+- **The plan shows the result.** `plan.image.mip_levels` and `plan.subresources` list every generated (mip, layer)
+  (the default is the full chain; `mip_options.levels` asks for fewer, `renormalize_normals` is passed through) and
+  `plan.generated` holds the generated, validated, tightly packed `ImageData` the entries refer to. Inspect it, or
+  copy the plan, before creating anything.
+- **Lifetime.** The plan **owns** the generated image. `imageUploadItems(plan, image, destination)` takes the bytes
+  from `plan.generated` and `image` must be the source image the plan was made from (it is only compared: same
+  format mapping, extent and layers, one level; its bytes are not read). So **the plan must outlive
+  `prepareUploadBatch`** (instead of the `ImageData`); the source image may be destroyed right after
+  `planImageUpload`. The staging copy is made once, from the generated bytes. `ImageUploadSubmission` keeps the plan,
+  so the chain stays in memory until the submission is destroyed.
+- **Errors.** `MipChainError` and `ImageDataError` are returned unchanged. A plan whose `generated` is missing, or
+  present with `none`, or does not match `image.mip_levels`, is `plan_mismatch`.
+- **GPU generation.** There is no GPU blit path yet; a `gpu_blit` value may be added later. Nothing changes for
+  `cpu_box` users when it is.
+
+The lower-level equivalent, which is what `cpu_box` does:
+
+```cpp
+// base has one level. You see the chain, and may change it, before the plan.
+auto chain = terreate::unwrap(asset::generateMipChain(base, options));
+auto plan = terreate::unwrap(ag::planImageUpload(chain));   // MipGeneration::none: levels as they are
+auto image = terreate::unwrap(ag::createImage(allocator, plan));
+auto items = terreate::unwrap(ag::imageUploadItems(plan, chain, image));   // borrows chain.data
+```
+
+`integration.asset_graphics.mip_plan` checks the plan on the CPU (default `none` unchanged, levels, options, errors),
+and `integration.asset_graphics.mip` uploads a generated 5x3 rgba8 sRGB chain (three levels, two layers, one with
+padded rows) with the explicit steps, `submitImageUpload` and `uploadImageBlocking`, reads every level back and
+compares it byte for byte with `generateMipChain` and the hand-made plan, with the validation layer required and
+silent.
 
 ### The layout transition (opt-in, #468)
 
@@ -390,10 +434,11 @@ reports an old layout that is not the image's), copies every (mip, layer) out an
 
 ### Lifetime rule
 
-The plan holds **no pixels**. `imageUploadItems` returns items that borrow: `bytes` points into
+With `MipGeneration::none` the plan holds **no pixels**. `imageUploadItems` returns items that borrow: `bytes` points into
 `ImageData::data` of the `image` argument and `destination` points at the created image. **The `ImageData`
 must outlive `prepareUploadBatch`** (which copies the bytes into staging and keeps no span) and must not
-change in between; it may be destroyed afterwards. The image must stay alive and in place through every GPU
+change in between; it may be destroyed afterwards. With `cpu_box` the bytes are `plan.generated->data` and
+**the plan must outlive `prepareUploadBatch`** instead (see "Mip generation"). The image must stay alive and in place through every GPU
 use. As with meshes, C++ lifetime is not GPU lifetime: retire the image and the staging batch through a
 `graphics::RetirementQueue`. `imageUploadItems` checks that `image` and `destination` are the ones the plan
 was made for and returns `plan_mismatch` if the format mapping, extent, mips, layers or any subresource
@@ -416,7 +461,8 @@ are returned unchanged.
 | `no_transition` | `recordImageUploadTransition` was given a plan made with `LayoutTransition::none` |
 
 `planImageUpload` checks in this order: `asset::validate`, the choices, the format, the
-dimensionality, then each subresource.
+dimensionality, with `cpu_box` the generation (`asset::MipChainError`, `asset::ImageDataError`), then each
+subresource of the image to upload.
 
 ### Example
 
@@ -489,7 +535,10 @@ The convenience is written only with them, `graphics::recordImageBarrier`, the u
 image. After the upload the image is in `ShaderReadOnlyOptimal`, visible to sampled reads in
 `consumer_stages` (default: the fragment shader). The choice is visible: it is `plan.layout_transition`,
 `plan.final_layout` and `plan.transition_barriers`. Set `layout_transition = LayoutTransition::none` to
-leave the image in `TransferDstOptimal` (the plan then states no barrier). Mips are not generated.
+leave the image in `TransferDstOptimal` (the plan then states no barrier). Mips are not generated unless you name them:
+`ImageUploadConvenienceDescription` also has `mip_generation` (default `none`) and `mip_options`, passed unchanged to
+the explicit description, so `mip_generation = MipGeneration::cpu_box` makes `submitImageUpload` and
+`uploadImageBlocking` upload the CPU-generated chain (the plan, which the result keeps, owns it).
 
 ### What `submitImageUpload` records
 

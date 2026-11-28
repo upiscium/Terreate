@@ -8,6 +8,22 @@ public API (the installed package is compatible only within the same `MAJOR.MINO
 
 ### Added
 
+- **Explicit mip chain generation, CPU path** (#467): `asset::generateMipChain(image, options)`
+  (`<terreate/asset/mip_chain.hpp>`) turns an `ImageData` that has only the base level into a validated,
+  tightly packed `ImageData` with the full chain (or `MipChainOptions::levels` levels). The filter is a box
+  filter whose weights are the overlap of each source texel with the destination footprint (a plain 2x2 mean for
+  even extents; also 2x2x2 for 3D); 8-bit sRGB is averaged in linear space with the exact transfer function,
+  other data as stored, straight alpha weights the colors, normal maps are renormalized
+  (`renormalize_normals`, default true); integers round to nearest, ties up. An input with more than one level is
+  `MipChainError::already_has_mips`. The image upload gets the explicit value `MipGeneration::cpu_box` (the
+  default stays `none`, nothing is generated unless named) with `ImageUploadDescription::mip_options`: the plan
+  describes the generated levels (`mip_levels`, `subresources`) and owns the generated image in
+  `ImageUploadPlan::generated`, so with `cpu_box` the plan, not the source `ImageData`, must outlive
+  `prepareUploadBatch`. `ImageUploadConvenienceDescription` has the same two fields. A GPU blit value is future
+  work. Documented with the lower-level equivalent (call `generateMipChain` and plan the result) in
+  `docs/architecture/asset.md` and `asset_graphics.md`; tests `asset.mip_chain`,
+  `integration.asset_graphics.mip_plan` and `integration.asset_graphics.mip` (a generated chain uploaded and
+  read back byte for byte on the GPU).
 - **Building without Nix** (#473): `docs/development/non-nix-build.md` lists every dependency (minimum
   version, how CMake finds it, Debian 13 package, notes), what is promised outside Nix (configure, build and
   CTest; the full gate stays the Nix shell's), the commands, how the GPU tests behave without a driver, and

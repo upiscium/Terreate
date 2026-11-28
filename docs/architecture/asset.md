@@ -1,4 +1,4 @@
-# Asset: MeshData (#345), primitive generators (#346), ImageData and ModelData (#276), decode contracts (#280)
+# Asset: MeshData (#345), primitive generators (#346), ImageData and ModelData (#276), decode contracts (#280), mip chain generation (#467)
 
 `Terreate::Asset` (`terreate::asset`) holds CPU-side asset data that primitive
 generators, model decoders and rendering code share. Its types are `MeshData`, declared in
@@ -336,6 +336,75 @@ asset::ImageData whiteTexture() {
   return image;
 }
 ```
+
+### Mip chain generation (#467)
+
+`<terreate/asset/mip_chain.hpp>`: `generateMipChain(image, options) -> Result<ImageData>` makes the mip levels of an
+image on the CPU and returns a new, tightly packed, validated `ImageData`. It is explicit: nothing in Terreate calls
+it for you, and there is no Graphics dependency. Input: a valid image with `mip_levels == 1` (any layers, depth or
+pitches). Output: the same format, interpretation, alpha mode, extent, layers, `custom` and `unsupported` lists;
+`mip_levels` as requested; the table from `packedLayout`; level 0 holds the input pixels.
+
+**An input that already has more than one level is refused** with `MipChainError::already_has_mips`: the chain is
+never completed or overwritten, so the caller decides what a pre-made chain means.
+
+**The filter.** Level k is computed from level k-1 of the result, so each level is quantized to the format before the
+next one is derived. Per axis a source extent n becomes `m = max(1, n / 2)` (the `mipExtent` rule). Destination
+texel `i` covers the source interval `[i*n/m, (i+1)*n/m)` where source texel `j` covers `[j, j+1)`; the weight of
+source texel `j` is the length of the overlap. The weight of a texel is the product of its three axis weights. So:
+
+- an even n: every destination texel is the plain mean of 2 texels (a 2x2 box);
+- n = 1: the axis is copied;
+- n = 3 -> 1: weights 1, 1, 1; n = 5 -> 2: weights (1, 1, 0.5) and (0.5, 1, 1), divided by their sum 2.5;
+- depth above 1 (a 3D image): the same rule on the third axis, a 2x2x2 box; nothing is refused for depth.
+
+Sums are accumulated in IEEE double in a fixed order, so the result is deterministic on one platform (results on
+other platforms may differ only where a value lies within floating-point error of a rounding boundary).
+
+**Color handling**, by format and `ColorInterpretation`:
+
+| Data | What is averaged |
+| --- | --- |
+| integer formats, `linear` or `normal_map` | the raw integer values |
+| 8-bit `srgb` (color components: all but component 3 of an rgba format) | decoded with the exact sRGB transfer function (`c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055)^2.4`, `c = raw / 255`), averaged linearly, encoded again (`l <= 0.0031308 ? 12.92 l : 1.055 l^(1/2.4) - 0.055`); alpha is linear and averaged as stored |
+| float formats | the float values as they are (always linear); NaN and infinity propagate, no clamping |
+| `AlphaMode::straight` | colors weighted by alpha, `sum(w a c) / sum(w a)`; alpha is the plain mean; when `sum(w a)` is 0 the color is the plain mean |
+| `AlphaMode::premultiplied`, `none` | every component is the plain mean (for `none` the alpha component of an rgba format is just another component) |
+| `normal_map` with at least 3 components | after averaging, `x y z` is taken as a vector (`2 * value / max - 1`), scaled to length 1 and encoded (`renormalize_normals`, default true); a vector shorter than 1e-6 is left as it is; with 2 components (implied z) nothing is renormalized |
+
+Integer results are rounded to nearest, ties up (`floor(x + 0.5)`), and clamped to `0..max`; so 0 and 255 in sRGB give
+188 (the linear mean 0.5 encodes to 187.5...), and 0 and 255 as linear data give 128. Float results are converted by
+the default conversion.
+
+`MipChainOptions`: `levels` (0, the default, is the full chain down to 1x1x1; otherwise 1 to `maxMipLevels(extent)`,
+more is `invalid_level_count`) and `renormalize_normals`.
+
+| `MipChainError` | Meaning |
+| --- | --- |
+| `already_has_mips` | the input has more than one mip level |
+| `invalid_level_count` | `options.levels` exceeds `maxMipLevels(extent)` |
+
+An input that fails `validate` returns its `ImageDataError` unchanged. The result is validated before it is returned.
+
+**Limits.** The size of the result is computed by `packedLayout` before anything is allocated
+(`ImageDataError::size_overflow`; allocation failure throws `std::bad_alloc`); the temporary memory beyond the result
+is linear in the largest extent, never the image size. The filter is a box: it is simple and deterministic, not the
+best quality (no Lanczos or Kaiser, no gamma-aware alpha). The Asset-Graphics Integration offers it through
+`MipGeneration::cpu_box` ([asset_graphics.md](asset_graphics.md)).
+
+```cpp
+#include <terreate/asset/mip_chain.hpp>
+
+namespace asset = terreate::asset;
+
+// `base` has mip_levels == 1; chain has the full chain of 5x3 -> 2x1 -> 1x1.
+auto chain = terreate::unwrap(asset::generateMipChain(base));
+auto two = terreate::unwrap(asset::generateMipChain(base, {.levels = 2}));
+```
+
+Tests: `asset.mip_chain` checks hand-computed results (2x2, 4x4, odd extents 3x3, 5x3, 7x1, 1xN, sRGB value pairs,
+straight alpha, normal renormalization, every format family, layers, padding, fewer levels, 3D, errors, determinism)
+and that every output validates.
 
 ## ModelData (#276 part 2)
 

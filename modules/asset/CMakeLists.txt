@@ -9,6 +9,7 @@ endif()
 # nothing but Core (#345).
 add_library(terreate_asset STATIC
   src/image_data.cpp
+  src/mip_chain.cpp
   src/mesh_data.cpp
   src/decode.cpp
   src/model_data.cpp
@@ -16,6 +17,7 @@ add_library(terreate_asset STATIC
   src/resource_resolver.cpp
   include/terreate/asset/decode.hpp
   include/terreate/asset/image_data.hpp
+  include/terreate/asset/mip_chain.hpp
   include/terreate/asset/mesh_data.hpp
   include/terreate/asset/model_data.hpp
   include/terreate/asset/primitives.hpp

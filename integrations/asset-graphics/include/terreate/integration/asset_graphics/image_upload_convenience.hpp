@@ -44,6 +44,13 @@ struct ImageUploadConvenienceDescription {
   vk::ImageUsageFlags extra_usage{};
   /// Memory of the image (see `ImageUploadDescription::allocation`).
   graphics::ImageAllocationDescription allocation{};
+  /// How mips are produced (see `ImageUploadDescription::mip_generation`). Default
+  /// `none`: the convenience never generates mips unless you name `cpu_box`, which
+  /// uploads the chain `asset::generateMipChain` makes on the CPU (the plan owns it
+  /// until the submission is destroyed).
+  MipGeneration mip_generation = MipGeneration::none;
+  /// Only with `cpu_box`: the options of `asset::generateMipChain`.
+  asset::MipChainOptions mip_options{};
   /// The layout the image is left in. Default `shader_read_only`: after the
   /// upload the image is in `eShaderReadOnlyOptimal`. `none`: it stays in
   /// `eTransferDstOptimal` and the application transitions it.
@@ -54,7 +61,7 @@ struct ImageUploadConvenienceDescription {
 };
 
 /// The `ImageUploadDescription` the convenience description means: the same
-/// fields, `mip_generation` `none`. Plain data; edit it and call the explicit
+/// fields, including `mip_generation` and `mip_options`. Plain data; edit it and call the explicit
 /// steps when you need more control.
 [[nodiscard]] auto toImageUploadDescription(const ImageUploadConvenienceDescription &description)
     -> ImageUploadDescription;
@@ -115,7 +122,8 @@ struct ImageUploadSubmission {
 ///   the device has synchronization2.
 ///
 /// Lifetimes: `image_data` and `description` are only read during the call and may
-/// be destroyed after it returns (the pixels are copied into staging). `device`,
+/// be destroyed after it returns (the pixels are copied into staging; a generated
+/// chain lives in the returned plan). `device`,
 /// `allocator`, `command`'s pool and `fence` must outlive every GPU use of the
 /// result. The command buffer and the fence must stay alive and untouched (no
 /// reset, no reuse) until the fence is signaled and the staging is retired.

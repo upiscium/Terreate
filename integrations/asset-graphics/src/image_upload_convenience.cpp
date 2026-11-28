@@ -38,6 +38,8 @@ auto toImageUploadDescription(const ImageUploadConvenienceDescription &descripti
   ImageUploadDescription result;
   result.extra_usage = description.extra_usage;
   result.allocation = description.allocation;
+  result.mip_generation = description.mip_generation;
+  result.mip_options = description.mip_options;
   result.layout_transition = description.layout_transition;
   result.consumer_stages = description.consumer_stages;
   return result;

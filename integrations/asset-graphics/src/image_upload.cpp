@@ -129,8 +129,23 @@ std::string planProblem(const ImageUploadPlan &plan) {
     return "image.usage lacks eTransferDst or eSampled";
   if (plan.copy_layout != vk::ImageLayout::eTransferDstOptimal)
     return "copy_layout is not eTransferDstOptimal";
-  if (plan.mip_generation != MipGeneration::none)
-    return "a reserved choice holds an undefined value";
+  switch (plan.mip_generation) {
+  case MipGeneration::none:
+    if (plan.generated)
+      return "a plan without mip generation owns a generated image";
+    break;
+  case MipGeneration::cpu_box:
+    if (!plan.generated)
+      return "a cpu_box plan has no generated image";
+    if (plan.generated->mip_levels != image.mip_levels ||
+        plan.generated->array_layers != image.array_layers ||
+        plan.generated->extent.width != image.extent.width ||
+        plan.generated->extent.height != image.extent.height || plan.generated->extent.depth != 1)
+      return "the generated image differs from the image the plan describes";
+    break;
+  default:
+    return "mip_generation holds an undefined value";
+  }
   switch (plan.layout_transition) {
   case LayoutTransition::none:
     if (plan.final_layout != plan.copy_layout || !plan.transition_barriers.empty())
@@ -184,9 +199,10 @@ auto planImageUpload(const asset::ImageData &image, const ImageUploadDescription
   constexpr const char *operation = "planImageUpload";
   if (const auto valid = asset::validate(image); !valid)
     return std::unexpected(valid.error());
-  if (description.mip_generation != MipGeneration::none)
+  if (description.mip_generation != MipGeneration::none &&
+      description.mip_generation != MipGeneration::cpu_box)
     return std::unexpected(fail(ImageUploadError::unsupported_option, operation,
-                                "only MipGeneration::none is defined"));
+                                "only MipGeneration::none and cpu_box are defined"));
   if (description.layout_transition != LayoutTransition::none &&
       description.layout_transition != LayoutTransition::shader_read_only)
     return std::unexpected(fail(ImageUploadError::unsupported_option, operation,
@@ -203,13 +219,24 @@ auto planImageUpload(const asset::ImageData &image, const ImageUploadDescription
     return std::unexpected(
         fail(ImageUploadError::unsupported_image, operation, "the image has a depth above 1"));
 
+  // With a generation choice the plan describes the generated levels; the generated image is
+  // owned by the plan and is what the upload items borrow from.
+  std::optional<asset::ImageData> generated;
+  if (description.mip_generation == MipGeneration::cpu_box) {
+    auto chain = asset::generateMipChain(image, description.mip_options);
+    if (!chain)
+      return std::unexpected(std::move(chain.error()));
+    generated = std::move(*chain);
+  }
+  const asset::ImageData &source = generated ? *generated : image;
+
   const std::size_t texel = asset::byteSize(image.format);
   ImageUploadPlan plan;
   plan.format = *format;
   plan.image.format = *format;
   plan.image.extent = vk::Extent3D{image.extent.width, image.extent.height, 1};
   plan.image.dimensions = vk::ImageType::e2D;
-  plan.image.mip_levels = image.mip_levels;
+  plan.image.mip_levels = source.mip_levels;
   plan.image.array_layers = image.array_layers;
   plan.image.samples = vk::SampleCountFlagBits::e1;
   plan.image.tiling = vk::ImageTiling::eOptimal;
@@ -225,11 +252,12 @@ auto planImageUpload(const asset::ImageData &image, const ImageUploadDescription
     plan.transition_barriers.push_back(shaderReadBarrier(plan.image, description.consumer_stages));
   }
 
-  plan.subresources.reserve(static_cast<std::size_t>(image.mip_levels) * image.array_layers);
+  plan.mip_generation = description.mip_generation;
+  plan.subresources.reserve(static_cast<std::size_t>(source.mip_levels) * source.array_layers);
   for (std::uint32_t layer = 0; layer < image.array_layers; ++layer) {
-    for (std::uint32_t mip = 0; mip < image.mip_levels; ++mip) {
-      const auto *entry = image.find(mip, layer);
-      auto bytes = image.bytes(mip, layer);
+    for (std::uint32_t mip = 0; mip < source.mip_levels; ++mip) {
+      const auto *entry = source.find(mip, layer);
+      auto bytes = source.bytes(mip, layer);
       if (!bytes)
         return std::unexpected(bytes.error());
       if (entry == nullptr)
@@ -243,7 +271,7 @@ auto planImageUpload(const asset::ImageData &image, const ImageUploadDescription
       if (entry->row_pitch > max31)
         return std::unexpected(fail(ImageUploadError::size_overflow, operation,
                                     where + ": a row exceeds 2^31 - 1 bytes"));
-      const auto extent = image.mipExtent(mip);
+      const auto extent = source.mipExtent(mip);
       ImageUploadSubresource subresource;
       subresource.mip = mip;
       subresource.layer = layer;
@@ -259,6 +287,7 @@ auto planImageUpload(const asset::ImageData &image, const ImageUploadDescription
       plan.subresources.push_back(subresource);
     }
   }
+  plan.generated = std::move(generated);
   return plan;
 }
 
@@ -278,19 +307,30 @@ auto imageUploadItems(const ImageUploadPlan &plan, const asset::ImageData &image
   if (!configurationMatches(destination, plan))
     return std::unexpected(fail(ImageUploadError::plan_mismatch, operation,
                                 "the image is invalid or differs from the plan's image"));
+  // With cpu_box `image` is the source the plan was made from (one level); the bytes come from
+  // the plan's generated image, whose levels the plan describes.
+  const bool generating = plan.generated.has_value();
   const auto format = toVulkan(image.format, image.interpretation);
   if (!format || *format != plan.format || image.extent.depth != 1 ||
       image.extent.width != plan.image.extent.width ||
       image.extent.height != plan.image.extent.height ||
-      image.mip_levels != plan.image.mip_levels || image.array_layers != plan.image.array_layers)
+      image.mip_levels != (generating ? 1U : plan.image.mip_levels) ||
+      image.array_layers != plan.image.array_layers)
     return std::unexpected(fail(ImageUploadError::plan_mismatch, operation,
                                 "the image data differs from the one the plan was made from"));
+  const asset::ImageData &source = plan.generated ? *plan.generated : image;
+  if (generating) {
+    const auto generated_format = toVulkan(source.format, source.interpretation);
+    if (!generated_format || *generated_format != plan.format)
+      return std::unexpected(fail(ImageUploadError::plan_mismatch, operation,
+                                  "the generated image differs from the plan's format"));
+  }
 
   std::vector<graphics::ImageUploadItem> items;
   items.reserve(plan.subresources.size());
   for (const auto &entry : plan.subresources) {
-    const auto *found = image.find(entry.mip, entry.layer);
-    auto bytes = image.bytes(entry.mip, entry.layer);
+    const auto *found = source.find(entry.mip, entry.layer);
+    auto bytes = source.bytes(entry.mip, entry.layer);
     if (found == nullptr || !bytes || found->offset != entry.data_offset ||
         found->row_pitch != entry.row_pitch || bytes->size() != entry.byte_count)
       return std::unexpected(fail(ImageUploadError::plan_mismatch, operation,

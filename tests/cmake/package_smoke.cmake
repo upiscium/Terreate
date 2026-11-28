@@ -67,7 +67,7 @@ function(terreate_assert_install_boundary prefix name)
     if("${_installed_relative}" MATCHES
           "\\.(h|hh|hpp|hxx|c|cc|cpp|cxx)$" AND
        NOT "${_installed_relative}" MATCHES
-            "^include/terreate/(core/(diagnostics|error|result)|asset/(decode|image_data|mesh_data|model_data|primitives|resource_resolver)|adapter/(asset_image_stb|asset_gltf_cgltf)/decoder|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/(mesh_upload|mesh_upload_convenience|image_upload|image_upload_convenience))|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
+            "^include/terreate/(core/(diagnostics|error|result)|asset/(decode|image_data|mip_chain|mesh_data|model_data|primitives|resource_resolver)|adapter/(asset_image_stb|asset_gltf_cgltf)/decoder|platform/(runtime|window|events)|integration/(platform_graphics/surface|asset_graphics/(mesh_upload|mesh_upload_convenience|image_upload|image_upload_convenience))|graphics/(allocator|buffer|command_pool|command_buffer|transfer_commands|upload_batch|readback_batch|spirv_binary|shader_module|descriptor_set_layout|descriptor_pool|descriptor_set|descriptor_write|specialization|pipeline_layout|compute_pipeline|graphics_pipeline|pipeline_commands|rendering_commands|completion|submission|retirement|image|image_view|sampler|debug_utils|surface|presentation|swapchain|swapchain_frame|swapchain_retirement|synchronization|barriers|vertex_layout|format_properties|device|instance|physical_device))\\.hpp$")
       message(FATAL_ERROR
         "${name} install unexpectedly contains a source/header file: "
         "${_installed_relative}")
@@ -181,7 +181,7 @@ function(terreate_package_configure_and_install name platform graphics)
 
   terreate_assert_install_boundary("${_prefix}" "${name}")
   if(_asset)
-    foreach(_asset_header IN ITEMS decode image_data mesh_data model_data primitives resource_resolver)
+    foreach(_asset_header IN ITEMS decode image_data mip_chain mesh_data model_data primitives resource_resolver)
       if(NOT EXISTS "${_prefix}/include/terreate/asset/${_asset_header}.hpp")
         message(FATAL_ERROR "${name} install is missing the public Asset ${_asset_header} header")
       endif()
@@ -1638,6 +1638,7 @@ set(_asset_source [=[
 #include <terreate/asset/decode.hpp>
 #include <terreate/asset/image_data.hpp>
 #include <terreate/asset/mesh_data.hpp>
+#include <terreate/asset/mip_chain.hpp>
 #include <terreate/asset/model_data.hpp>
 #include <terreate/asset/primitives.hpp>
 #include <terreate/asset/resource_resolver.hpp>
@@ -1694,6 +1695,22 @@ int main() {
   if (truncated ||
       truncated.error().code() != asset::make_error_code(asset::ImageDataError::data_out_of_bounds))
     return 11;
+  // #467: an installed generateMipChain makes the 2x1 chain of a 2x2 linear image, and an image
+  // that already has mips is refused with the named category.
+  asset::ImageData base;
+  base.format = asset::PixelFormat::r8;
+  base.interpretation = asset::ColorInterpretation::linear;
+  base.extent = {2, 2, 1};
+  base.data = {std::byte{0}, std::byte{255}, std::byte{255}, std::byte{0}};
+  auto base_layout = asset::packedLayout(base.format, base.extent, 1, 1);
+  if (!base_layout) return 30;
+  base.subresources = std::move(base_layout->subresources);
+  const auto chain = asset::generateMipChain(base);
+  if (!chain || chain->mip_levels != 2 || chain->data.size() != 5 ||
+      chain->data[4] != std::byte{128} || !asset::validate(*chain)) return 31;
+  const auto again = asset::generateMipChain(*chain);
+  if (again || again.error().code() != asset::make_error_code(asset::MipChainError::already_has_mips))
+    return 32;
   // #276 part 2: an installed ModelData with a two-node hierarchy validates, and
   // a cycle is reported with the named category.
   asset::ModelData model;

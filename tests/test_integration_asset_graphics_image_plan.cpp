@@ -249,9 +249,9 @@ void errors() {
   // A reserved choice with an undefined value is refused, not ignored.
   const auto image = makeImage(asset::PixelFormat::rgba8, asset::ColorInterpretation::srgb, 2, 2);
   ag::ImageUploadDescription forged;
-  // The reserved enums have one enumerator on purpose; forging another value is the point.
+  // The choices have few enumerators on purpose; forging an undefined value is the point.
   // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
-  forged.mip_generation = static_cast<ag::MipGeneration>(1);
+  forged.mip_generation = static_cast<ag::MipGeneration>(2);
   check(hasError(ag::planImageUpload(image, forged), ag::ImageUploadError::unsupported_option),
         "an undefined mip_generation value is unsupported_option");
   forged = {};

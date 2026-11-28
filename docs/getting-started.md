@@ -155,6 +155,7 @@ own command buffer, fence and queue, and a receipt for your `RetirementQueue`.
 | upload a `MeshData` to GPU buffers, explicitly | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | upload a `MeshData` in one call (beginner path: `uploadMeshBlocking`, or non-blocking `submitMeshUpload`) | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | upload an `ImageData` in one call, ready to sample (`uploadImageBlocking`, or non-blocking `submitImageUpload`; you create the view and sampler) | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
+| generate a mip chain of an `ImageData` on the CPU (opt-in; `generateMipChain`, or `MipGeneration::cpu_box` in the upload) | [Asset](architecture/asset.md), [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset](api/asset.md) |
 | upload an `ImageData` to a GPU image, explicitly | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | move the uploaded image to `eShaderReadOnlyOptimal` (opt-in `LayoutTransition::shader_read_only` and `recordImageUploadTransition`) | [Asset-Graphics Integration](architecture/asset_graphics.md) | [Asset-Graphics](api/asset_graphics.md) |
 | decode a PNG, JPEG, BMP, TGA or HDR from memory into an `ImageData` (no file or GPU involved) | [stb_image Adapter](architecture/asset_image_stb.md) | [stb_image Adapter](api/asset_image_stb.md) |
