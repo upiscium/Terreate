@@ -9,6 +9,24 @@ if(NOT DEFINED TERREATE_PACKAGE_BINARY_ROOT OR
 endif()
 
 get_filename_component(_terreate_source_dir "${TERREATE_SOURCE_DIR}" ABSOLUTE)
+
+# The directories the build under test was configured with are passed as
+# TERREATE_TEST_VULKAN_HEADERS_INCLUDE_DIR, TERREATE_TEST_STB_INCLUDE_DIR and
+# TERREATE_TEST_CGLTF_INCLUDE_DIR. They may come from CMake cache variables (a build
+# outside Nix, which has no devShell environment); the cases below and their child
+# configures read the environment variables VULKAN_HEADERS_INCLUDE, STB_INCLUDE and
+# CGLTF_INCLUDE, so publish each passed value there. Under Nix they are the values
+# the devShell already set.
+foreach(_terreate_test_input IN ITEMS
+    "VULKAN_HEADERS_INCLUDE;TERREATE_TEST_VULKAN_HEADERS_INCLUDE_DIR"
+    "STB_INCLUDE;TERREATE_TEST_STB_INCLUDE_DIR"
+    "CGLTF_INCLUDE;TERREATE_TEST_CGLTF_INCLUDE_DIR")
+  list(GET _terreate_test_input 0 _terreate_test_env)
+  list(GET _terreate_test_input 1 _terreate_test_variable)
+  if(DEFINED ${_terreate_test_variable} AND NOT "${${_terreate_test_variable}}" STREQUAL "")
+    set(ENV{${_terreate_test_env}} "${${_terreate_test_variable}}")
+  endif()
+endforeach()
 get_filename_component(_terreate_package_binary_root
   "${TERREATE_PACKAGE_BINARY_ROOT}" ABSOLUTE)
 set(_terreate_package_root "${_terreate_package_binary_root}/generated")

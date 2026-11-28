@@ -159,8 +159,12 @@ foreach(_target_name IN ITEMS Core Asset Platform Graphics)
         INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
       get_target_property(_interface_includes terreate_${_target_lower}
         ${_interface_property})
-      if("${_interface_includes}" MATCHES "(^|;)[^;]*/src(;|$)" OR
-         "${_interface_includes}" MATCHES "/src/")
+      # Look for a private `src` directory of the project, not for a `/src/` that is
+      # merely part of where the source tree lives (for example /work/src).
+      string(REPLACE "${TERREATE_SOURCE_DIR}" "<source-dir>" _interface_includes_relative
+        "${_interface_includes}")
+      if("${_interface_includes_relative}" MATCHES "(^|;)[^;]*/src(;|$)" OR
+         "${_interface_includes_relative}" MATCHES "/src/")
         message(FATAL_ERROR
           "private ${_target_name} include directory leaked into its public "
           "${_interface_property}: ${_interface_includes}")

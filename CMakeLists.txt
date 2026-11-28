@@ -147,14 +147,33 @@ option(TERREATE_BUILD_DOCS
 
 set(TERREATE_MINIMUM_VULKAN_API_VERSION "1.3")
 
+# The directory that contains vulkan/vulkan.hpp and vulkan/vulkan_raii.hpp
+# (Vulkan-Hpp).  It is always given explicitly, never searched for: in order, the
+# cache variable TERREATE_VULKAN_HEADERS_INCLUDE_DIR (for builds outside Nix, for
+# example -DTERREATE_VULKAN_HEADERS_INCLUDE_DIR=/usr/include on Debian), then the
+# environment variable VULKAN_HEADERS_INCLUDE (the project devShell sets it).  The
+# first one that is set decides; a set but incomplete value is an error below, never
+# a fall-through to another directory.
+set(TERREATE_VULKAN_HEADERS_INCLUDE_DIR "" CACHE PATH
+  "Directory that contains vulkan/vulkan.hpp and vulkan/vulkan_raii.hpp (Vulkan-Hpp); wins over the environment variable VULKAN_HEADERS_INCLUDE")
+set(_terreate_vulkan_headers_include_dir "")
+set(_terreate_vulkan_headers_include_source "")
+if(NOT "${TERREATE_VULKAN_HEADERS_INCLUDE_DIR}" STREQUAL "")
+  set(_terreate_vulkan_headers_include_source "TERREATE_VULKAN_HEADERS_INCLUDE_DIR")
+  set(_terreate_vulkan_headers_include_dir "${TERREATE_VULKAN_HEADERS_INCLUDE_DIR}")
+elseif(DEFINED ENV{VULKAN_HEADERS_INCLUDE} AND
+       NOT "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "")
+  set(_terreate_vulkan_headers_include_source "VULKAN_HEADERS_INCLUDE")
+  set(_terreate_vulkan_headers_include_dir "$ENV{VULKAN_HEADERS_INCLUDE}")
+endif()
+
 # Keep the explicit Hpp root available when Terreate is added as a source
 # subdirectory.  The Graphics target publishes this same value through its
 # BUILD_INTERFACE; the top-level path is validated below before any target is
 # created, while the source-subdirectory path is validated by Graphics' probe.
 if(TERREATE_BUILD_GRAPHICS AND
-   DEFINED ENV{VULKAN_HEADERS_INCLUDE} AND
-   NOT "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "")
-  set(PROJECT_VULKAN_HPP_INCLUDE_DIR "$ENV{VULKAN_HEADERS_INCLUDE}")
+   NOT "${_terreate_vulkan_headers_include_dir}" STREQUAL "")
+  set(PROJECT_VULKAN_HPP_INCLUDE_DIR "${_terreate_vulkan_headers_include_dir}")
 endif()
 
 # Check the header-only part of Vulkan before any Graphics source is compiled.
@@ -351,19 +370,49 @@ set_target_properties(terreate_vulkan_headers_probe PROPERTIES
   # compiler-specific -isystem option.  Keep the target-provided directories
   # in their effective order, then place the sentinel before implicit compiler
   # directories so an ambient Vulkan header cannot satisfy the probe.
+  #
+  # One exception: a requested directory that is itself one of the compiler's
+  # implicit directories (/usr/include, when Vulkan-Hpp comes from the
+  # distribution's libvulkan-dev) must stay at the compiler's own position.
+  # Placed first it would precede the C++ standard library directories and
+  # break their #include_next of the C headers.  The user named that ambient
+  # directory explicitly, so the sentinel, whose job is to stop an ambient
+  # directory from standing in for a different explicit one, is not emitted
+  # in that case; directories before it in the closure still shadow it as usual.
+  set(_requested_implicit_directories)
+  set(_ambient_directory_requested FALSE)
   file(APPEND "${_probe_source_dir}/CMakeLists.txt"
     "target_include_directories(terreate_vulkan_headers_probe SYSTEM PRIVATE\n")
   foreach(_include_directory IN LISTS include_directories)
-    if(NOT "${_include_directory}" STREQUAL "")
+    if("${_include_directory}" STREQUAL "")
+      continue()
+    endif()
+    get_filename_component(_include_directory_real "${_include_directory}" REALPATH)
+    set(_include_directory_is_implicit FALSE)
+    foreach(_implicit_include_directory IN LISTS
+        CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+      get_filename_component(_implicit_real "${_implicit_include_directory}" REALPATH)
+      if("${_include_directory_real}" STREQUAL "${_implicit_real}")
+        set(_include_directory_is_implicit TRUE)
+        list(APPEND _requested_implicit_directories
+          "${_implicit_include_directory}")
+      endif()
+    endforeach()
+    if(_include_directory_is_implicit)
+      set(_ambient_directory_requested TRUE)
+    else()
       file(APPEND "${_probe_source_dir}/CMakeLists.txt"
         "  \"${_include_directory}\"\n")
     endif()
   endforeach()
-  file(APPEND "${_probe_source_dir}/CMakeLists.txt"
-    "  \"${_probe_sentinel_dir}\"\n")
+  if(NOT _ambient_directory_requested)
+    file(APPEND "${_probe_source_dir}/CMakeLists.txt"
+      "  \"${_probe_sentinel_dir}\"\n")
+  endif()
   foreach(_implicit_include_directory IN LISTS
       CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
-    if(NOT "${_implicit_include_directory}" MATCHES "[Vv]ulkan")
+    if(NOT "${_implicit_include_directory}" MATCHES "[Vv]ulkan" OR
+       "${_implicit_include_directory}" IN_LIST _requested_implicit_directories)
       file(APPEND "${_probe_source_dir}/CMakeLists.txt"
         "  \"${_implicit_include_directory}\"\n")
     endif()
@@ -407,17 +456,19 @@ if(PROJECT_IS_TOP_LEVEL)
     # the pinned project devShell rather than an inherited SDK or host search path.
     # Keep the compiler's dynamically discovered implicit directories above for
     # clang-tidy/compiler context only; they are not Vulkan dependency discovery.
-    if(NOT DEFINED ENV{VULKAN_HEADERS_INCLUDE} OR
-       "$ENV{VULKAN_HEADERS_INCLUDE}" STREQUAL "")
+    if("${_terreate_vulkan_headers_include_dir}" STREQUAL "")
       message(FATAL_ERROR
-        "Terreate requires the project devShell contract: "
-        "VULKAN_HEADERS_INCLUDE must be set before configuring Graphics. "
-        "Run `nix develop` and configure again.")
+        "Terreate requires an explicit Vulkan-Hpp include directory: "
+        "VULKAN_HEADERS_INCLUDE (the project devShell sets it; run `nix develop`) "
+        "or the CMake cache variable TERREATE_VULKAN_HEADERS_INCLUDE_DIR "
+        "(outside Nix, for example -DTERREATE_VULKAN_HEADERS_INCLUDE_DIR=/usr/include "
+        "on Debian) must be set before configuring Graphics. "
+        "See docs/development/non-nix-build.md.")
     endif()
 
-    set(PROJECT_VULKAN_HPP_INCLUDE_DIR "$ENV{VULKAN_HEADERS_INCLUDE}")
+    set(PROJECT_VULKAN_HPP_INCLUDE_DIR "${_terreate_vulkan_headers_include_dir}")
     terreate_require_vulkan_headers("${PROJECT_VULKAN_HPP_INCLUDE_DIR}"
-      "VULKAN_HEADERS_INCLUDE")
+      "${_terreate_vulkan_headers_include_source}")
     message(STATUS "Vulkan-Hpp include directory: ${PROJECT_VULKAN_HPP_INCLUDE_DIR}")
 
     add_library(project_vulkan_headers INTERFACE)
@@ -1488,9 +1539,27 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
         "integration\\.asset_graphics.*: (assertion=FAIL|.*BLOCKED|.*validation-layer=SKIP)")
   endif()
 
+  # Both CMake-driven tests start child configures; hand them the Vulkan-Hpp, stb and cgltf
+  # directories this build was configured with (also when they came from cache variables or
+  # a search, not from the environment, as outside Nix).
+  set(_terreate_cmake_test_input_args)
+  if(DEFINED PROJECT_VULKAN_HPP_INCLUDE_DIR AND
+     NOT "${PROJECT_VULKAN_HPP_INCLUDE_DIR}" STREQUAL "")
+    list(APPEND _terreate_cmake_test_input_args
+      "-DTERREATE_TEST_VULKAN_HEADERS_INCLUDE_DIR=${PROJECT_VULKAN_HPP_INCLUDE_DIR}")
+  endif()
+  if(NOT "${_terreate_stb_include_dir}" STREQUAL "")
+    list(APPEND _terreate_cmake_test_input_args
+      "-DTERREATE_TEST_STB_INCLUDE_DIR=${_terreate_stb_include_dir}")
+  endif()
+  if(NOT "${_terreate_cgltf_include_dir}" STREQUAL "")
+    list(APPEND _terreate_cmake_test_input_args
+      "-DTERREATE_TEST_CGLTF_INCLUDE_DIR=${_terreate_cgltf_include_dir}")
+  endif()
   add_test(
     NAME cmake.component_matrix
     COMMAND ${CMAKE_COMMAND}
+      ${_terreate_cmake_test_input_args}
       -DTERREATE_SOURCE_DIR=${PROJECT_SOURCE_DIR}
       -DTERREATE_MATRIX_BINARY_ROOT=${CMAKE_CURRENT_BINARY_DIR}/component-matrix
       -DTERREATE_CMAKE_GENERATOR=${CMAKE_GENERATOR}
@@ -1499,6 +1568,7 @@ if(PROJECT_IS_TOP_LEVEL AND TERREATE_BUILD_CORE)
   add_test(
     NAME cmake.package_smoke
     COMMAND ${CMAKE_COMMAND}
+      ${_terreate_cmake_test_input_args}
       -DTERREATE_SOURCE_DIR=${PROJECT_SOURCE_DIR}
       -DTERREATE_PACKAGE_BINARY_ROOT=${CMAKE_CURRENT_BINARY_DIR}/package-smoke-no-public-headers
       -DTERREATE_CMAKE_GENERATOR=${CMAKE_GENERATOR}

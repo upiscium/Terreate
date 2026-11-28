@@ -229,26 +229,64 @@ set_target_properties(terreate_vulkan_headers_probe PROPERTIES
       # roots and Vulkan target usage closure in order, then place the sentinel
       # before implicit compiler directories so ambient Vulkan headers cannot
       # satisfy the probe.
+      #
+      # One exception: a directory that is itself one of the compiler's implicit
+      # directories (/usr/include, when the distribution's Vulkan headers are the
+      # ones in use) must stay at the compiler's own position.  Placed first it
+      # would precede the C++ standard library directories and break their
+      # #include_next of the C headers.  The package that was found names that
+      # ambient directory itself, so the sentinel, whose job is to stop an
+      # ambient directory from standing in for a different one, is not emitted in
+      # that case; directories before it in the closure still shadow it as usual.
+      set(_Terreate_requested_implicit_directories)
+      set(_Terreate_ambient_directory_requested FALSE)
       file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
         "target_include_directories(terreate_vulkan_headers_probe SYSTEM PRIVATE\n")
-      foreach(_Terreate_config_header_root IN LISTS
-          _Terreate_resolved_config_header_roots)
-        if(NOT "${_Terreate_config_header_root}" STREQUAL "")
-          file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
-            "  \"${_Terreate_config_header_root}\"\n")
+      # The configured package header roots (Terreate's own headers, no vulkan/
+      # directory) also keep the compiler's position when they are implicit, but
+      # that alone does not drop the sentinel.
+      foreach(_Terreate_include_directory IN LISTS
+          _Terreate_resolved_config_header_roots include_directories)
+        if("${_Terreate_include_directory}" STREQUAL "")
+          continue()
         endif()
-      endforeach()
-      foreach(_Terreate_include_directory IN LISTS include_directories)
-        if(NOT "${_Terreate_include_directory}" STREQUAL "")
+        set(_Terreate_include_directory_is_vulkan_directory FALSE)
+        if(NOT "${_Terreate_include_directory}" IN_LIST
+           _Terreate_resolved_config_header_roots)
+          set(_Terreate_include_directory_is_vulkan_directory TRUE)
+        endif()
+        get_filename_component(_Terreate_include_directory_real
+          "${_Terreate_include_directory}" REALPATH)
+        set(_Terreate_include_directory_is_implicit FALSE)
+        foreach(_Terreate_implicit_include_directory IN LISTS
+            CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+          get_filename_component(_Terreate_implicit_real
+            "${_Terreate_implicit_include_directory}" REALPATH)
+          if("${_Terreate_include_directory_real}" STREQUAL
+             "${_Terreate_implicit_real}")
+            set(_Terreate_include_directory_is_implicit TRUE)
+            list(APPEND _Terreate_requested_implicit_directories
+              "${_Terreate_implicit_include_directory}")
+          endif()
+        endforeach()
+        if(_Terreate_include_directory_is_implicit)
+          if(_Terreate_include_directory_is_vulkan_directory)
+            set(_Terreate_ambient_directory_requested TRUE)
+          endif()
+        else()
           file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
             "  \"${_Terreate_include_directory}\"\n")
         endif()
       endforeach()
-      file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
-        "  \"${_Terreate_probe_sentinel_dir}\"\n")
+      if(NOT _Terreate_ambient_directory_requested)
+        file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
+          "  \"${_Terreate_probe_sentinel_dir}\"\n")
+      endif()
       foreach(_Terreate_implicit_include_directory IN LISTS
           CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
-        if(NOT "${_Terreate_implicit_include_directory}" MATCHES "[Vv]ulkan")
+        if(NOT "${_Terreate_implicit_include_directory}" MATCHES "[Vv]ulkan" OR
+           "${_Terreate_implicit_include_directory}" IN_LIST
+             _Terreate_requested_implicit_directories)
           file(APPEND "${_Terreate_probe_source_dir}/CMakeLists.txt"
             "  \"${_Terreate_implicit_include_directory}\"\n")
         endif()
